@@ -1,0 +1,300 @@
+# =============================================================================
+# GeoAgent 项目打包配置
+# =============================================================================
+# 遵循 PEP 517/518/621 现代 Python 打包标准
+# 安装后可直接使用: geoagent / python -m geoagent
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoagent"
+version = "0.1.0"
+description = "基于 DeepSeek API 的空间智能 GIS 分析 Agent"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "GeoAgent Team"}
+]
+keywords = [
+    "gis", "geospatial", "ai-agent", "spatial-analysis",
+    "deepseek", "gis-tool", "map", "geopandas", "remote-sensing"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dynamic = [
+    "dependencies",
+]
+
+[project.optional-dependencies]
+# 核心运行时（最小安装）
+core = [
+    "streamlit>=1.28.0",
+    "openai>=1.3.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.28.0",
+    "duckduckgo-search>=5.0.0",
+]
+
+# GIS 核心库
+gis = [
+    "geopandas>=0.14.0",
+    "shapely>=2.0.0",
+    "rasterio>=1.3.0",
+    "whitebox>=1.4.0",
+]
+
+# 可视化
+viz = [
+    "folium>=0.14.0",
+    "leafmap>=0.23.0",
+    "matplotlib>=3.7.0",
+    "plotly>=5.18.0",
+    "streamlit-folium>=0.15.0",
+]
+
+# ArcGIS 在线数据
+arcgis = [
+    "arcgis>=2.1.0",
+    "arcgis-mapping>=0.1.0",
+]
+
+# 海外网络分析
+osm = [
+    "osmnx>=1.9.0",
+    "networkx>=3.2.0",
+]
+
+# 数据处理
+data = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.11.0",
+]
+
+# 联网搜索
+search = [
+    "duckduckgo-search>=5.0.0",
+]
+
+# LangChain Agent 集成
+langchain = [
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-experimental>=0.0.50",
+    "langchain-community>=0.0.20",
+    "langchain-text-splitters>=0.0.1",
+]
+
+# LangChain + GIS 增强（推荐安装）
+langchain-gis = [
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-experimental>=0.0.50",
+    "langchain-community>=0.0.20",
+    "langchain-text-splitters>=0.0.1",
+    "faiss-cpu>=1.7.4",
+    "pypdf>=4.0.0",
+    "unstructured>=0.11.0",
+    "tiktoken>=0.5.0",
+]
+
+# RAG 检索增强
+rag = [
+    "faiss-cpu>=1.7.4",
+    "pypdf>=4.0.0",
+    "tiktoken>=0.5.0",
+    "unstructured>=0.11.0",
+]
+
+# 开发依赖
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.3.0",
+]
+
+# 完整安装（所有依赖）
+all = [
+    "geoagent[core,gis,viz,arcgis,osm,data,search,langchain-gis,rag]",
+]
+
+# 与 requirements.txt 完全同步的完整依赖
+full = [
+    "streamlit>=1.28.0",
+    "openai>=1.3.0",
+    "geopandas>=0.14.0",
+    "shapely>=2.0.0",
+    "rasterio>=1.3.0",
+    "whitebox>=1.4.0",
+    "folium>=0.14.0",
+    "leafmap>=0.23.0",
+    "matplotlib>=3.7.0",
+    "plotly>=5.18.0",
+    "streamlit-folium>=0.15.0",
+    "arcgis>=2.1.0",
+    "arcgis-mapping>=0.1.0",
+    "osmnx>=1.9.0",
+    "networkx>=3.2.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "scipy>=1.11.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.28.0",
+    "duckduckgo-search>=5.0.0",
+    # LangChain 核心
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.1.0",
+    "langchain-experimental>=0.0.50",
+    "langchain-community>=0.0.20",
+    "langchain-text-splitters>=0.0.1",
+    # RAG 检索
+    "faiss-cpu>=1.7.4",
+    "pypdf>=4.0.0",
+    "tiktoken>=0.5.0",
+    "unstructured>=0.11.0",
+    # GIS 增强
+    "pyproj>=3.6.0",
+    "fiona>=1.9.0",
+    "rioxarray>=0.14.0",
+    "xarray>=2024.0.0",
+    "libpysal>=4.9.0",
+    "esda>=2.5.0",
+    "pysal>=23.0.0",
+    "laspy>=2.5.0",
+    "earthpy>=0.4.0",
+    "pystac-client>=0.7.0",
+    "pystac>=1.10.0",
+    "segmentation-models-pytorch>=0.4.0",
+    "torchgeo>=0.5.0",
+]
+
+[project.scripts]
+geoagent = "geoagent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-repo/geoagent"
+Repository = "https://github.com/your-repo/geoagent"
+Documentation = "https://github.com/your-repo/geoagent#readme"
+
+# =============================================================================
+# 包结构配置
+# =============================================================================
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["geoagent*"]
+exclude = ["tests*", "docs*", "examples*"]
+
+[tool.setuptools.package-data]
+geoagent = [
+    "py.typed",
+]
+
+# =============================================================================
+# 工具配置
+# =============================================================================
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "C4",    # flake8-comprehensions
+    "PL",    # pylint
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "PLR0913", # too many arguments
+    "PLR2004",  # magic value comparison
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "geopandas.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "rasterio.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "folium.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "osmnx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "arcgis.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "whitebox.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "duckduckgo_search.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--tb=short",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src/geoagent"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

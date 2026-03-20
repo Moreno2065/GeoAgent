@@ -1,0 +1,81 @@
+[
+  {
+    "id": "B1",
+    "status": "PARTIAL",
+    "expected": [
+      "get_raster_metadata",
+      "calculate_raster_index"
+    ],
+    "actual": [
+      "get_raster_metadata",
+      "run_python_code",
+      "get_raster_metadata",
+      "run_python_code",
+      "get_raster_metadata"
+    ],
+    "matched": [
+      "get_raster_metadata"
+    ],
+    "missed": [
+      "calculate_raster_index"
+    ],
+    "kb_count": 0
+  },
+  {
+    "id": "B2",
+    "status": "PASS",
+    "expected": [
+      "osmnx_routing"
+    ],
+    "actual": [
+      "osmnx_routing",
+      "deepseek_search",
+      "amap",
+      "osm",
+      "run_python_code"
+    ],
+    "matched": [
+      "osmnx_routing"
+    ],
+    "missed": [],
+    "kb_count": 0
+  },
+  {
+    "id": "B3",
+    "status": "PASS",
+    "expected": [
+      "search_online_data"
+    ],
+    "actual": [
+      "search_online_data",
+      "search_online_data",
+      "search_online_data",
+      "search_online_data",
+      "search_online_data"
+    ],
+    "matched": [
+      "search_online_data"
+    ],
+    "missed": [],
+    "kb_count": 0
+  },
+  {
+    "id": "B4",
+    "status": "PASS",
+    "expected": [
+      "run_gdal_algorithm"
+    ],
+    "actual": [
+      "run_python_code",
+      "get_raster_metadata",
+      "run_python_code",
+      "run_gdal_algorithm",
+      "run_gdal_algorithm"
+    ],
+    "matched": [
+      "run_gdal_algorithm"
+    ],
+    "missed": [],
+    "kb_count": 0
+  }
+]

@@ -1,0 +1,54 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\Mao\\source\\repos\\GeoAgent\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{7CFFA168-8FF1-4578-86C7-9CD77B23C6C0}|GeoAgent.pyproj|C:\\Users\\Mao\\source\\repos\\GeoAgent\\agent_core.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{7CFFA168-8FF1-4578-86C7-9CD77B23C6C0}|GeoAgent.pyproj|solutionrelative:agent_core.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{7CFFA168-8FF1-4578-86C7-9CD77B23C6C0}|GeoAgent.pyproj|C:\\Users\\Mao\\source\\repos\\GeoAgent\\app.py||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{7CFFA168-8FF1-4578-86C7-9CD77B23C6C0}|GeoAgent.pyproj|solutionrelative:app.py||{8B382828-6202-11D1-8870-0000F87579D2}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 0,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "agent_core.py",
+              "DocumentMoniker": "C:\\Users\\Mao\\source\\repos\\GeoAgent\\agent_core.py",
+              "RelativeDocumentMoniker": "agent_core.py",
+              "ToolTip": "C:\\Users\\Mao\\source\\repos\\GeoAgent\\agent_core.py",
+              "RelativeToolTip": "agent_core.py",
+              "ViewState": "AgIAAKEBAAAAAAAAAAAAAAcAAAALAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2026-03-19T02:05:41.35Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "app.py",
+              "DocumentMoniker": "C:\\Users\\Mao\\source\\repos\\GeoAgent\\app.py",
+              "RelativeDocumentMoniker": "app.py",
+              "ToolTip": "C:\\Users\\Mao\\source\\repos\\GeoAgent\\app.py",
+              "RelativeToolTip": "app.py",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.002457|",
+              "WhenOpened": "2026-03-19T02:05:40.561Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
