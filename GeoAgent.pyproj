@@ -25,7 +25,6 @@
   <ItemGroup>
     <InterpreterReference Include="Global|VisualStudio|geo" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent 包 — 根模块                                             -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -39,7 +38,6 @@
     <Compile Include="src\geoagent\cli.py" />
     <Compile Include="src\geoagent\langchain_agent.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.tools 子包                                             -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -48,7 +46,6 @@
     <Compile Include="src\geoagent\tools\registry.py" />
     <Compile Include="src\geoagent\tools\arcgis_tools.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.plugins 子包                                           -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -58,7 +55,6 @@
     <Compile Include="src\geoagent\plugins\osm_plugin.py" />
     <Compile Include="src\geoagent\plugins\amap_plugin.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.knowledge 子包                                         -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -66,7 +62,6 @@
     <Compile Include="src\geoagent\knowledge\__init__.py" />
     <Compile Include="src\geoagent\knowledge\knowledge_rag.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.gis_tools 子包                                         -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -77,7 +72,6 @@
     <Compile Include="src\geoagent\gis_tools\fixed_tools.py" />
     <Compile Include="src\geoagent\gis_tools\advanced_tools.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- 项目根目录脚本                                                  -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -89,7 +83,6 @@
     <Compile Include="test_py_repl.py" />
     <Compile Include="test_tools_quick.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- 测试文件                                                        -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -99,7 +92,6 @@
     <Compile Include="tests\test_geoagent.py" />
     <Compile Include="tests\test_langchain_rag_integration.py" />
   </ItemGroup>
-
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- 配置文件                                                        -->
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -110,7 +102,15 @@
     <Content Include=".env.example" />
     <Content Include=".gitignore" />
   </ItemGroup>
-
+  <ItemGroup>
+    <Folder Include="src\" />
+    <Folder Include="src\geoagent\" />
+    <Folder Include="src\geoagent\gis_tools\" />
+    <Folder Include="src\geoagent\knowledge\" />
+    <Folder Include="src\geoagent\plugins\" />
+    <Folder Include="src\geoagent\tools\" />
+    <Folder Include="tests\" />
+  </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <Target Name="BeforeBuild">
   </Target>
