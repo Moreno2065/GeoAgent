@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import math
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # =============================================================================

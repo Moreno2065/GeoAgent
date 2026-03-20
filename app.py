@@ -28,7 +28,10 @@ import uuid
 from pathlib import Path
 
 import streamlit as st
-st.set_page_config(page_title="🌍 GeoAgent — 全能空间智能引擎", page_icon="🌍", menu_items={
+st.set_page_config(page_title="🌍 GeoAgent — 全能空间智能引擎", page_icon="🌍",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
         "About": "GeoAgent — 全能空间智能引擎 · LangGraph Plan-and-Execute · LangChain Agent · RAG",
     })
 from streamlit_folium import st_folium
@@ -284,6 +287,7 @@ def _init_session_state():
         },
         "_rendered_msg_ids": set(),
         "agent_log": [],
+        "sidebar_collapsed": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -479,9 +483,24 @@ def main():
     st.markdown(
         """
         <style>
-        /* ── 0. KILL NATIVE CHROME ──────────────────────────────── */
-        header { visibility: hidden !important; height: 0 !important; margin: 0 !important; padding: 0 !important; }
+        /* ── 0. HEADER 透明 ──────────────────────────────── */
+        [data-testid="stHeader"] {
+            background-color: transparent !important;
+            box-shadow: none !important;
+            border: none !important;
+            visibility: visible !important;
+        }
+        [data-testid="stHeader"] > * {
+            visibility: visible !important;
+        }
         footer { visibility: hidden !important; height: 0 !important; margin: 0 !important; padding: 0 !important; display: none !important; }
+
+        /* ── 0b. 隐藏 sidebar 展开/收起按钮 ─────────────────── */
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stSidebarToggle"],
+        section[data-testid="stSidebar"] > div:first-child > div:first-child {
+            display: none !important;
+        }
 
         /* ── 0b. MAIN BODY 5% SIDE MARGIN ──────────────────────── */
         [data-testid="stMainBlockContainer"] {
@@ -565,6 +584,18 @@ def main():
             padding-top: 8px !important;
             padding-left: 0 !important;
             padding-right: 0 !important;
+            min-width: 280px !important;
+            max-width: 280px !important;
+            overflow: visible !important;
+            visibility: visible !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+        [data-testid="stSidebar"] > div {
+            overflow: visible !important;
+            visibility: visible !important;
+            display: flex !important;
+            flex-direction: column !important;
         }
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] .stTextInput label,
@@ -833,12 +864,13 @@ def main():
             min-height: 53px !important;
         }
         [data-testid="stSidebar"] .stButton > button {
-            font-size: 0.95rem !important;
-            min-height: 42px !important;
-            padding: 9px 15px !important;
+            font-size: 0.665rem !important;
+            min-height: 29px !important;
+            padding: 6px 10px !important;
             font-weight: 700 !important;
-            border-radius: 9px !important;
+            border-radius: 6px !important;
         }
+
 
         /* ── 15. TEXT INPUTS ────────────────────────────── */
         .stTextInput > div > div > input {
@@ -977,6 +1009,43 @@ def main():
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+    # ── 强制展开 sidebar 并隐藏展开/收起按钮 ───────────────────
+    st.components.v1.html(
+        """
+        <script>
+        // 延迟执行确保Streamlit DOM加载完成
+        var attempts = 0;
+        var maxAttempts = 20;
+        var interval = setInterval(function() {
+            attempts++;
+            // 强制展开 sidebar
+            var sidebar = document.querySelector('section[data-testid="stSidebar"]');
+            if (sidebar) {
+                sidebar.style.display = 'flex';
+                sidebar.style.visibility = 'visible';
+                sidebar.style.opacity = '1';
+                sidebar.classList.remove('collapsed');
+            }
+            // 隐藏展开/收起按钮
+            var toggleBtn = document.querySelector('[data-testid="stSidebarToggle"]');
+            if (toggleBtn) toggleBtn.style.display = 'none';
+            var collapsedBtn = document.querySelector('[data-testid="stSidebarCollapsedControl"]');
+            if (collapsedBtn) collapsedBtn.style.display = 'none';
+            // 隐藏header中的sidebar按钮
+            var headerBtns = document.querySelectorAll('[data-testid="stHeader"] button');
+            headerBtns.forEach(function(btn) {
+                if (btn.textContent.trim() === '' || btn.querySelector('[data-testid="stIcon"]')) {
+                    btn.style.display = 'none';
+                }
+            });
+            if (attempts >= maxAttempts) clearInterval(interval);
+        }, 100);
+        </script>
+        """,
+        height=0,
+        scrolling=False,
     )
 
     # ── 全局标题区（无时间显示）─────────────────────────────────
@@ -1329,7 +1398,7 @@ def _handle_user_message(prompt: str, agent):
             elif et_lower == "react_error":
                 log_entry = {
                     "ts": ts, "type": "error",
-                    "msg": f"❌ ReAct 错误: {str(payload.get('error',''))[:80]}",
+                    "msg": f"❌ ReAct 错误: {payload.get('error','')}",
                 }
             elif et_lower == "react_max_steps":
                 log_entry = {
@@ -1355,7 +1424,7 @@ def _handle_user_message(prompt: str, agent):
             elif et_lower == _EVT.ERROR:
                 log_entry = {
                     "ts": ts, "type": "error",
-                    "msg": f"❌ 错误: {payload.get('error','')[:80]}",
+                    "msg": f"❌ 错误: {payload.get('error','')}",
                 }
             elif et_lower == _EVT.LLM_THINKING:
                 pass
@@ -1374,7 +1443,14 @@ def _handle_user_message(prompt: str, agent):
                         st.code(raw[:1000] if len(raw) > 1000 else raw, language="text")
                 log_entry = {
                     "ts": ts, "type": "info",
-                    "msg": f"⚠️ 计划失败: {payload.get('msg','')[:80]}",
+                    "msg": f"⚠️ 计划失败: {payload.get('msg','')}",
+                }
+            elif et_lower == "plan_error":
+                err_msg = payload.get("msg", "")
+                st.error(f"❌ Planner 异常: {err_msg}")
+                log_entry = {
+                    "ts": ts, "type": "error",
+                    "msg": f"❌ Planner 节点异常: {err_msg}",
                 }
 
             if log_entry:

@@ -50,7 +50,7 @@ class GISKnowledgeBase:
         "python_ecosystem": "06_Python_Ecosystem.md",
         "advanced_qa": "07_Advanced_QA.md",
         "self_repl": "08_SelfCorrecting_REPL.md",
-        "comprehensive": "08_GIS_RS_Comprehensive.md",
+        "comprehensive": "09_GIS_RS_Comprehensive.md",
     }
 
     def __init__(
@@ -90,7 +90,20 @@ class GISKnowledgeBase:
 
     def _build_vectorstore(self):
         """构建向量索引"""
+        if not LANGCHAIN_AVAILABLE:
+            return
+
         try:
+            # 检查 API key 是否可用
+            api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+            if not api_key:
+                print("警告: 未设置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY，向量检索将使用关键词搜索降级")
+                return
+
+            from langchain.text_splitter import MarkdownHeaderTextSplitter
+            from langchain_community.vectorstores import FAISS
+            from langchain_openai import OpenAIEmbeddings
+
             headers_to_split_on = [
                 ("#", "Header 1"),
                 ("##", "Header 2"),
@@ -118,7 +131,7 @@ class GISKnowledgeBase:
                 self._vectorstore.save_local(self.vectorstore_path)
 
         except Exception as e:
-            print(f"Vector store build failed: {e}")
+            print(f"向量索引构建失败: {e}")
             self._vectorstore = None
 
     def _keyword_search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
@@ -337,7 +350,11 @@ def get_workspace_state() -> str:
 # =============================================================================
 
 def create_gis_retriever_tool(vectorstore=None, name: str = "search_gis_knowledge", description: str = None):
-    """创建 GIS 知识库检索工具"""
+    """
+    创建 GIS 知识库检索工具
+    
+    注意：当 LangChain 可用时返回 Tool 对象，否则返回函数（兼容旧代码）
+    """
     if description is None:
         description = (
             "当且仅当你不知道如何使用 Geopandas, Rasterio, TorchGeo 等库编写空间处理代码，"
@@ -363,14 +380,25 @@ def create_gis_retriever_tool(vectorstore=None, name: str = "search_gis_knowledg
                 )
         except ImportError as e:
             print(f"Cannot create retriever tool: {e}")
+        except Exception as e:
+            print(f"Failed to create retriever tool: {e}")
 
-    # 返回简单的函数工具作为备选
-    def search_knowledge(query: str) -> str:
-        kb = GISKnowledgeBase()
-        results = kb.search(query, top_k=2)
-        return kb.format_results(results)
-
-    return search_knowledge
+    # 返回一个简单的结构化工具（用于非 LangChain 环境）
+    # 创建一个简单的 callable 类来替代 LangChain Tool
+    class SimpleSearchTool:
+        """简单的知识库检索工具（兼容非 LangChain 环境）"""
+        name = name
+        description = description
+        
+        def invoke(self, query: str) -> str:
+            kb = GISKnowledgeBase()
+            results = kb.search(query, top_k=2)
+            return kb.format_results(results)
+        
+        def __call__(self, query: str) -> str:
+            return self.invoke(query)
+    
+    return SimpleSearchTool()
 
 
 # =============================================================================

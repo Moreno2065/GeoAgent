@@ -1,4 +1,4 @@
-﻿"""
+"""
 OSMnx 海外地理分析插件
 """
 
@@ -36,26 +36,68 @@ def _osm_error(msg: str, detail: str = "") -> str:
 
 
 def _is_overseas(location: str) -> bool:
+    """
+    判断是否为海外地区（非中国）
+    
+    注意：这是一个启发式判断，不保证 100% 准确。
+    完整判断应依赖地理编码 API 返回的结果。
+    """
     location = location.strip().lower()
-    china_keywords = [
+    
+    # 如果包含以下关键词，优先判定为国内
+    # 使用词边界匹配避免误判（如 "Beijing, UK" 应视为海外）
+    china_patterns = [
+        # 省份关键词
+        "省", "市", "自治区", "特别行政区",
+        # 主要城市
         "北京", "上海", "广州", "深圳", "成都", "杭州", "武汉", "西安", "重庆",
         "南京", "天津", "苏州", "长沙", "郑州", "东莞", "青岛", "沈阳",
         "宁波", "昆明", "大连", "无锡", "厦门", "福州", "济南", "温州",
-        "beijing", "shanghai", "guangzhou", "shenzhen", "chengdu", "hangzhou",
-        "wuhan", "xian", "nanjing", "tianjin", "china", "中文", "中国",
+        "哈尔滨", "长春", "石家庄", "太原", "呼和浩特", "南昌", "合肥",
+        "南宁", "贵阳", "拉萨", "兰州", "西宁", "银川", "乌鲁木齐", "海口",
+        "佛山", "常州", "珠海", "中山", "惠州", "徐州", "南通", "扬州",
+        "镇江", "绍兴", "金华", "台州", "嘉兴", "湖州", "芜湖", "蚌埠",
+        # 直辖县/市
+        "雄安", "滨海", "浦东", "雄安新区", "浦东新区", "滨海新区",
     ]
-    for kw in china_keywords:
-        if kw.lower() in location:
+    
+    for pattern in china_patterns:
+        if pattern in location:
             return False
+    
+    # 检查常见的中文城市名（英文拼写）
+    china_city_english = {
+        "beijing", "shanghai", "guangzhou", "shenzhen", "chengdu", "hangzhou",
+        "wuhan", "xian", "nanjing", "tianjin", "suzhou", "changsha", "zhengzhou",
+        "qingdao", "shenyang", "ningbo", "kunming", "dalian", "wuxi", "xiamen",
+        "fuzhou", "jinan", "wenzhou", "harbin", "changchun", "hefei", "nanning",
+        "guiyang", "lanzhou", "xining", "yinchuan", "urumqi", "haikou",
+    }
+    
+    # 如果位置是纯城市名（用逗号分隔的）
     if "," in location:
-        try:
-            parts = [p.strip() for p in location.split(",")]
-            if len(parts) == 2:
+        parts = [p.strip() for p in location.split(",")]
+        # 如果第一部分是已知的中国城市名
+        if parts and parts[0] in china_city_english:
+            return False
+        # 如果是坐标形式（两个数字），默认不判定
+        if len(parts) == 2:
+            try:
                 float(parts[0])
                 float(parts[1])
-                return False
-        except ValueError:
-            pass
+                # 坐标形式，默认返回 True（可能是海外）
+                return True
+            except ValueError:
+                pass
+    
+    # 如果位置中包含 "china" 或 "中国"（但不是其他组合）
+    if "china" in location or "中国" in location:
+        # 排除 "Shanghai, China" 这样的常见格式（已在上方处理）
+        # 但如果直接是 "China" 或 "中国"，返回 False
+        if location.strip() in ("china", "中国"):
+            return False
+    
+    # 默认认为是海外
     return True
 
 

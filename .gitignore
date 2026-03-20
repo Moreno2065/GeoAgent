@@ -66,3 +66,5 @@ logs/
 
 # Local packages
 src/*.egg-info/
+# 忽略 Visual Studio 和插件的缓存
+.vs/

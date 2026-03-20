@@ -1,10 +1,11 @@
-﻿"""
+"""
 GeoAgent CLI - 命令行入口点
 """
 
 import sys
 import os
 import argparse
+import subprocess
 
 
 def main():
@@ -41,7 +42,16 @@ def main():
     if args.verbose:
         os.environ["GEOAGENT_VERBOSE"] = "1"
 
-    os.system("streamlit run app.py --browser.serverAddress=localhost")
+    # 使用 subprocess 启动 Streamlit（更安全、更可控）
+    cmd = [sys.executable, "-m", "streamlit", "run", "app.py", "--browser.serverAddress=localhost"]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"启动 Streamlit 失败: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n已停止 GeoAgent")
+        sys.exit(0)
 
 
 def print_info():

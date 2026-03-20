@@ -17,7 +17,6 @@ GeoAgent 第二层架构：全能 GIS Agent 终极四层架构
 每个 Agent 对话都会注入动态 Workspace State，根治"文件幻觉"。
 """
 
-import itertools
 import json
 import os
 import re
@@ -674,6 +673,38 @@ class GeoAgent:
                     "content": message.content or "",
                     "tool_calls": getattr(message, 'tool_calls', None) or [],
                 }
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                if ("missing field" in error_str or "invalid_request_error" in error_str):
+                    raise last_error
+        raise last_error
+
+    def _call_api_json(self, messages: List[Dict[str, Any]], max_tokens: int = 4096) -> str:
+        """
+        原生 JSON 模式 API 调用 — 根治 JSON 幻觉！
+
+        适用场景：
+        - 代码解析（代码块提取）
+        - 摘要生成
+        - 结构化数据生成
+        - 非 function calling 的 JSON 输出场景
+
+        注意：此方法不使用 function calling，因为 response_format 和 tools 互斥
+        """
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1,  # 低温保证 JSON 稳定性
+                    max_tokens=max_tokens,
+                    # ✅ 原生客户端 JSON 模式，彻底根治 JSON 幻觉
+                    response_format={"type": "json_object"},
+                )
+                content = response.choices[0].message.content or ""
+                return content
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()

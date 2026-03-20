@@ -1,11 +1,10 @@
-﻿"""
+"""
 栅格遥感处理工具
 提供栅格元数据查询、波段指数计算、GDAL 算法调用等功能
 """
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 

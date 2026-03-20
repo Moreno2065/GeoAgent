@@ -22,7 +22,6 @@ import sys
 import threading
 import time
 import traceback
-import resource
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Dict, Optional
