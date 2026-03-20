@@ -1,4 +1,4 @@
-﻿"""
+"""
 GeoAgent 自修正 Python 代码执行引擎
 让模型自己写出正确代码 → 执行 → 出错后自我检查修复 → 循环直到正确
 
@@ -10,6 +10,7 @@ GeoAgent 自修正 Python 代码执行引擎
   5. 沙盒安全执行
 """
 
+import ast
 import sys
 import io
 import json
@@ -21,6 +22,238 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field, asdict
+
+
+# =============================================================================
+# AST 静态安全检查器 — Phase 1 核心安全加固
+# =============================================================================
+
+class SandboxedASTVisitor(ast.NodeVisitor):
+    """
+    在执行前通过 AST 遍历静态分析代码，拦截危险操作。
+    相比仅限制 globals 的伪沙盒，这层检查更可靠：
+    - 不依赖黑名单模块名，而是检查调用链本身
+    - 能拦截嵌套逃逸（如 build_class_ 在类定义中埋入危险代码）
+    """
+
+    def __init__(self, source_code: str):
+        self.source_code = source_code
+        self.violations: List[Dict[str, str]] = []
+        self._allowed_module_calls = {
+            "os": {"path.exists", "path.isfile", "path.isdir", "path.join",
+                   "path.dirname", "path.basename", "path.split",
+                   "makedirs", "mkdir", "listdir", "getcwd"},
+            "pathlib": {"Path"},
+            "json": {"loads", "dumps"},
+            "csv": {"reader", "writer"},
+            "math": {"*"},
+            "re": {"compile", "findall", "search", "match"},
+            "datetime": {"datetime", "date", "time", "timedelta"},
+            "time": {"sleep"},
+            "functools": {"partial"},
+            "itertools": {"*"},
+            "collections": {"Counter", "defaultdict", "OrderedDict"},
+        }
+
+    def _block(self, node_type: str, reason: str, lineno: int):
+        self.violations.append({
+            "type": node_type,
+            "reason": reason,
+            "line": lineno,
+        })
+
+    def _check_dangerous_name(self, node: ast.Name, ctx: ast.Load):
+        name = node.id
+        dangerous_names = {
+            "__globals__", "__code__", "__builtins__", "__closure__",
+            "__func__", "__self__", "__import__",
+            "codecs", "imp", "importlib", "pkgutil", "runpy",
+        }
+        if name in dangerous_names:
+            self._block("DANGEROUS_NAME",
+                        f"禁止访问内部属性 '{name}'", node.lineno)
+
+    def _check_dangerous_attribute(self, node: ast.Attribute, parent_names: Tuple[str, ...]):
+        attr = node.attr
+        dangerous_attrs = {
+            "__globals__", "__code__", "__builtins__", "__closure__",
+            "__func__", "__self__", "__class__", "__bases__",
+            "__subclasses__", "__init__", "__import__",
+        }
+        if attr in dangerous_attrs:
+            self._block("DANGEROUS_ATTR",
+                        f"禁止访问危险属性 '{attr}'（可能用于沙盒逃逸）", node.lineno)
+
+    def visit_Call(self, node: ast.Call):
+        # 拦截危险函数调用
+        func_name = None
+        full_chain: List[str] = []
+
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+            full_chain = [func_name]
+        elif isinstance(node.func, ast.Attribute):
+            # 展开属性链 a.b.c
+            parts = []
+            curr = node.func
+            while isinstance(curr, ast.Attribute):
+                parts.append(curr.attr)
+                curr = curr.value
+            if isinstance(curr, ast.Name):
+                parts.append(curr.id)
+            full_chain = list(reversed(parts))
+            func_name = full_chain[-1] if full_chain else None
+
+        if func_name:
+            # ---- 绝对禁止的调用 ----
+            blocklist = {
+                "exec", "eval", "compile", "__import__", "open",
+                "reload", "breakpoint", "exit", "quit",
+                "getattr", "setattr", "delattr",
+                "globals", "locals", "vars",
+                "memoryview", "buffer",
+                "repr", "format", "eval",
+            }
+            if func_name in blocklist:
+                self._block("BLOCKED_FUNC",
+                            f"禁止调用危险函数 '{func_name}'", node.lineno)
+
+            # ---- subprocess 只有特定白名单模式才放行 ----
+            if full_chain and full_chain[0] == "subprocess":
+                allowed_sub = {"Popen", "run", "call", "check_output"}
+                if func_name not in allowed_sub:
+                    self._block("SUBPROCESS_UNSAFE",
+                                f"subprocess.{func_name}() 被禁止，仅允许 Popen/run/call", node.lineno)
+                else:
+                    # 即使是 Popen/run，也只能传 list/tuple，不接受 shell=True
+                    for k in ast.iter_child_nodes(node):
+                        if isinstance(k, ast.keyword) and k.arg == "shell":
+                            if isinstance(k.value, ast.Constant) and k.value.value is True:
+                                self._block("SUBPROCESS_SHELL",
+                                            "subprocess 禁止 shell=True", node.lineno)
+
+            # ---- os.system / os.popen ----
+            if full_chain and full_chain[0] == "os":
+                blocked_os = {"system", "popen", "spawn", "fork", "execv",
+                              "execl", "execle", "execlp", "execve", "execvp",
+                              "execlp2", "execvpe", "startfile", "remove",
+                              "unlink", "rmdir", "removedirs"}
+                if func_name in blocked_os:
+                    self._block("OS_DANGEROUS",
+                                f"os.{func_name}() 被禁止（禁止执行系统命令）", node.lineno)
+
+            # ---- 可疑的 getattr/setattr 链 ----
+            if func_name in ("getattr", "setattr", "delattr"):
+                if len(node.args) >= 2:
+                    # 第二个参数如果是字符串常量，限制只能是安全属性名
+                    second = node.args[1]
+                    if isinstance(second, ast.Constant) and isinstance(second.value, str):
+                        dangerous_attrs = {"__globals__", "__code__", "__builtins__",
+                                            "__closure__", "__class__", "__bases__",
+                                            "__subclasses__"}
+                        if second.value in dangerous_attrs:
+                            self._block("DYNAMIC_ATTR",
+                                        f"禁止通过 {func_name} 访问 '{second.value}'", node.lineno)
+
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        # 捕获链式逃逸尝试：().__class__.__bases__[0].__subclasses__()
+        parts = []
+        curr: ast.AST = node
+        while isinstance(curr, ast.Attribute):
+            parts.append(curr.attr)
+            curr = curr.value
+        if isinstance(curr, ast.Name):
+            parts.append(curr.id)
+        chain = ".".join(reversed(parts))
+
+        dangerous_chains = [
+            "__class__.__bases__",
+            "__class__.__mro__",
+            "__globals__",
+            "__code__",
+            "__closure__",
+            "__subclasses__",
+        ]
+        for dangerous in dangerous_chains:
+            if dangerous in chain or chain.endswith("." + dangerous.split(".")[-1]):
+                self._block("CHAIN_ESCAPE",
+                            f"危险属性链 '{chain}' 被禁止（沙盒逃逸尝试）", node.lineno)
+
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name):
+        if isinstance(node.ctx, ast.Load):
+            self._check_dangerous_name(node, node.ctx)
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import):
+        for alias in node.names:
+            name = alias.name.split(".")[0]
+            if name in {"ctypes", "socket", "ssl", "urllib", "http", "ftplib",
+                        "telnetlib", "xml.etree", "pickle", "marshal", "shelve"}:
+                self._block("IMPORT_BLOCKED",
+                            f"禁止 import {name}（网络/序列化危险模块）", node.lineno)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom):
+        if node.module:
+            mod = node.module.split(".")[0]
+            if mod in {"ctypes", "socket", "ssl", "urllib", "http", "ftplib",
+                       "telnetlib", "xml.etree", "pickle", "marshal", "shelve"}:
+                self._block("IMPORTFROM_BLOCKED",
+                            f"禁止 from {mod} import（网络/序列化危险模块）", node.lineno)
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Attribute):
+                dangerous_attrs = {"__globals__", "__builtins__", "__code__"}
+                if target.attr in dangerous_attrs:
+                    self._block("ASSIGN_DANGEROUS_ATTR",
+                                f"禁止赋值给 __globals__/__builtins__ 等", node.lineno)
+        self.generic_visit(node)
+
+
+def check_code_safety(source_code: str) -> List[Dict[str, str]]:
+    """
+    对用户代码执行 AST 静态安全检查。
+
+    检测范围：
+    - 沙盒逃逸链（__class__.__bases__, __subclasses__ 等）
+    - 危险函数调用（exec, eval, __import__, open 等）
+    - 可疑的动态属性访问（getattr/setattr 访问内部属性）
+    - subprocess shell=True
+    - os.system / os.popen 等系统命令执行
+    - ctypes/socket/pickle 等危险模块导入
+
+    Returns:
+        如果无违规返回空列表；否则返回违规详情列表。
+    """
+    try:
+        tree = ast.parse(source_code)
+    except SyntaxError:
+        # 语法错误交给 PythonCodeExecutor 自己的异常处理，不在这里拦截
+        return []
+
+    visitor = SandboxedASTVisitor(source_code)
+    visitor.visit(tree)
+    return visitor.violations
+
+
+def format_safety_violations(violations: List[Dict[str, str]]) -> str:
+    """将 AST 违规列表格式化为 LLM 可读的友好错误消息"""
+    if not violations:
+        return ""
+    lines = ["=" * 60, "🔒 AST 安全检查未通过 — 代码被沙盒拦截", "=" * 60]
+    for v in violations:
+        lines.append(f"  [{v['line']}] {v['type']}: {v['reason']}")
+    lines.append("=" * 60)
+    lines.append("【修复建议】请重写代码，避免使用上述危险操作。")
+    lines.append("  ✅ 可用替代：使用 geopandas/rasterio 等库代替直接系统调用")
+    lines.append("  ✅ 如需文件读取，仅通过 pandas/geopandas/rasterio 的安全接口")
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -93,6 +326,7 @@ def _build_sandbox_globals(
         "matplotlib", "mpl",
         "folium",
         "seaborn",
+        "contextily",
         # 科学计算
         "scipy",
         "sklearn",
@@ -115,6 +349,15 @@ def _build_sandbox_globals(
         "osmnx",
         "libpysal",
         "esda",
+        # STAC 云原生遥感
+        "pystac_client",
+        "pystac",
+        "planetary_computer",
+        # PyDeck 3D 可视化
+        "pydeck",
+        # 深度学习遥感（预置）
+        "torchgeo",
+        "segmentation_models_pytorch",
         # 栅格处理
         "rasterio.windows",
         "rasterio.mask",
@@ -126,6 +369,13 @@ def _build_sandbox_globals(
         "geopandas.datasets",
         # GDAL CLI 包装
         "subprocess",
+        # 遥感指数引擎
+        "spyndex",
+        "numexpr",
+        # 地理编码
+        "geopy",
+        # 三维点云
+        "laspy",
     ]
 
     # 标准库模块（总是安全的）
@@ -180,6 +430,245 @@ def _build_sandbox_globals(
 
     # 保存 session 引用用于状态追踪
     sandbox_globals["__geoagent_session__"] = session
+
+    # =============================================================================
+    # 沙盒注入：高级 Toolbox API — 替代面条代码的"工具箱"接口
+    # =============================================================================
+
+    class _ToolboxAPI:
+        """
+        高级 GIS 工具箱 API。
+
+        LLM 在沙盒中只需调用这些封装好的方法，
+        不用每次写 "import geopandas... gdf = gpd.read_file..." 的面条代码。
+
+        用法示例：
+            Toolbox.Buffer(input="河流.shp", distance=500, output="河流_buf.shp")
+            Toolbox.Intersect(in_features=["大厦小区.shp", "河流_buf.shp"], output="滨水小区.shp")
+            Toolbox.Clip(input="dem.tif", mask="研究区.shp", output="dem_clip.tif")
+        """
+
+        def __init__(self, _ws_path: Path):
+            self._ws = _ws_path
+
+        def _resolve(self, fname: str) -> Path:
+            p = Path(fname)
+            return p if p.is_absolute() else self._ws / p
+
+        def _auto_save(self, result, output: str) -> str:
+            """自动保存 GeoDataFrame/Raster 结果到文件"""
+            import geopandas as _gpd
+            import rasterio as _rio
+            import numpy as _np
+
+            out = self._resolve(output)
+            if isinstance(result, _gpd.GeoDataFrame):
+                out.parent.mkdir(parents=True, exist_ok=True)
+                driver = "ESRI Shapefile"
+                if str(out).endswith(".geojson"):
+                    driver = "GeoJSON"
+                elif str(out).endswith(".gpkg"):
+                    driver = "GPKG"
+                result.to_file(out, driver=driver)
+                return f"已保存到 {out}，共 {len(result)} 个要素"
+            elif isinstance(result, _np.ndarray):
+                out.parent.mkdir(parents=True, exist_ok=True)
+                return f"数组 shape={result.shape}，已计算完成"
+            return str(result)
+
+        def _run(self, func, *args, **kwargs) -> str:
+            """统一运行工具函数并捕获结果"""
+            try:
+                result = func(*args, **kwargs)
+                if isinstance(result, str):
+                    return result
+                output = kwargs.get("output") or kwargs.get("output_file")
+                if output:
+                    return self._auto_save(result, output)
+                return str(result)
+            except Exception as e:
+                return f"错误: {type(e).__name__}: {e}"
+
+        def Buffer(self, input: str, distance: float, output: str,
+                    dissolved: bool = False) -> str:
+            """矢量缓冲区分析"""
+            from geoagent.gis_tools.gis_task_tools import vector_buffer
+            return self._run(vector_buffer, input, output, distance, dissolved)
+
+        def Clip(self, input: str, mask: str = None,
+                 bounds: list = None, output: str = None) -> str:
+            """矢量/栅格裁剪"""
+            suffix = Path(input).suffix.lower()
+            if suffix in ['.shp', '.geojson', '.gpkg', '.json']:
+                from geoagent.gis_tools.gis_task_tools import vector_clip
+                if mask and output:
+                    return self._run(vector_clip, input, mask, output)
+                return "Clip: 需要 mask 和 output 参数"
+            else:
+                from geoagent.gis_tools.gis_task_tools import raster_clip
+                kwargs = {"input_file": input, "output_file": output}
+                if mask:
+                    kwargs["mask_file"] = mask
+                elif bounds:
+                    kwargs["output_bounds"] = bounds
+                return self._run(raster_clip, **kwargs)
+
+        def Intersect(self, in_features: list, output: str,
+                       keep_all: bool = True) -> str:
+            """矢量交集分析"""
+            from geoagent.gis_tools.gis_task_tools import vector_intersect
+            if len(in_features) < 2:
+                return "Intersect 需要至少 2 个输入文件"
+            return self._run(vector_intersect, in_features[0], in_features[1],
+                             output, keep_all)
+
+        def Union(self, in_features: list, output: str) -> str:
+            """矢量合并分析"""
+            from geoagent.gis_tools.gis_task_tools import vector_union
+            if len(in_features) < 2:
+                return "Union 需要至少 2 个输入文件"
+            return self._run(vector_union, in_features[0], in_features[1], output)
+
+        def SpatialJoin(self, target: str, join: str, output: str,
+                        how: str = "left", predicate: str = "intersects") -> str:
+            """空间连接"""
+            from geoagent.gis_tools.gis_task_tools import vector_spatial_join
+            return self._run(vector_spatial_join, target, join, output,
+                             how, predicate)
+
+        def Dissolve(self, input: str, output: str,
+                     by_field: str = None) -> str:
+            """矢量融合"""
+            from geoagent.gis_tools.gis_task_tools import vector_dissolve
+            return self._run(vector_dissolve, input, output, by_field)
+
+        def NDVI(self, input: str, output: str,
+                 nir_band: int = None, red_band: int = None,
+                 formula: str = None) -> str:
+            """计算 NDVI 植被指数"""
+            from geoagent.gis_tools.gis_task_tools import raster_calculate_index
+            if formula:
+                expr = formula
+            elif nir_band and red_band:
+                expr = f"(b{nir_band}-b{red_band})/(b{nir_band}+b{red_band})"
+            else:
+                # 自动检测波段数猜测公式
+                expr = "(b4-b3)/(b4+b3)"
+            return self._run(raster_calculate_index, input, expr, output)
+
+        def Reproject(self, input: str, output: str, target_crs: str) -> str:
+            """投影转换"""
+            from geoagent.gis_tools.gis_task_tools import raster_reproject
+            return self._run(raster_reproject, input, output, target_crs)
+
+        def Slope(self, input: str, output: str, z_factor: float = 1.0) -> str:
+            """DEM 坡度分析"""
+            from geoagent.gis_tools.gis_task_tools import raster_slope
+            return self._run(raster_slope, input, output, z_factor)
+
+        def Hillshade(self, input: str, output: str,
+                      azimuth: float = 315.0, altitude: float = 45.0) -> str:
+            """山体阴影"""
+            from geoagent.gis_tools.gis_task_tools import raster_hillshade
+            return self._run(raster_hillshade, input, output, azimuth, altitude)
+
+        def Contour(self, input: str, output: str,
+                    interval: float = 10.0) -> str:
+            """等高线提取"""
+            from geoagent.gis_tools.gis_task_tools import raster_contour
+            return self._run(raster_contour, input, output, interval)
+
+        def KernelDensity(self, input: str, output: str,
+                          population: str = None,
+                          bandwidth: float = 1000.0) -> str:
+            """核密度分析"""
+            from geoagent.gis_tools.gis_task_tools import spatial_kernel_density
+            return self._run(spatial_kernel_density, input, output,
+                             population, bandwidth)
+
+        def MoransI(self, input: str, field: str) -> str:
+            """全局 Moran's I 空间自相关"""
+            from geoagent.gis_tools.gis_task_tools import spatial_morans_i
+            return self._run(spatial_morans_i, input, field)
+
+        def Hotspot(self, input: str, field: str, output: str) -> str:
+            """Getis-Ord Gi* 热点分析"""
+            from geoagent.gis_tools.gis_task_tools import spatial_hotspot
+            return self._run(spatial_hotspot, input, output, field)
+
+        def CRS(self, input: str, transform_from: str = None,
+                transform_to: str = None, output: str = None) -> str:
+            """坐标系统工具"""
+            if transform_from and transform_to:
+                from geoagent.gis_tools.gis_task_tools import crs_transform
+                return self._run(crs_transform, input, output, transform_from, transform_to)
+            else:
+                from geoagent.gis_tools.gis_task_tools import crs_query
+                return self._run(crs_query, input)
+
+        def FlowAccum(self, input: str, output: str,
+                      log: bool = False) -> str:
+            """汇流累积量（WhiteboxTools）"""
+            from geoagent.gis_tools.gis_task_tools import hydrology_flow_accumulation
+            return self._run(hydrology_flow_accumulation, input, output, log)
+
+        def Watershed(self, pour_points: str, flow_dir: str,
+                      output: str, threshold: float = 1000.0) -> str:
+            """流域划分（WhiteboxTools）"""
+            from geoagent.gis_tools.gis_task_tools import hydrology_watershed
+            return self._run(hydrology_watershed, pour_points, output,
+                             flow_dir, threshold)
+
+        def FoliumMap(self, input_files: list, output: str,
+                      center: list = None, zoom: int = 10,
+                      style: str = "default") -> str:
+            """交互式 Web 地图"""
+            from geoagent.gis_tools.gis_task_tools import map_folium_interactive
+            return self._run(map_folium_interactive, input_files, output,
+                             center, zoom, style=style)
+
+        def StaticPlot(self, input: str, output: str,
+                       column: str = None,
+                       cmap: str = "viridis") -> str:
+            """静态专题地图"""
+            from geoagent.gis_tools.gis_task_tools import map_static_plot
+            return self._run(map_static_plot, input, output, column, cmap)
+
+        def ConvertFormat(self, input: str, output: str) -> str:
+            """格式转换"""
+            from geoagent.gis_tools.gis_task_tools import db_convert_format
+            return self._run(db_convert_format, input, output)
+
+        def BatchConvert(self, folder: str, output_folder: str,
+                         target_format: str = "GeoJSON") -> str:
+            """批量格式转换"""
+            from geoagent.gis_tools.gis_task_tools import db_batch_convert
+            return self._run(db_batch_convert, folder, target_format, output_folder)
+
+        def info(self) -> str:
+            """显示 Toolbox 可用方法"""
+            methods = [m for m in dir(self) if not m.startswith("_") and callable(getattr(self, m))]
+            return "Toolbox 可用方法:\n" + "\n".join(f"  - {m}" for m in methods)
+
+    sandbox_globals["Toolbox"] = _ToolboxAPI(workspace_path)
+    sandbox_globals["TB"] = sandbox_globals["Toolbox"]  # 简短别名
+
+    # =============================================================================
+    # 🌟 GeoToolbox 全家桶注入 — 七大矩阵矢量/栅格/路网/统计/LiDAR/CloudRS/可视化
+    # =============================================================================
+    try:
+        from geoagent.gis_tools.geo_toolbox import GeoToolbox
+        sandbox_globals["GeoToolbox"] = GeoToolbox
+        # 注入各矩阵子类简写，LLM 可以直接 Vector.buffer() 而不是 GeoToolbox.Vector.buffer()
+        sandbox_globals["Vector"] = GeoToolbox.Vector
+        sandbox_globals["Raster"] = GeoToolbox.Raster
+        sandbox_globals["Network"] = GeoToolbox.Network
+        sandbox_globals["Stats"] = GeoToolbox.Stats
+        sandbox_globals["Viz"] = GeoToolbox.Viz
+        sandbox_globals["LiDAR"] = GeoToolbox.LiDAR
+        sandbox_globals["CloudRS"] = GeoToolbox.CloudRS
+    except ImportError:
+        pass  # 降级：GeoToolbox 不可用时沙盒仍正常运行
 
     return sandbox_globals
 
@@ -246,6 +735,33 @@ class PythonCodeExecutor:
         """
         self.session.iteration_count += 1
         iteration = self.session.iteration_count
+
+        # Phase 1 核心：AST 静态安全检查，在 exec 前拦截危险代码
+        if mode == "exec":
+            violations = check_code_safety(user_code)
+            if violations:
+                err_report = format_safety_violations(violations)
+                self.session.error_patterns["SandboxBlocked"] = \
+                    self.session.error_patterns.get("SandboxBlocked", 0) + 1
+                self.session.consecutive_failures += 1
+                self.session.total_execution_time_ms += 0
+                return {
+                    "success": False,
+                    "stdout": "",
+                    "stderr": err_report,
+                    "error_type": "SandboxBlocked",
+                    "error_summary": f"沙盒拦截了 {len(violations)} 个危险操作",
+                    "return_value": None,
+                    "variables": {},
+                    "files_created": [],
+                    "elapsed_ms": 0,
+                    "iteration": iteration,
+                    "session_id": self.session_id,
+                    "is_converged": self._is_converged(),
+                    "consecutive_failures": self.session.consecutive_failures,
+                    "total_iterations": self.session.iteration_count,
+                    "hint": "【沙盒安全】代码被 AST 安全检查器拦截。请重写为使用 GIS 库（geopandas/rasterio/osmnx 等）而非直接系统调用。",
+                }
 
         # 累积代码历史
         self.session.cumulative_code += "\n" + user_code
@@ -849,4 +1365,6 @@ __all__ = [
     "CodeSession",
     "ExecutionResult",
     "run_python_code",
+    "check_code_safety",
+    "format_safety_violations",
 ]

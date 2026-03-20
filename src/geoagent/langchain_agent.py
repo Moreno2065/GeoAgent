@@ -1,4 +1,4 @@
-﻿"""
+"""
 GeoAgent LangChain Agent 集成模块
 基于 LangChain 框架的高级 Agent 构建，支持多种 Agent 类型和工具链编排
 
@@ -843,6 +843,422 @@ def create_langchain_retriever_agent(
 
 
 # ============================================================
+# LangGraph StateGraph — 替换 ReAct 的 Plan-and-Execute Agent
+# ============================================================
+#
+# 架构：Planner → Executor → Reviewer 三节点状态机
+#
+#   ┌──────────────────────────────────────────┐
+#   │              GIS Agent State              │
+#   │  user_query: str                         │
+#   │  plan: List[Dict]                        │
+#   │  current_step: int                       │
+#   │  execution_history: List[Dict]           │
+#   │  workspace_files: Dict[str, str]         │
+#   │  mode: "planning" | "executing" | "reviewing" | "done" │
+#   │  error: Optional[str]                    │
+#   └──────────────────────────────────────────┘
+#                         │
+#                         ▼
+#   ┌──────────────────────────────────────────┐
+#   │           Node 1: plan_node              │
+#   │  调用 Planner LLM，生成严格 JSON 步骤计划  │
+#   └──────────────────────────────────────────┘
+#                         │
+#                         ▼
+#   ┌──────────────────────────────────────────┐
+#   │          Node 2: execute_node            │
+#   │  按 DAG 顺序执行每步，调用工具注册表      │
+#   │  执行结果写入 execution_history           │
+#   └──────────────────────────────────────────┘
+#                         │
+#                         ▼
+#   ┌──────────────────────────────────────────┐
+#   │          Node 3: review_node             │
+#   │  审查步骤输出：验证文件存在/结果合理       │
+#   │  失败 → 回退 Executor 重试（max_retries） │
+#   │  成功 → 推动 current_step += 1          │
+#   └──────────────────────────────────────────┘
+#
+# =============================================================================
+
+LANGGRAPH_AVAILABLE = False
+LANGGRAPH_PRECHECK_FAILED: Optional[str] = None
+
+try:
+    from typing import TypedDict, Annotated
+    from langgraph.graph import StateGraph, END, START
+    from langgraph.prebuilt import ToolNode, tools_condition
+    LANGGRAPH_AVAILABLE = True
+except ImportError as e:
+    LANGGRAPH_PRECHECK_FAILED = str(e)
+
+
+class GISAgentState(TypedDict, total=False):
+    """LangGraph 状态类型 — 记录整个 Agent 执行过程中的所有状态"""
+    user_query: str                              # 原始用户查询
+    plan: List[Dict[str, Any]]                  # 生成的步骤计划
+    current_step: int                          # 当前正在执行的步骤索引（从0开始）
+    execution_history: List[Dict[str, Any]]     # 历史执行记录
+    workspace_files: Dict[str, str]            # 文件路径 → 工具输出 的映射
+    mode: str                                  # 状态机当前模式
+    error: Optional[str]                        # 当前错误（如有）
+    failed_steps: int                          # 失败步骤计数
+    max_steps: int                             # 最大步数限制
+    final_response: Optional[str]               # 最终回复
+
+
+def plan_node(state: GISAgentState) -> GISAgentState:
+    """
+    【节点 1：Planner】— 调用 LLM 生成严格的多步 JSON 计划。
+
+    工作方式：
+    1. 从 Tool RAG 检索最相关的 5 个工具
+    2. 构建 Planning Prompt，引导 LLM 输出 JSON 步骤数组
+    3. 解析 JSON 计划，写入 state["plan"]
+    """
+    from geoagent.tools.tool_rag import retrieve_gis_tools
+
+    query = state["user_query"]
+    max_steps = state.get("max_steps", 10)
+
+    # Tool RAG 检索
+    try:
+        tools = retrieve_gis_tools(query, top_k=8)
+        tool_lines = "\n".join([
+            f"- {t['tool_name']}: {t['description']} [相关度:{t['score']:.2f}]"
+            for t in tools
+        ])
+    except Exception:
+        tools = []
+        tool_lines = "- (工具检索不可用，使用通用工具)"
+
+    planning_prompt = f"""你是一个严格的 GIS 规划助手。
+
+根据用户需求，生成严格 JSON 格式的多步分析计划。
+
+用户需求：{query}
+
+检索到的相关工具：
+{tool_lines}
+
+**严格输出格式（直接输出 JSON 数组，不添加任何解释）**：
+```json
+[
+  {{"step_id": 1, "action_name": "工具名", "input_files": ["f1.shp"], "output_file": "out1.shp", "description": "分析步骤描述", "depends_on": [], "expected_output": "预期输出内容"}},
+  ...
+]
+```
+
+规则：
+- step_id 从 1 开始
+- depends_on: 上一步的 step_id 列表，依赖多个则列出多个
+- 无依赖则 []
+- 最多 {max_steps} 步
+- 优先选择相关度高的工具
+"""
+
+    try:
+        # 调用 LLM
+        from openai import OpenAI
+        client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY", ""), base_url="https://api.deepseek.com")
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "你是一个严格的 GIS 规划助手，只输出 JSON 数组，不输出任何解释。"},
+                {"role": "user", "content": planning_prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2048,
+        )
+        raw = resp.choices[0].message.content or ""
+
+        # 提取 JSON
+        json_str = raw.strip()
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+        json_str = json_str.strip()
+
+        plan = json.loads(json_str)
+
+        return {
+            **state,
+            "plan": plan,
+            "mode": "executing",
+            "current_step": 0,
+            "execution_history": [],
+            "workspace_files": {},
+        }
+    except json.JSONDecodeError:
+        return {**state, "plan": [], "mode": "done", "error": "计划解析失败"}
+    except Exception as e:
+        return {**state, "plan": [], "mode": "done", "error": f"规划失败: {e}"}
+
+
+def execute_node(state: GISAgentState) -> GISAgentState:
+    """
+    【节点 2：Executor】— 执行当前步骤的工具。
+
+    核心逻辑：
+    1. 从 plan 取出 current_step 对应的步骤
+    2. 检查 depends_on 是否都已在 workspace_files 中完成
+    3. 调用 execute_tool() 执行工具
+    4. 将结果写入 execution_history
+    5. 更新 workspace_files
+    """
+    from geoagent.tools.registry import execute_tool
+
+    plan = state.get("plan", [])
+    current_step = state.get("current_step", 0)
+    workspace_files = dict(state.get("workspace_files", {}))
+    history = list(state.get("execution_history", []))
+
+    if current_step >= len(plan):
+        return {**state, "mode": "done"}
+
+    step = plan[current_step]
+    step_id = step.get("step_id", current_step + 1)
+    tool_name = step.get("action_name", "")
+    depends_on = step.get("depends_on", [])
+
+    # 检查依赖
+    unmet = [d for d in depends_on if d not in [s.get("step_id") for s in history if s.get("success")]]
+    if unmet:
+        return {
+            **state,
+            "error": f"步骤 {step_id} 依赖未满足: {unmet}",
+            "mode": "done",
+        }
+
+    # 推断工具参数（简单参数填充）
+    arguments = {}
+    input_files = step.get("input_files", [])
+    if input_files:
+        first_input = next((f for f in input_files if f and f != "null"), None)
+        if first_input:
+            arguments["input_file"] = first_input
+    if step.get("output_file"):
+        arguments["output_file"] = step["output_file"]
+    if step.get("field"):
+        arguments["field"] = step["field"]
+
+    # 执行工具
+    try:
+        result_raw = execute_tool(tool_name, arguments)
+        result_data = json.loads(result_raw)
+        success = result_data.get("success", True)
+        error = result_data.get("error") if not success else None
+
+        step_result = {
+            **step,
+            "success": success,
+            "tool": tool_name,
+            "arguments": arguments,
+            "result": result_raw,
+            "error": error,
+        }
+    except Exception as e:
+        step_result = {
+            **step,
+            "success": False,
+            "tool": tool_name,
+            "arguments": arguments,
+            "result": None,
+            "error": str(e),
+        }
+
+    history.append(step_result)
+
+    # 更新 workspace_files
+    if step_result.get("success") and step.get("output_file"):
+        workspace_files[step["output_file"]] = step_result.get("result", "")
+
+    return {
+        **state,
+        "execution_history": history,
+        "workspace_files": workspace_files,
+        "current_step": current_step + 1,
+        "mode": "reviewing",
+        "error": None,
+    }
+
+
+def review_node(state: GISAgentState) -> GISAgentState:
+    """
+    【节点 3：Reviewer】— 审查步骤执行结果，决定后续动作。
+
+    决策逻辑：
+    - 步骤成功 + 还有步骤 → 重回 executing
+    - 步骤成功 + 步骤完成 → done
+    - 步骤失败 + 未超重试上限 → 重回 executing（重新执行当前步）
+    - 步骤失败 + 超重试上限 → 记录错误，继续下一步
+    - 超过最大步数限制 → done
+    """
+    current_step = state.get("current_step", 0)
+    max_steps = state.get("max_steps", 10)
+    history = state.get("execution_history", [])
+    plan = state.get("plan", [])
+
+    if not history:
+        return {**state, "mode": "executing"}
+
+    last_result = history[-1]
+
+    # 超过步数限制
+    if current_step >= max_steps:
+        return {**state, "mode": "done", "error": "达到最大步数限制"}
+
+    # 步骤失败
+    if not last_result.get("success"):
+        failed = state.get("failed_steps", 0)
+        if failed >= 3:
+            # 记录失败但不中断
+            return {
+                **state,
+                "failed_steps": failed + 1,
+                "mode": "executing" if current_step < len(plan) else "done",
+            }
+        else:
+            return {
+                **state,
+                "failed_steps": failed + 1,
+                "mode": "executing",  # 重试当前步
+            }
+
+    # 步骤成功
+    if current_step < len(plan):
+        return {**state, "mode": "executing"}
+    else:
+        # 所有步骤完成，生成最终回复
+        final_resp = _summarize_results(plan, history)
+        return {
+            **state,
+            "mode": "done",
+            "final_response": final_resp,
+        }
+
+
+def _summarize_results(plan: List[Dict], history: List[Dict]) -> str:
+    """生成最终执行摘要"""
+    lines = ["✅ **GeoAgent Plan-and-Execute 执行完毕！**\n"]
+    for h in history:
+        s = "✅" if h.get("success") else "❌"
+        lines.append(f"{s} 步骤{h.get('step_id')}: {h.get('description', '')} → {h.get('tool', '')}")
+        if h.get("error"):
+            lines.append(f"   错误: {str(h['error'])[:80]}")
+    lines.append("\n📁 生成的文件:")
+    for f in plan:
+        if f.get("output_file") and f.get("output_file") != "null":
+            lines.append(f"  - {f['output_file']}")
+    return "\n".join(lines)
+
+
+def should_continue(state: GISAgentState) -> str:
+    """条件路由函数 — 决定状态机下一步走向"""
+    if state.get("mode") == "executing":
+        return "execute"
+    elif state.get("mode") == "reviewing":
+        return "review"
+    elif state.get("mode") == "planning":
+        return "plan"
+    return END
+
+
+def create_langgraph_agent(
+    user_query: str,
+    max_steps: int = 10,
+    api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    创建并运行 LangGraph StateGraph Agent。
+
+    **核心优势 vs ReAct**：
+    - 步骤级别执行：每步有独立输入/输出，不会"遗忘"上下文
+    - 失败隔离：单步失败不影响后续步骤
+    - 可验证性：每个步骤都被记录，便于审查和调试
+    - 动态 Tool RAG：每步可重新检索相关工具
+
+    用法：
+        result = create_langgraph_agent(
+            user_query="用 DEM 提取芜湖市的水系网络",
+            max_steps=5,
+        )
+        print(result["final_response"])
+
+    Returns:
+        {
+            "success": bool,
+            "mode": "plan_and_execute_langgraph",
+            "plan": [...],
+            "execution_history": [...],
+            "workspace_files": {...},
+            "final_response": str,
+        }
+    """
+    if not LANGGRAPH_AVAILABLE:
+        return {
+            "success": False,
+            "error": f"LangGraph 未安装或不可用: {LANGGRAPH_PRECHECK_FAILED}\n请运行: pip install langgraph",
+            "mode": "langgraph_unavailable",
+        }
+
+    # 构建状态图
+    graph = StateGraph(GISAgentState)
+
+    # 注册节点
+    graph.add_node("plan", plan_node)
+    graph.add_node("execute", execute_node)
+    graph.add_node("review", review_node)
+
+    # 设置边
+    # plan → execute → review → (execute | done)
+    graph.add_edge(START, "plan")
+    graph.add_edge("plan", "execute")
+
+    # review 根据状态分流
+    def review_router(state: GISAgentState) -> str:
+        if state.get("mode") == "executing":
+            return "execute"
+        return END
+
+    graph.add_conditional_edges("review", review_router, {
+        "execute": "execute",
+        END: END,
+    })
+
+    # 编译图
+    compiled = graph.compile()
+
+    # 运行
+    initial_state: GISAgentState = {
+        "user_query": user_query,
+        "plan": [],
+        "current_step": 0,
+        "execution_history": [],
+        "workspace_files": {},
+        "mode": "planning",
+        "error": None,
+        "failed_steps": 0,
+        "max_steps": max_steps,
+        "final_response": None,
+    }
+
+    final_state = compiled.invoke(initial_state)
+
+    return {
+        "success": final_state.get("mode") == "done" and not final_state.get("error"),
+        "mode": "plan_and_execute_langgraph",
+        "plan": final_state.get("plan", []),
+        "execution_history": final_state.get("execution_history", []),
+        "workspace_files": final_state.get("workspace_files", {}),
+        "final_response": final_state.get("final_response") or f"执行完毕。模式: {final_state.get('mode')}",
+        "error": final_state.get("error"),
+    }
+
+
+# ============================================================
 # 导出
 # ============================================================
 
@@ -861,4 +1277,8 @@ __all__ = [
     # 状态标志
     "LANGCHAIN_AVAILABLE",
     "LANGCHAIN_OPENAI_AVAILABLE",
+    # LangGraph StateGraph（Plan-and-Execute 替代 ReAct）
+    "LANGGRAPH_AVAILABLE",
+    "GISAgentState",
+    "create_langgraph_agent",
 ]

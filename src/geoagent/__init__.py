@@ -1,4 +1,4 @@
-﻿"""
+"""
 GeoAgent - 基于 DeepSeek API 的空间智能 GIS 分析 Agent
 ================================================================
 标准的 Python 包结构，支持:
@@ -18,6 +18,14 @@ from geoagent.version import __version__
 
 # 公开 API
 from geoagent.core import GeoAgent, create_agent, GIS_EXPERT_SYSTEM_PROMPT
+
+# LangGraph Workflow（可选，优雅降级）
+try:
+    from geoagent.workflow import GeoAgentWorkflow
+    LANGGRAPH_AVAILABLE = True
+except ImportError:
+    GeoAgentWorkflow = None
+    LANGGRAPH_AVAILABLE = False
 
 # LangChain Agent（可选，优雅降级）
 try:
@@ -61,6 +69,9 @@ __all__ = [
     "GeoAgent",
     "create_agent",
     "GIS_EXPERT_SYSTEM_PROMPT",
+    # LangGraph Workflow
+    "GeoAgentWorkflow",
+    "LANGGRAPH_AVAILABLE",
     # LangChain
     "GISReActAgent",
     "create_gis_react_agent",

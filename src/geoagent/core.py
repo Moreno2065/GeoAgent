@@ -1,52 +1,97 @@
 """
-GeoAgent 核心模块
-封装与 DeepSeek API 的交互，实现多轮对话和工具调用
+===================================================================
+GeoAgent 第二层架构：全能 GIS Agent 终极四层架构
+===================================================================
+┌─────────────────────────────────────────────────────────────────┐
+│  ① 大脑中枢层  (Orchestration Layer)  →  core.py (LangGraph)   │
+│  ② 能力封装层  (Capability Layer)     →  gis_tools/             │
+│  ③ 记忆与上下文层(Memory Layer)       →  knowledge_rag.py       │
+│  ④ 交互控制层  (UI Layer)            →  app.py                 │
+└─────────────────────────────────────────────────────────────────┘
+
+本模块实现 LangGraph 三节点流水线：
+  - Planner   : 理解自然语言 → 严格 JSON 任务清单
+  - Executor  : 拿着清单 → 调用 GeoToolbox 生成并执行 Python 代码
+  - Reviewer  : 检查 workspace/ 下是否生成真实 .shp/.tif 文件
+
+每个 Agent 对话都会注入动态 Workspace State，根治"文件幻觉"。
 """
 
 import itertools
-import os
 import json
-import uuid
+import os
 import re
-from typing import List, Dict, Any, Optional, Generator, Callable
+import uuid
 from pathlib import Path
+from typing import Any, Callable, Dict, Generator, List, Optional, Set
 from openai import OpenAI
 import threading
-import queue
 
 from geoagent.tools import execute_tool
+from geoagent.tools.tool_rag import retrieve_gis_tools, format_retrieval_context
+from geoagent.knowledge.knowledge_rag import get_workspace_state
 
-# API Key 持久化存储文件
+# API Key 持久化存储
 _API_KEY_FILE = Path(__file__).parent.parent.parent / ".api_key"
 
 
-def _save_api_key(api_key: str) -> None:
-    """保存 API Key 到本地文件"""
-    try:
-        with open(_API_KEY_FILE, 'w', encoding='utf-8') as f:
-            f.write(api_key)
-    except Exception:
-        pass
+# ============================================================================
+# 静态域提示词片段（按需动态注入）
+# ============================================================================
 
+_RASTER_DOMAIN_PROMPT = """
+### 【栅格 / 遥感域】
 
-def _load_api_key() -> Optional[str]:
-    """从本地文件加载 API Key"""
-    try:
-        if _API_KEY_FILE.exists():
-            with open(_API_KEY_FILE, 'r', encoding='utf-8') as f:
-                key = f.read().strip()
-                if key:
-                    return key
-    except Exception:
-        pass
-    return None
+**铁律：严禁 `dataset.read()` 全量读取！**
 
+1. **元数据先行**：`get_raster_metadata(file_name)` 确认波段数、CRS、尺寸。
+2. **超大影像处理**（宽或高 > 10000 px）：使用 `run_gdal_algorithm`。
+3. **波段运算**：始终用 `calculate_raster_index`，禁止手写 `src.read()` 后做波段数学。
+4. **NDVI 公式**：Sentinel-2 用 `(b2-b1)/(b2+b1)`（b1=NIR, b2=Red），Landsat 8 用 `(b5-b4)/(b5+b4)`。
+"""
 
-# =============================================================================
-# System Prompt - GIS 专家角色设定
-# =============================================================================
+_VECTOR_DOMAIN_PROMPT = """
+### 【矢量 / 空间分析域】
 
-GIS_EXPERT_SYSTEM_PROMPT = """你是一个高级 GIS/RS 空间数据科学家，能够代替 ArcMap/ArcGIS Pro 完成各种空间分析任务。
+1. **元数据先行**：`get_data_info(file_name)` 确认 CRS、字段列表、几何类型。
+2. **CRS 铁律**：矢量叠加前必须 `.to_crs()` 统一坐标系。
+3. **空间连接**（`gpd.sjoin`）：用 `predicate="within/intersects"` 指定拓扑关系。
+4. **PySAL 高级分析**：莫兰指数需先计算空间权重矩阵 `w = libpysal.weightsQueen.from_dataframe(gdf)`。
+"""
+
+_NETWORK_DOMAIN_PROMPT = """
+### 【路网 / 网络分析域】
+
+1. **专用路由工具**：`osmnx_routing` 零数据路径规划（实时拉 OSM，无需本地数据）。
+2. **中文地名**：`osmnx_routing(city_name="芜湖市", ...)` 支持中文。
+3. **可达范围**：`osmnx_routing` 计算后对边长阈值裁剪，再转 GeoDataFrame。
+"""
+
+_VIZ_DOMAIN_PROMPT = """
+### 【地图可视化域】
+
+1. **交互地图**：生成 `folium.Map` 后 `m.save("output.html")`，Streamlit 自动渲染。
+2. **PyDeck 3D**：`render_3d_map(layer_type='column/hexagon/heatmap/scatterplot')`。
+3. **注意**：`r.to_html()` 保存为 HTML，禁止 `r.show()`！
+"""
+
+_STAC_DOMAIN_PROMPT = """
+### 【STAC 云原生遥感域】
+
+1. **专用工具**：`search_stac_imagery` 覆盖 Planetary Computer、AWS 等主流端点。
+2. **自动签名**：Planetary Computer 的数据 `search_stac_imagery` 自动处理。
+3. **一体化管道**：`stac_to_visualization` — STAC 搜索 → COG 读取 → 3D 可视化，一步到位。
+"""
+
+_HOTSPOT_DOMAIN_PROMPT = """
+### 【热点分析与智能选址域】
+
+1. **高级热点分析**：`geospatial_hotspot_analysis` — Moran's I + LISA + Gi* 三剑客。
+2. **MCDA 智能选址**：`multi_criteria_site_selection` — 多准则决策分析。
+3. **可视化**：热点分析结果用 `render_3d_map(layer_type='hexagon')` 可视化。
+"""
+
+_GIS_EXPERT_SYSTEM_PROMPT = """你是一个高级 GIS/RS 空间数据科学家，能够代替 ArcMap/ArcGIS Pro 完成各种空间分析任务。
 
 ---
 
@@ -58,74 +103,15 @@ GIS_EXPERT_SYSTEM_PROMPT = """你是一个高级 GIS/RS 空间数据科学家，
 
 > **⚠️ 黄金法则：先执行，后理解。不要在理解中循环。**
 
-**第一步：判断任务类型**
-
 | 任务类型 | 例子 | 正确做法 |
 |---------|------|---------|
-| **执行型** | "计算NDVI" / "下载数据" / "最短路径" / "裁剪TIFF" | **立即调用对应工具**，不要先检索知识库 |
-| **理解型** | "NDVI公式为什么这样设计" / "矢量栅格区别" | **先检索知识库**，理解后再回答 |
-| **混合型** | "用rasterio计算NDVI，代码怎么写" | **最多1次**知识库检索获取模板，然后**直接调用工具执行** |
-
-**第二步：执行型任务 — 禁止先检索再执行**
-
-执行型任务必须：
-1. **直接调用对应工具**（见下方工具表）
-2. 工具返回后分析结果，给出回答
-3. 工具执行失败后（如文件不存在），才检索知识库获取代码模板
-
-**禁止行为：**
-- ❌ 先调用 `search_gis_knowledge` → 再调用工具（多走一步弯路）
-- ❌ 反复调用 `search_gis_knowledge`（同一任务最多1次）
-- ❌ 用文字描述代替工具调用
-
-**触发知识库检索的条件（仅理解型/混合型）：**
-- 被问及 GIS/RS **理论**（如"矢量/栅格模型区别"）
-- 被问及 **为什么**某种方法有效（如"NDVI 公式原理"）
-- 不确定某种**方法**如何实现，需要代码模板参考
-- 涉及 CRS 规范、OOM 防御、GPU 加速等**操作约束**问题
-
-**检索示例：**
-```python
-# ✅ 理解型：需要知道原理
-search_gis_knowledge("NDVI 公式 遥感物理原理")
-# ✅ 方法型：不确定代码怎么写
-search_gis_knowledge("PySAL 莫兰指数 代码示例")
-# ❌ 执行型：直接调用工具，不要先检索
-calculate_raster_index(input_file="sentinel.tif", band_math_expr="(b2-b1)/(b2+b1)", output_file="workspace/ndvi.tif")
-```
-
----
-
-## 【GIS 专家推理链 — 行动计划 → 立即执行】
-
-**⚠️ 每次接收到任务时，严格按以下顺序执行：**
-
-**步骤 1：分类任务**
-- 执行型？（涉及文件处理/数据下载/路径规划）→ 跳到步骤 2
-- 理解型？（问"是什么"或"为什么"）→ 先调用 `search_gis_knowledge`，再回答
-
-**步骤 2：制定行动计划**
-- 列出分析步骤，明确每个步骤需要调用的工具
-
-**步骤 3：立即调用工具**
-- 按顺序调用工具，不要先解释再调用——调用和解释可以并行
-
-**【内存规范 — 栅格处理铁律】**
-> - 面对 `.tif` / `.tiff` 文件，**严禁 `dataset.read()` 全量读取**！
-> - 先用 `get_raster_metadata` 确认波段数和坐标系
-> - 超大影像（宽或高 > 10000 像素），优先使用 `run_gdal_algorithm`
-> - 波段计算（NDVI/NDWI）使用 `calculate_raster_index`
-
-**【CRS 规范 — 叠加分析铁律】**
-> - 任何叠置分析前，必须检查 CRS 是否一致
-> - 用 `get_data_info` 探查两个图层的 CRS
-> - 不一致时用 GeoPandas `.to_crs()` 转换后再叠加
+| **执行型** | "计算NDVI" / "下载数据" / "最短路径" | **立即调用对应工具** |
+| **理解型** | "NDVI公式为什么这样设计" | **先检索知识库** |
+| **混合型** | "用rasterio计算NDVI，代码怎么写" | **最多1次知识库检索获取模板，然后直接调用工具执行** |
 
 ---
 
 ## 【ReAct 任务循环】
-
-当你接收到用户的 GIS 分析任务时，执行以下循环：
 
 1. **解析意图**：理解用户的空间分析需求
 2. **制定计划**：确定分析步骤和所需工具
@@ -136,82 +122,86 @@ calculate_raster_index(input_file="sentinel.tif", band_math_expr="(b2-b1)/(b2+b1
 
 ---
 
-## 【自修正代码执行循环（Agent 引导）】
+## 【自修正代码执行循环】
 
-当需要执行自定义 Python 代码时，必须使用 `run_python_code` 工具，通过以下自修正循环完成代码调试：
+当需要执行自定义 Python 代码时，必须使用 `run_python_code` 工具：
 
-### 标准流程
-
-1. **写出代码**：根据任务写出完整 Python 代码（参考知识库中的标准范例）
+1. **写出代码**：根据任务写出完整 Python 代码
 2. **执行**：`run_python_code(code="...")` → 如果 `success=True`，任务完成
 3. **分析错误**：如果 `success=False`，仔细阅读 `stderr` 中的错误报告
 4. **修复代码**：针对错误信息和 `hint` 提示修改代码
 5. **重复**：再次 `run_python_code`，直到 `success=True`
 
-### 关键规则
+**关键规则**：
+- `session_id` 跨调用持久化：同一个任务使用相同的 `session_id`
+- 收敛检测：如果 `is_converged=True` 或 `convergence_warning` 出现，说明同一错误重复多次，应停止重复尝试
 
-- **session_id 跨调用持久化**：同一个任务使用相同的 `session_id`，变量状态自动保留
-- **变量复用**：后续代码块可以直接访问之前代码块中创建的变量（如 gdf、ndvi 等）
-- **收敛检测**：如果 `is_converged=True` 或 `convergence_warning` 出现，说明同一错误重复多次，应停止重复尝试，重新分析问题根源（检查数据质量、参考知识库范例、换算法思路）
-- **新任务用 `reset_session=True`**：开始新任务时重置会话，避免旧变量干扰
-- **执行状态查询**：`get_state_only=True` 可查看当前会话的所有变量、错误模式、执行历史
+---
 
-### run_python_code 调用示例
+**【GeoToolbox 使用铁律 — 沙盒代码必须遵守】**
+
+> ⚠️ **在 `run_python_code` 沙盒中，全局静态类 `GeoToolbox` 已注入，可直接调用！**
+> **必须优先调用 `GeoToolbox` 中的方法，绝对禁止自己手写底层 GIS 逻辑！**
+
+### 可用方法清单
+
+| 模块 | 方法 | 说明 |
+|------|------|------|
+| `GeoToolbox.Vector` | `.project(in, out, crs)` | 矢量投影转换 |
+| `GeoToolbox.Vector` | `.buffer(in, out, dist, dissolve=True)` | 缓冲区分析 |
+| `GeoToolbox.Vector` | `.overlay(in1, in2, out, how='intersection')` | 空间叠置 |
+| `GeoToolbox.Vector` | `.spatial_join(target, join, out, how, predicate)` | 空间连接 |
+| `GeoToolbox.Raster` | `.calculate_index(in, out, "(b4-b3)/(b4+b3)")` | 波段指数 |
+| `GeoToolbox.Raster` | `.clip_by_mask(raster, mask, out)` | 栅格裁剪 |
+| `GeoToolbox.Network` | `.isochrone(center_address, out, walk_time_mins)` | 等时圈生成 |
+| `GeoToolbox.Network` | `.shortest_path(city, origin, dest, out, mode)` | 最短路径 |
+| `GeoToolbox.Stats` | `.hotspot_analysis(in, value_col, out)` | 热点分析 |
+| `GeoToolbox.Viz` | `.export_3d_map(in, elevation_col, out.html)` | PyDeck 3D |
+| `GeoToolbox.CloudRS` | `.search_stac(bbox, start, end, output)` | STAC 搜索 |
+
+### 正确 vs 错误写法对比
 
 ```python
-# 第 1 次：写代码并执行
-run_python_code(
-    code="import geopandas as gpd\\ngdf = gpd.read_file('data.shp')\\nprint(gdf.head())\\nprint(gdf.crs)",
-    session_id="task_001"
-)
+# ✅ 正确写法（强制）：
+GeoToolbox.Vector.buffer('a.shp', 'a_buf.shp', 100)
+GeoToolbox.Raster.clip_by_mask('dem.tif', 'mask.shp', 'dem_clip.tif')
+GeoToolbox.Stats.hotspot_analysis('district.shp', 'price', 'hotspots.shp')
+GeoToolbox.Viz.export_3d_map('buildings.shp', 'height', '3d_map.html')
 
-# 如果出错，查看 stderr 和 hint，修复后再次执行（session_id 相同，变量保留）
-run_python_code(
-    code="print('当前 gdf 的列名:', gdf.columns.tolist())\\nprint('当前 CRS:', gdf.crs)",
-    session_id="task_001"
-)
-
-# 完成后，开始新任务（reset_session=True）
-run_python_code(
-    code="import rasterio\\nwith rasterio.open('dem.tif') as src:\\n    print(src.crs)",
-    session_id="task_002",
-    reset_session=True
-)
+# ❌ 错误写法（严禁）：
+# gdf = gpd.read_file('a.shp')
+# gdf2 = gdf.to_crs('EPSG:4326')   ← 自己写 to_crs 容易出错
+# buffered = gdf.buffer(100)         ← 自己写 buffer 容易忘融合
 ```
-
-### 常用快捷函数
-
-在代码中可直接使用：
-- `ls()` — 列出 workspace 目录文件
-- `show('变量名')` — 查看变量摘要（类型、shape、长度）
-- `WORKSPACE` — workspace 目录路径
-- `OUTPUTS` — outputs 子目录（自动创建）
 
 ---
 
 **【专用工具优先规则 — 必须严格遵守】**
 
-> ⚠️ **当存在专用工具时，禁止用 `run_python_code` 替代！专用工具经过测试，更加可靠。**
+> ⚠️ **当存在专用工具时，禁止用 `run_python_code` 替代！**
 
 | 任务 | 正确工具 | 禁止 |
 |------|---------|------|
-| 计算 NDVI / NDWI / EVI 等波段指数 | `calculate_raster_index` | ❌ 写 Python 代码 |
-| 裁剪/重投影/坡度/等高线（栅格） | `run_gdal_algorithm` | ❌ 写 Rasterio 代码 |
-| 探查栅格元数据（CRS/波段/尺寸） | `get_raster_metadata` | ❌ 写 Python 代码 |
-| 探查矢量元数据（CRS/字段） | `get_data_info` | ❌ 写 Python 代码 |
-| 下载矢量数据 | `download_features` | ❌ 写 Python 代码 |
-| OSM 路网最短路径规划 | `osmnx_routing` | ❌ 写 osmnx 代码 |
-| 搜索 ArcGIS Online 数据 | `search_online_data` | ❌ 写 arcgis 代码 |
+| 计算 NDVI / NDWI | `calculate_raster_index` | ❌ 写 Python 代码 |
+| 裁剪/重投影/坡度 | `run_gdal_algorithm` | ❌ 写 Rasterio 代码 |
+| 探查栅格元数据 | `get_raster_metadata` | ❌ 写 Python 代码 |
+| 探查矢量元数据 | `get_data_info` | ❌ 写 Python 代码 |
+| OSM 路网最短路径 | `osmnx_routing` | ❌ 写 osmnx 代码 |
+| STAC 遥感搜索 | `search_stac_imagery` | ❌ 写 pystac-client 代码 |
 
-**何时才用 `run_python_code`：**
-- 专用工具无法覆盖的复杂自定义分析（如 PySAL 高级统计、多步骤流水线）
-- 数据清洗、格式转换等通用 Python 操作
-- 必须在专用工具失败后才考虑
+---
 
-**工具选择顺序：**
-1. 检查是否存在专用工具 ✅
-2. 如有 → 调用专用工具
-3. 如无 → 才考虑 `run_python_code`
+**【CRS 规范 — 叠加分析铁律】**
+> - 任何叠置分析前，必须检查 CRS 是否一致
+> - 用 `get_data_info` 探查两个图层的 CRS
+> - 不一致时用 GeoPandas `.to_crs()` 转换后再叠加
+
+**【中文字符与编码防御铁律 — 必须严格遵守】**
+> - 在写文件（尤其是 `open()`, `.to_csv()`, `.to_json()`）时，**必须显式指定 `encoding='utf-8`**！
+> - 在使用 `matplotlib` 绘图并包含中文时，代码开头必须添加：
+>   `import matplotlib.pyplot as plt`
+>   `plt.rcParams['font.sans-serif'] = ['SimHei']`
+>   `plt.rcParams['axes.unicode_minus'] = False
 
 ---
 
@@ -220,418 +210,184 @@ run_python_code(
 - `get_data_info(file_name)` — 探查矢量文件元数据（CRS、字段、几何类型）
 - `get_raster_metadata(file_name)` — 探查栅格文件元数据（CRS、波段数、尺寸）
 - `search_online_data(search_query, item_type, max_items)` — 搜索 ArcGIS Online 公开数据
-- `access_layer_info(layer_url)` — 访问 ArcGIS 图层元数据
 - `download_features(layer_url, where, out_file, max_records)` — 下载 ArcGIS 矢量数据
-- `deepseek_search(query, recency_days)` — 联网搜索实时信息（天气/新闻/数据/知识/地理编码验证）
+- `deepseek_search(query, recency_days)` — 联网搜索实时信息
 - `amap(action, ...)` — 高德地图 API（地理编码/POI搜索/路径规划/天气）
-- `osm(action, ...)` — OSMnx 海外地理分析（POI/路网/最短路径/可达范围）
-- `osmnx_routing(city_name, ...)` — 零数据动态路径规划（实时拉取 OSM 路网，生成交互式地图）
-- `calculate_raster_index(input_file, band_math_expr, output_file)` — 波段指数计算（NDVI/NDWI 等）**【专用工具，优先使用】**
-- `run_gdal_algorithm(algo_name, params)` — GDAL/QGIS 算法（裁剪/重投影/坡度/等高线等）**【专用工具，优先使用】**
-- `run_python_code(code, session_id, reset_session)` — 自修正 Python 代码执行（仅在专用工具无法覆盖时才使用）
+- `osm(action, ...)` — OSMnx 海外地理分析
+- `osmnx_routing(city_name, ...)` — 零数据动态路径规划
+- `calculate_raster_index(input_file, band_math_expr, output_file)` — 波段指数计算（**专用工具，优先使用**）
+- `run_gdal_algorithm(algo_name, params)` — GDAL/QGIS 算法（**专用工具，优先使用**）
+- `run_python_code(code, session_id, reset_session)` — 自修正 Python 代码执行
+- `search_gis_knowledge(query)` — 检索 GIS/RS 知识库
+- `render_3d_map(...)` — PyDeck 3D 高性能可视化
+- `search_stac_imagery(...)` — 增强型 STAC 遥感影像搜索
+- `geospatial_hotspot_analysis(...)` — 高级空间热点分析
+- `multi_criteria_site_selection(...)` — MCDA 智能选址
+- `render_accessibility_map(...)` — 设施可达性 3D 可视化
+- `stac_to_visualization(...)` — STAC→COG→3D 可视化一体化管道
 
-**【osmnx_routing 工具调用示例】**
-- `osmnx_routing(city_name="Wuhu, China")` — 无本地数据，实时拉取芜湖市路网，随机演示最短路径
-- `osmnx_routing(city_name="Paris, France", origin_address="Eiffel Tower", destination_address="Arc de Triomphe", mode="walk")` — 步行路径规划
-- `osmnx_routing(city_name="Tokyo", origin_address="Shibuya Station", destination_address="Tokyo Tower", output_map_file="workspace/tokyo_route.html")` — 生成交互式地图
-- `osmnx_routing(city_name="Wuhu", origin_address="芜湖南站", destination_address="方特主题公园", mode="drive")` — 支持中文地名
-
-**【deepseek_search 工具调用示例】**
-- `deepseek_search(query="北京今日天气", recency_days=1)` — 实时天气
-- `deepseek_search(query="2024年中国人口统计", recency_days=90)` — 最新数据
-- `deepseek_search(query="WGS84坐标系EPSG代码", recency_days=365)` — 地理知识
-- `deepseek_search(query="how to get from Eiffel Tower to Louvre by walking", recency_days=7)` — 验证英文地点名称
-
-**【amap 工具调用示例】**
-- `amap(action="geocode", address="北京市朝阳区望京街道")` — 地址→坐标
-- `amap(action="poi_text_search", keywords="餐厅", city="上海")` — POI搜索
-- `amap(action="direction_driving", origin="天安门", destination="故宫")` — 驾车规划
-- `amap(action="weather_query", location="116.4,39.9")` — 天气查询
-
-**【osm 工具调用示例】**
-- `osm(action="geocode", location="Eiffel Tower, Paris")` — 地名→坐标
-- `osm(action="poi_search", location="Times Square, New York", keywords="restaurant")` — POI搜索
-- `osm(action="routing", origin="Eiffel Tower, Paris", destination="Arc de Triomphe, Paris", mode="walk")` — 步行路径
-- `osm(action="reachable_area", location="Times Square, New York", mode="walk", max_dist=3000)` — 可达范围
-
-**【calculate_raster_index 工具调用示例 — 专用工具，禁止替代】**
-> ⚠️ **band_math_expr 必须使用 `b1, b2, ...` 引用波段，禁止使用 NIR/Red 等文字标签！**
+**【band_math_expr 使用规则 — 必须严格遵守】**
+> ⚠️ `band_math_expr` 必须使用 `b1, b2, ...` 引用波段，禁止使用 NIR/Red 等文字标签！
 > 先用 `get_raster_metadata` 查看波段数量，然后用 b1=第1波段, b2=第2波段 ... 来写公式。
-- `calculate_raster_index(input_file="sentinel.tif", band_math_expr="(b2-b1)/(b2+b1)", output_file="workspace/ndvi.tif")` — 计算 NDVI（Sentinel-2 双波段：b1=Red, b2=NIR）
-- `calculate_raster_index(input_file="landsat8.tif", band_math_expr="(b5-b4)/(b5+b4)", output_file="workspace/ndvi.tif")` — 计算 NDVI（Lansat 8：b4=Red, b5=NIR）
-- `calculate_raster_index(input_file="image.tif", band_math_expr="(b2-b4)/(b2+b4)", output_file="workspace/ndwi.tif")` — 计算 NDWI（b2=Green, b4=NIR）
-> **正确流程：get_raster_metadata("sentinel.tif") → 确认波段数 → calculate_raster_index(...)**
+- `calculate_raster_index(input_file="sentinel.tif", band_math_expr="(b2-b1)/(b2+b1)", output_file="ndvi.tif")` — Sentinel-2 NDVI（b1=NIR, b2=Red）
+- `calculate_raster_index(input_file="landsat8.tif", band_math_expr="(b5-b4)/(b5+b4)", output_file="ndvi.tif")` — Landsat 8 NDVI（b4=Red, b5=NIR）
+"""
 
-**【run_gdal_algorithm 工具调用示例 — 专用工具，禁止替代】**
-> **执行前必须先检查数据：用 `get_raster_metadata` 确认栅格 CRS/波段，用 `get_data_info` 确认矢量 CRS！**
-- `get_raster_metadata(file_name="dem.tif")` → 确认坐标系
-- `get_data_info(file_name="study_area.shp")` → 确认裁剪矢量 CRS
-- `run_gdal_algorithm(algo_name="warp", params={"input_file":"dem.tif","output_file":"dem_reprojected.tif","target_crs":"EPSG:32650"})` — 栅格重投影
-- `run_gdal_algorithm(algo_name="warp", params={"input_file":"dem.tif","cutline":"study_area.shp","output_file":"dem_clipped.tif"})` — 栅格裁剪到矢量边界
-- `run_gdal_algorithm(algo_name="dem", params={"input_file":"dem.tif","output_file":"slope.tif","processing":"slope"})` — 计算坡度
 
-**【栅格与遥感处理铁律】**
-> - 面对 `.tif` 或 `.tiff` 文件，**严禁一次性将全部像素 read() 到内存**！大型影像 OOM 会导致整个进程崩溃。
-> - 在执行栅格任务前，先用 `get_raster_metadata` 确认波段数量和坐标系。
-> - 超大影像（宽或高 > 10000 像素），优先使用 GDAL 命令行工具（`run_gdal_algorithm`）。
-> - 波段数学计算（NDVI、NDWI 等），使用 `calculate_raster_index` 工具。"""
-
+# ============================================================================
+# 工具 Schema（与 registry.py 同步）
+# ============================================================================
 
 TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_data_info",
-            "description": "探查矢量文件（Shapefile/GeoJSON/Parquet 等）的元数据，包括 CRS、字段列表、几何类型、行数等。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_name": {"type": "string", "description": "文件路径或文件名（相对于 workspace 目录）"},
-                },
-                "required": ["file_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_raster_metadata",
-            "description": "探查栅格文件（GeoTIFF/COG 等）的元数据，包括 CRS、波段数、尺寸、分辨率、数据类型等。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "file_name": {"type": "string", "description": "文件路径或文件名（相对于 workspace 目录）"},
-                },
-                "required": ["file_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate_raster_index",
-            "description": "对栅格文件执行波段数学运算，计算植被/水体等指数（NDVI、NDWI、EVI 等）。支持任意 BandMath 表达式。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "input_file": {"type": "string", "description": "输入栅格文件路径"},
-                    "band_math_expr": {
-                        "type": "string",
-                        "description": "Python/NumPy 波段表达式，用 b1, b2, ... 引用第 1、2... 波段。如 'NDVI = (b4 - b3) / (b4 + b3)'（Landsat 8）或 'NDWI = (b2 - b5) / (b2 + b5)'（Sentinel-2）"
-                    },
-                    "output_file": {"type": "string", "description": "输出栅格文件路径"},
-                },
-                "required": ["input_file", "band_math_expr", "output_file"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_gdal_algorithm",
-            "description": "调用 GDAL/QGIS 命令行算法（裁剪、重投影、坡度、等高线、栅格重采样等）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "algo_name": {
-                        "type": "string",
-                        "description": "GDAL/QGIS 算法名称（使用 gdal 或 gdal_id 前缀）：\n"
-                            "  warp          - 重投影（常用参数：src_srs, dst_srs, resampling）\n"
-                            "  clip          - 裁剪（配合 cutline 参数使用矢量面裁剪）\n"
-                            "  slope         - 坡度（需 DEM 数据，配合 z_factor）\n"
-                            "  aspect        - 坡向\n"
-                            "  hillshade     - 山体阴影\n"
-                            "  gdal:cliprasterbymasklayer  - QGIS 掩膜裁剪栅格\n"
-                            "  gdal:reprojectvector         - QGIS 矢量重投影\n"
-                            "完整算法列表请调用 search_gis_knowledge 或查看 GDAL 文档",
-                    },
-                    "params": {
-                        "type": "object",
-                        "description": "算法参数字典，如 {'input': 'dem.tif', 'output': 'clipped.tif', 'cutline': 'study_area.shp'}",
-                    },
-                },
-                "required": ["algo_name", "params"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_online_data",
-            "description": "搜索 ArcGIS Online 上的公开数据图层，支持按关键词搜索 Feature Layer、Map Service 等。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "search_query": {"type": "string", "description": "搜索关键词，如 '上海 绿地'、'urban green space'"},
-                    "item_type": {"type": "string", "description": "数据类型，默认为 'Feature Layer'"},
-                    "max_items": {"type": "integer", "description": "最大返回条数，默认为 10"},
-                },
-                "required": ["search_query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "access_layer_info",
-            "description": "访问 ArcGIS 图层的元数据信息（字段、几何类型、空间范围等）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "layer_url": {"type": "string", "description": "ArcGIS FeatureLayer 或 MapServer 的 REST URL"},
-                },
-                "required": ["layer_url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "download_features",
-            "description": "从 ArcGIS Online 下载矢量数据到本地 GeoJSON 文件。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "layer_url": {"type": "string", "description": "ArcGIS FeatureLayer URL"},
-                    "where": {
-                        "type": "string",
-                        "description": "ArcGIS REST API WHERE 子句过滤条件，使用标准 SQL 表达式。如 '1=1'（全部）、\"NAME='Beijing'\"、'POP > 100000'。字段名区分大小写",
-                        "default": "1=1",
-                    },
-                    "out_file": {"type": "string", "description": "输出文件路径，默认为 'workspace/arcgis_download.geojson'"},
-                    "max_records": {"type": "integer", "description": "最大下载记录数，默认为 1000"},
-                },
-                "required": ["layer_url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "deepseek_search",
-            "description": "联网搜索实时信息（天气、新闻、地理编码验证等）。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "recency_days": {"type": "integer", "description": "时间范围（天），默认为 30"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "amap",
-            "description": "高德地图 API（国内）：地理编码/逆地理编码、POI 搜索、路径规划、坐标转换、天气查询。不同 action 组合不同参数。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "操作类型，必须为以下值之一：\n"
-                            "  geocode      - 地址转坐标（address → lon/lat），需传 address\n"
-                            "  regeocode    - 坐标转地址（lon,lat → address），需传 location\n"
-                            "  poi_text_search   - POI 文本搜索，需传 keywords 和 city\n"
-                            "  poi_around_search - 周边搜索，需传 location 和 keywords\n"
-                            "  direction_driving - 驾车路径规划，需传 origin 和 destination\n"
-                            "  direction_walking - 步行路径规划，需传 origin 和 destination\n"
-                            "  direction_transit - 公交路径规划，需传 city、origin 和 destination\n"
-                            "  weather_query      - 城市天气查询，需传 city\n"
-                            "  convert_coords     - 坐标系转换，需传 coords 和 from/to\n"
-                            "  district      - 行政区划查询，需传 keywords",
-                        "enum": [
-                            "geocode", "regeocode", "poi_text_search", "poi_around_search",
-                            "direction_driving", "direction_walking", "direction_transit",
-                            "weather_query", "convert_coords", "district",
-                        ],
-                    },
-                    "address": {
-                        "type": "string",
-                        "description": "【geocode 专用】待解析的地址字符串，如 '北京市朝阳区望京街'",
-                    },
-                    "city": {
-                        "type": "string",
-                        "description": "【geocode/poi_text_search/direction_transit/weather_query 专用】城市名称，如 '北京'",
-                    },
-                    "location": {
-                        "type": "string",
-                        "description": "【regeocode/poi_around_search 专用】坐标点，格式 'lon,lat'，如 '116.481028,39.989643'",
-                    },
-                    "keywords": {
-                        "type": "string",
-                        "description": "【poi_text_search/poi_around_search/district 专用】搜索关键词，如 '餐厅'、'银行'",
-                    },
-                    "origin": {
-                        "type": "string",
-                        "description": "【direction_driving/walking/transit 专用】起点坐标，格式 'lon,lat'",
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "【direction_driving/walking/transit 专用】终点坐标，格式 'lon,lat'",
-                    },
-                    "coords": {
-                        "type": "string",
-                        "description": "【convert_coords 专用】待转换的坐标串，多个用 ';' 分隔，格式 'lon,lat;lon,lat'",
-                    },
-                    "from_": {
-                        "type": "string",
-                        "description": "【convert_coords 专用】源坐标系类型：gps、mapbar、baidu、autonavi",
-                    },
-                    "to_": {
-                        "type": "string",
-                        "description": "【convert_coords 专用】目标坐标系类型：gps、mapbar、baidu、autonavi",
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "osm",
-            "description": "OSMnx 海外地理分析（国内请用 amap）：地名解析、POI 搜索、路网分析、最短路径、可达范围、高程剖面、路径规划。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "操作类型，必须为以下值之一：\n"
-                            "  geocode          - 地名解析，需传 location\n"
-                            "  poi_search       - POI 搜索，需传 location 和 keywords\n"
-                            "  network_analysis - 路网统计，需传 location 和 dist\n"
-                            "  shortest_path    - 最短路径分析，需传 origin 和 destination\n"
-                            "  reachable_area   - 可达范围，需传 location\n"
-                            "  elevation_profile - 高程剖面，需传 location\n"
-                            "  routing          - 路径规划，需传 origin 和 destination",
-                        "enum": [
-                            "geocode", "poi_search", "network_analysis",
-                            "shortest_path", "reachable_area",
-                            "elevation_profile", "routing",
-                        ],
-                    },
-                    "location": {
-                        "type": "string",
-                        "description": "【geocode/poi_search/network_analysis/reachable_area/elevation_profile 专用】地名或地址，如 'Central Park, New York'",
-                    },
-                    "keywords": {
-                        "type": "string",
-                        "description": "【poi_search 专用】POI 搜索关键词，如 'restaurant'、'park'、'hotel'",
-                    },
-                    "dist": {
-                        "type": "integer",
-                        "description": "【poi_search/network_analysis 专用】搜索半径（米），默认 1000",
-                        "default": 1000,
-                    },
-                    "network_type": {
-                        "type": "string",
-                        "description": "【network_analysis/shortest_path/reachable_area/routing 专用】路网类型：drive（驾车，默认）、walk（步行）、bike（骑行）",
-                        "enum": ["drive", "walk", "bike"],
-                        "default": "drive",
-                    },
-                    "origin": {
-                        "type": "string",
-                        "description": "【shortest_path/routing 专用】起点地名或地址",
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "【shortest_path/routing 专用】终点地名或地址",
-                    },
-                    "weight": {
-                        "type": "string",
-                        "description": "【shortest_path 专用】最短路径权重：length（距离，默认）、travel_time（时间）",
-                        "enum": ["length", "travel_time"],
-                        "default": "length",
-                    },
-                    "max_dist": {
-                        "type": "integer",
-                        "description": "【reachable_area 专用】最大可达距离（米），默认 5000",
-                        "default": 5000,
-                    },
-                    "mode": {
-                        "type": "string",
-                        "description": "【reachable_area/routing 专用】出行方式：drive（驾车，默认）、walk（步行）、bike（骑行）",
-                        "enum": ["drive", "walk", "bike"],
-                        "default": "drive",
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "osmnx_routing",
-            "description": "零数据动态路径规划：实时拉取 OSM 路网，计算最短路径，生成交互式地图。支持中文地址。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "city_name": {"type": "string", "description": "城市名称，默认为 'Wuhu, China'，支持中文如 '芜湖'"},
-                    "origin_address": {"type": "string", "description": "起点地址，如 '芜湖南站'"},
-                    "destination_address": {"type": "string", "description": "终点地址，如 '方特主题公园'"},
-                    "mode": {
-                        "type": "string",
-                        "description": "出行方式（仅接受以下小写值）：drive（驾车）、walk（步行）、bike（骑行），默认 drive",
-                        "enum": ["drive", "walk", "bike"],
-                        "default": "drive",
-                    },
-                    "output_map_file": {"type": "string", "description": "输出地图文件路径，默认 'workspace/osmnx_route_map.html'"},
-                    "plot_type": {"type": "string", "description": "绘图类型：folium（交互式）或 matplotlib（静态图），默认 folium", "enum": ["folium", "matplotlib"], "default": "folium"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_gis_knowledge",
-            "description": "检索 GIS/RS 知识库，获取标准代码范例和领域知识。当不确定 GIS 库用法、CRS 问题、OOM 问题、Python 生态工具用法时应主动调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索查询，如 'NDVI 计算 rasterio'、'CRS 投影转换 geopandas'"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_python_code",
-            "description": "【核心】自修正 Python 代码执行工具。模型自己写代码、执行、出错后自我检查修复、循环直到正确。支持：沙盒安全执行（禁止 os.system 等危险操作）、自动捕获 stdout/stderr、变量状态跨调用持久化、错误上下文完整报告、针对性修复提示、收敛检测防止死循环。使用方式：模型写出代码 → run_python_code 执行 → 若出错则根据错误上下文修复代码 → 再次执行，直到 success=True。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "要执行的 Python 代码（支持多行字符串，\\n 换行）。相对路径相对于 workspace/ 目录。"},
-                    "mode": {"type": "string", "description": "执行模式：exec（语句块，默认）或 eval（单个表达式求值）", "enum": ["exec", "eval"], "default": "exec"},
-                    "reset_session": {"type": "boolean", "description": "是否重置会话（清除所有变量和历史）。用于开始一个全新的任务。", "default": False},
-                    "session_id": {"type": "string", "description": "会话 ID（用于跨调用保持状态）。默认自动分配。"},
-                    "workspace": {"type": "string", "description": "工作空间路径，默认 workspace/"},
-                    "get_state_only": {"type": "boolean", "description": "仅返回会话状态，不执行代码", "default": False},
-                },
-                "required": ["code"],
-            },
-        },
-    },
+    {"type": "function", "function": {"name": "get_data_info", "description": "探查矢量文件元数据（CRS、字段、几何类型）", "parameters": {"type": "object", "properties": {"file_name": {"type": "string", "description": "文件路径或文件名（相对于 workspace 目录）"}}, "required": ["file_name"]}}},
+    {"type": "function", "function": {"name": "get_raster_metadata", "description": "探查栅格文件元数据（CRS、波段数、尺寸、分辨率）", "parameters": {"type": "object", "properties": {"file_name": {"type": "string", "description": "文件路径或文件名"}}, "required": ["file_name"]}}},
+    {"type": "function", "function": {"name": "calculate_raster_index", "description": "对栅格文件执行波段数学运算，计算植被/水体等指数。band_math_expr 用 b1, b2... 引用波段。", "parameters": {"type": "object", "properties": {"input_file": {"type": "string"}, "band_math_expr": {"type": "string", "description": "Python/NumPy 波段表达式，如 '(b4 - b3) / (b4 + b3)' (NDVI)"}, "output_file": {"type": "string"}}, "required": ["input_file", "band_math_expr", "output_file"]}}},
+    {"type": "function", "function": {"name": "run_gdal_algorithm", "description": "调用 GDAL/QGIS 命令行算法", "parameters": {"type": "object", "properties": {"algo_name": {"type": "string", "description": "GDAL 算法名：warp（重投影）/ clip（裁剪）/ slope（坡度）/ aspect（坡向）/ hillshade（山体阴影）"}, "params": {"type": "object"}}, "required": ["algo_name", "params"]}}},
+    {"type": "function", "function": {"name": "search_online_data", "description": "搜索 ArcGIS Online 公开数据", "parameters": {"type": "object", "properties": {"search_query": {"type": "string"}, "item_type": {"type": "string", "default": "Feature Layer"}, "max_items": {"type": "integer", "default": 10}}, "required": ["search_query"]}}},
+    {"type": "function", "function": {"name": "download_features", "description": "从 ArcGIS Online 下载矢量数据", "parameters": {"type": "object", "properties": {"layer_url": {"type": "string"}, "where": {"type": "string", "default": "1=1"}, "out_file": {"type": "string"}, "max_records": {"type": "integer", "default": 1000}}, "required": ["layer_url"]}}},
+    {"type": "function", "function": {"name": "deepseek_search", "description": "联网搜索实时信息", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "recency_days": {"type": "integer", "default": 30}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "amap", "description": "高德地图 API（国内）：地理编码/POI搜索/路径规划/天气", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["geocode", "regeocode", "poi_text_search", "poi_around_search", "direction_driving", "direction_walking", "direction_transit", "weather_query", "convert_coords", "district"]}, "address": {"type": "string"}, "city": {"type": "string"}, "location": {"type": "string"}, "keywords": {"type": "string"}, "origin": {"type": "string"}, "destination": {"type": "string"}, "coords": {"type": "string"}, "from_": {"type": "string"}, "to_": {"type": "string"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "osm", "description": "OSMnx 海外地理分析（国内用 amap）", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["geocode", "poi_search", "network_analysis", "shortest_path", "reachable_area", "elevation_profile", "routing"]}, "location": {"type": "string"}, "keywords": {"type": "string"}, "dist": {"type": "integer", "default": 1000}, "network_type": {"type": "string", "enum": ["drive", "walk", "bike"], "default": "drive"}, "origin": {"type": "string"}, "destination": {"type": "string"}, "weight": {"type": "string", "enum": ["length", "travel_time"], "default": "length"}, "max_dist": {"type": "integer", "default": 5000}, "mode": {"type": "string", "enum": ["drive", "walk", "bike"], "default": "drive"}}, "required": ["action"]}}},
+    {"type": "function", "function": {"name": "osmnx_routing", "description": "零数据动态路径规划：实时拉取 OSM 路网，计算最短路径，生成交互式地图", "parameters": {"type": "object", "properties": {"city_name": {"type": "string", "default": "Wuhu, China"}, "origin_address": {"type": "string"}, "destination_address": {"type": "string"}, "mode": {"type": "string", "enum": ["drive", "walk", "bike"], "default": "drive"}, "output_map_file": {"type": "string"}, "plot_type": {"type": "string", "enum": ["folium", "matplotlib"], "default": "folium"}}, "required": ["city_name"]}}},
+    {"type": "function", "function": {"name": "search_gis_knowledge", "description": "检索 GIS/RS 知识库，获取标准代码范例和领域知识", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "run_python_code", "description": "自修正 Python 代码执行工具。模型自己写代码→执行→出错后自我检查修复→循环直到正确", "parameters": {"type": "object", "properties": {"code": {"type": "string", "description": "要执行的 Python 代码（多行字符串，\\n 换行）"}, "mode": {"type": "string", "enum": ["exec", "eval"], "default": "exec"}, "reset_session": {"type": "boolean", "default": False}, "session_id": {"type": "string"}, "workspace": {"type": "string"}, "get_state_only": {"type": "boolean", "default": False}}, "required": ["code"]}}},
+    {"type": "function", "function": {"name": "render_3d_map", "description": "PyDeck 高性能 3D 交互式地图（支持百万级点）。layer_type: column/hexagon/heatmap/scatterplot", "parameters": {"type": "object", "properties": {"vector_file": {"type": "string"}, "output_html": {"type": "string"}, "height_column": {"type": "string"}, "color_column": {"type": "string"}, "map_style": {"type": "string", "enum": ["dark", "light", "road", "satellite"], "default": "dark"}, "layer_type": {"type": "string", "enum": ["column", "hexagon", "heatmap", "scatterplot"], "default": "column"}, "radius": {"type": "integer", "default": 100}, "elevation_scale": {"type": "integer", "default": 50}, "opacity": {"type": "number", "default": 0.8}}, "required": ["vector_file"]}}},
+    {"type": "function", "function": {"name": "search_stac_imagery", "description": "增强型 STAC 遥感影像搜索，覆盖 Planetary Computer、AWS 等主流端点，支持自动数据签名", "parameters": {"type": "object", "properties": {"bbox": {"type": "array", "items": {"type": "number"}}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "collection": {"type": "string", "default": "sentinel-2-l2a"}, "cloud_cover_max": {"type": "integer", "default": 10}, "max_items": {"type": "integer", "default": 20}, "bands": {"type": "array", "items": {"type": "string"}}, "output_file": {"type": "string"}}, "required": ["bbox", "start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "geospatial_hotspot_analysis", "description": "高级空间热点分析。analysis_type: auto/Moran's I/LISA/Gi*", "parameters": {"type": "object", "properties": {"vector_file": {"type": "string"}, "value_column": {"type": "string"}, "output_file": {"type": "string"}, "analysis_type": {"type": "string", "enum": ["auto", "lisa", "gstar"], "default": "auto"}, "neighbor_strategy": {"type": "string", "enum": ["queen", "rook", "knn"], "default": "queen"}, "k_neighbors": {"type": "integer", "default": 8}, "permutations": {"type": "integer", "default": 999}, "significance_level": {"type": "number", "default": 0.05}}, "required": ["vector_file", "value_column"]}}},
+    {"type": "function", "function": {"name": "multi_criteria_site_selection", "description": "MCDA 智能选址 — Plan-and-Execute 核心节点。多准则决策分析（权重自动归一化）", "parameters": {"type": "object", "properties": {"city_name": {"type": "string"}, "criteria_weights": {"type": "object"}, "aoi_bbox": {"type": "array", "items": {"type": "number"}}, "candidate_count": {"type": "integer", "default": 10}, "output_file": {"type": "string"}, "use_amap": {"type": "boolean", "default": True}, "use_osm": {"type": "boolean", "default": True}, "use_stac": {"type": "boolean", "default": False}}, "required": ["city_name", "criteria_weights"]}}},
+    {"type": "function", "function": {"name": "render_accessibility_map", "description": "设施可达性 3D 可视化 — PyDeck 蜂窝图展示服务覆盖范围", "parameters": {"type": "object", "properties": {"demand_file": {"type": "string"}, "facilities_file": {"type": "string"}, "output_html": {"type": "string"}, "max_travel_time": {"type": "number", "default": 30.0}, "travel_mode": {"type": "string", "enum": ["drive", "walk", "bike"], "default": "drive"}, "weight_column": {"type": "string"}, "bucket_count": {"type": "integer", "default": 8}}, "required": ["demand_file", "facilities_file"]}}},
+    {"type": "function", "function": {"name": "stac_to_visualization", "description": "STAC搜索→COG直接读取→PyDeck 3D可视化 一体化管道", "parameters": {"type": "object", "properties": {"collection": {"type": "string", "default": "sentinel-2-l2a"}, "bbox": {"type": "array", "items": {"type": "number"}}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "cloud_cover_max": {"type": "integer", "default": 10}, "bands": {"type": "array", "items": {"type": "string"}}, "output_dir": {"type": "string"}, "render_type": {"type": "string", "enum": ["natural_color", "false_color", "ndvi", "ndwi"], "default": "natural_color"}, "output_html": {"type": "string"}}, "required": ["collection", "bbox", "start_date", "end_date"]}}},
 ]
 
 
-# =============================================================================
-# Agent 核心类
-# =============================================================================
+
+
+# ============================================================================
+# Intent Router（保留但简化，供 System Prompt 动态组装使用）
+# ============================================================================
+
+class IntentRouter:
+    """
+    轻量级 Query 意图分类器。
+    根据用户输入中的关键词，识别当前任务涉及哪些 GIS 域。
+    """
+
+    DOMAIN_PATTERNS: Dict[str, Dict[str, Any]] = {
+        "raster": {
+            "keywords": ["遥感", "卫星", "影像", "波段", "NDVI", "NDWI", "EVI", "植被指数", "水体指数",
+                         "sentinel", "landsat", "modis", "rasterio", "raster", "tif", "tiff", "geotiff",
+                         "DEM", "坡度", "坡向", "山体阴影", "hillshade", "slope", "aspect",
+                         "裁剪", "重投影", "镶嵌", "波段运算", "band", "地表温度"],
+            "description": "栅格/遥感处理",
+            "prompt": _RASTER_DOMAIN_PROMPT,
+        },
+        "vector": {
+            "keywords": ["矢量", "shp", "geojson", "parquet", "geopandas", "空间连接", "叠加分析",
+                         "缓冲区", "convex hull", "dissolve", "merge", "clip", "intersect", "union",
+                         "泰森多边形", "voronoi", "核密度", "KDE", "空间自相关", "莫兰指数",
+                         "LISA", "esda", "pysal", "POI", "兴趣点", "设施选址", "服务区",
+                         "CRS", "投影", "坐标转换", "to_crs", "几何", "点线面",
+                         "土地利用", "土地覆被", "LULC", "城市规划", "行政区划",
+                         "人口密度", "热岛", "犯罪分析", "疾病制图"],
+            "description": "矢量/空间分析",
+            "prompt": _VECTOR_DOMAIN_PROMPT,
+        },
+        "network": {
+            "keywords": ["路网", "道路", "最短路径", "shortest path", "routing", "导航", "步行",
+                         "驾车", "骑行", "drive", "walk", "bike", "isochrone", "reachable area",
+                         "OSM", "osmnx", "networkx", "图结构", "od矩阵", "出行", "通勤",
+                         "公交", "transit", "地铁", "站点", "拓扑", "连通性"],
+            "description": "路网/网络分析",
+            "prompt": _NETWORK_DOMAIN_PROMPT,
+        },
+        "visualization": {
+            "keywords": ["地图", "folium", "choropleth", "交互地图", "webmap", "html",
+                         "静态图", "出图", "图例", "color", "colormap", "底图", "basemap",
+                         "tile", "3D", "pydeck", "deck.gl", "3D地图", "3D柱状图", "蜂窝图",
+                         "热力图", "scatterplot", "columnlayer", "hexagonlayer", "heatmaplayer",
+                         "大屏", "数据大屏", "可达圈", "可达性", "accessibility"],
+            "description": "3D 高性能可视化（PyDeck）+ 交互地图",
+            "prompt": _VIZ_DOMAIN_PROMPT,
+        },
+        "stac": {
+            "keywords": ["stac", "pystac", "pystac-client", "planetary computer",
+                         "sentinel", "landsat", "cop-dem", "遥感影像", "云量", "cloud cover",
+                         "COG", "cloud optimized", "哨兵", "Sentinel-2", "波段读取", "asset href"],
+            "description": "STAC 云原生遥感搜索",
+            "prompt": _STAC_DOMAIN_PROMPT,
+        },
+        "hotspot": {
+            "keywords": ["热点分析", "hotspot", "空间自相关", "spatial autocorrelation",
+                         "morans i", "LISA", "Gi*", "getis-ord", "高-高聚集", "低-低聚集",
+                         "选址", "site selection", "MCDA", "多准则决策", "选址分析",
+                         "蓝海", "竞争分析", "综合得分", "权重"],
+            "description": "空间热点分析 + MCDA 智能选址",
+            "prompt": _HOTSPOT_DOMAIN_PROMPT,
+        },
+    }
+
+    @classmethod
+    def classify(cls, query: str) -> Set[str]:
+        """对用户 query 进行意图分类，返回涉及的域标签集合。"""
+        q = query.lower()
+        matched: Set[str] = set()
+        for domain, cfg in cls.DOMAIN_PATTERNS.items():
+            for kw in cfg["keywords"]:
+                if kw.lower() in q:
+                    matched.add(domain)
+                    break
+        if not matched:
+            matched.add("general")
+        return matched
+
+    @classmethod
+    def build_dynamic_system_prompt(cls, query: str, base_prompt: str) -> str:
+        """动态组装 System Prompt，注入域专属片段和 Tool RAG 上下文。"""
+        domains = cls.classify(query)
+        fragments = []
+        for domain in domains:
+            if domain in cls.DOMAIN_PATTERNS:
+                fragments.append(cls.DOMAIN_PATTERNS[domain]["prompt"])
+
+        matched_descs = [cls.DOMAIN_PATTERNS[d]["description"] for d in domains if d in cls.DOMAIN_PATTERNS]
+        header = f"\n\n[本次路由域: {' | '.join(matched_descs)}]\n"
+
+        # Tool RAG 检索
+        try:
+            rag_context = format_retrieval_context(query, top_k=5)
+        except Exception:
+            rag_context = ""
+
+        rag_section = f"""
+
+---
+
+## 【Tool RAG 动态工具集 — 本次任务专属】
+
+{rag_context}
+
+> 💡 **Tool RAG 使用说明**：上方列出的工具是本任务**最相关**的专项工具，优先使用它们而不是写 Python 代码。
+
+"""
+
+        return base_prompt + "".join(fragments) + header + rag_section
+
+
+# ============================================================================
+# GeoAgent 核心类（升级版：支持 LangGraph 流水线 + Workspace State 注入）
+# ============================================================================
+# GeoAgent 核心类（升级版：支持 LangGraph 流水线 + Workspace State 注入）
+# ============================================================================
 
 class GeoAgent:
     """
-    Geo-Agent 核心类
+    GeoAgent 核心类 — 全能 GIS Agent
 
-    负责：
-    - 与 DeepSeek API 通信
-    - 管理多轮对话历史
-    - 原生 function calling 工具执行
+    升级点：
+    1. LangGraph 三节点流水线（Planner / Executor / Reviewer）
+    2. Workspace State 动态注入（根治文件幻觉）
+    3. Intent Router 保留，Tool RAG 增强
+    4. 事件回调（流式推送到 Streamlit UI）
     """
 
     def __init__(
@@ -643,22 +399,10 @@ class GeoAgent:
         temperature: float = 0.7,
         max_history: int = 20,
         history_file: str = "conversation_history.json",
-        enable_search: bool = True
+        enable_search: bool = True,
     ):
-        """
-        初始化 Geo-Agent
-
-        Args:
-            api_key: DeepSeek API 密钥
-            model: 模型名称，默认 deepseek-chat（普通对话模型）
-            base_url: API 基础 URL
-            max_retries: 最大自我纠错重试次数
-            temperature: 生成温度
-            max_history: 最大历史轮次
-            history_file: 对话历史保存文件路径
-        """
         if not api_key:
-            api_key = _load_api_key()
+            api_key = self._load_api_key()
         if not api_key:
             api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
@@ -668,8 +412,7 @@ class GeoAgent:
             raise ValueError(f"无效的 API Key 格式：应以为 'sk-' 开头，当前为：{api_key[:8]}***")
 
         self.api_key = api_key
-        _save_api_key(api_key)
-
+        self._save_api_key(api_key)
         self.model = model
         self.base_url = base_url
         self.max_retries = max_retries
@@ -678,341 +421,84 @@ class GeoAgent:
         self.history_file = str(Path(__file__).parent.parent.parent / history_file)
         self.enable_search = enable_search
 
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
-
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         self.messages: List[Dict[str, Any]] = []
         self._init_system_prompt()
         self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
         self._load_history()
         self._stop_event = threading.Event()
 
-    # -------------------------------------------------------------------------
-    # 停止控制
-    # -------------------------------------------------------------------------
-    def stop(self):
-        """发送停止信号，终止当前正在进行的对话"""
-        self._stop_event.set()
-    class EventType:
-        TURN_START = "turn_start"           # 新轮次开始  payload: {"turn": int}
-        LLM_THINKING = "llm_thinking"       # LLM 思考中  payload: {"chunk": str}
-        TOOL_CALL_START = "tool_call_start" # 工具调用开始 payload: {"tool": str, "arguments": dict}
-        TOOL_CALL_END = "tool_call_end"    # 工具调用结束 payload: {"tool": str, "success": bool, "result": str}
-        TURN_END = "turn_end"               # 轮次结束    payload: {"turn": int}
-        FINAL_RESPONSE = "final_response"   # 最终回复   payload: {"content": str}
-        ERROR = "error"                     # 错误       payload: {"error": str}
-        COMPLETE = "complete"                # 全部完成   payload: {}
-        STOPPED = "stopped"                 # 用户停止   payload: {}
+    # ── API Key 持久化 ──────────────────────────────────────────────────────
 
-    def _emit(
-        self,
-        callback: Callable,
-        event_type: str,
-        payload: dict,
-    ):
-        """通过回调安全发送事件"""
+    @staticmethod
+    def _save_api_key(api_key: str) -> None:
+        try:
+            with open(_API_KEY_FILE, 'w', encoding='utf-8') as f:
+                f.write(api_key)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _load_api_key() -> Optional[str]:
+        try:
+            if _API_KEY_FILE.exists():
+                with open(_API_KEY_FILE, 'r', encoding='utf-8') as f:
+                    key = f.read().strip()
+                    if key:
+                        return key
+        except Exception:
+            pass
+        return None
+
+    # ── 事件类型 ───────────────────────────────────────────────────────────
+
+    class EventType:
+        TURN_START = "turn_start"
+        LLM_THINKING = "llm_thinking"
+        TOOL_CALL_START = "tool_call_start"
+        TOOL_CALL_END = "tool_call_end"
+        TURN_END = "turn_end"
+        FINAL_RESPONSE = "final_response"
+        STEP_START = "step_start"
+        STEP_END = "step_end"
+        PLAN_GENERATED = "plan_generated"
+        ERROR = "error"
+        COMPLETE = "complete"
+        STOPPED = "stopped"
+
+    def _emit(self, callback: Callable, event_type: str, payload: dict):
         if callback:
             try:
                 callback(event_type, payload)
             except Exception:
                 pass
 
-    def _chat_stream_core(
-        self,
-        user_input: str,
-        event_callback: Callable,
-        max_turns: Optional[int],
-    ) -> Generator[Dict[str, Any], None, None]:
-        """
-        流式 chat 核心实现（Generator 风格），每产生一个事件 yield 一个 dict，
-        方便前端实时消费。
-        """
-        history_warning = None
-        if self._check_history_limit():
-            history_warning = f"已达到历史轮次上限 ({self.max_history})，请手动清空对话"
+    # ── System Prompt 初始化（含 Workspace State 注入） ──────────────────────
 
-        self._stop_event.clear()
+    def _init_system_prompt(self, user_query: Optional[str] = None):
+        """初始化系统提示，动态注入域知识 + Tool RAG + Workspace State。"""
+        base = _GIS_EXPERT_SYSTEM_PROMPT.strip()
 
-        self.messages.append({
-            "role": "user",
-            "id": f"user_{uuid.uuid4().hex[:8]}",
-            "content": user_input
-        })
+        if user_query:
+            dynamic = IntentRouter.build_dynamic_system_prompt(user_query, base)
+        else:
+            dynamic = base
 
-        tool_results_summary = []
+        # Workspace State 注入（动态记忆的核心）
+        workspace_section = get_workspace_state()
+        dynamic = dynamic + f"""
 
-        for turn in itertools.count():
-            if max_turns is not None and turn >= max_turns:
-                if max_turns > 0:
-                    self._emit(event_callback, self.EventType.ERROR,
-                               {"error": f"达到最大轮次限制 ({max_turns})"})
-                    self._emit(event_callback, self.EventType.COMPLETE, {})
-                    yield {
-                        "success": False,
-                        "error": f"达到最大轮次限制 ({max_turns})",
-                        "turns": max_turns,
-                        "stats": self.stats.copy(),
-                        "tool_results": tool_results_summary,
-                    }
-                return
+---
 
-            self.stats["total_turns"] += 1
-            self._emit(event_callback, self.EventType.TURN_START, {"turn": turn + 1})
+## 【工作区动态记忆 — Workspace State】
 
-            try:
-                # ------------------- API 调用（含增量输出） -------------------
-                all_content_chunks = []
-                api_response = {"content": "", "tool_calls": []}
+{workspace_section}
+"""
+        self.messages = [{"role": "system", "content": dynamic}]
 
-                # 构建搜索参数（启用联网搜索）
-                extra_body = {}
-                if self.enable_search:
-                    # DeepSeek 联网搜索通过 deepseek_search 工具实现
-                    pass
-
-                # 流式调用 LLM
-                stream = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.messages,
-                    tools=TOOL_SCHEMAS,
-                    tool_choice="auto",
-                    temperature=self.temperature,
-                    stream=True,
-                    **extra_body
-                )
-
-                # 收集完整响应（同时触发 LLM_THINKING 事件）
-                tool_calls_raw = []
-                current_text = ""
-
-                for chunk in stream:
-                    if self._stop_event.is_set():
-                        self._emit(event_callback, self.EventType.STOPPED, {})
-                        return
-                    delta = chunk.choices[0].delta
-                    # 处理增量文本
-                    if delta.content:
-                        chunk_text = delta.content
-                        all_content_chunks.append(chunk_text)
-                        current_text += chunk_text
-                        self._emit(
-                            event_callback,
-                            self.EventType.LLM_THINKING,
-                            {"chunk": chunk_text, "full_text": current_text},
-                        )
-                    # 处理 tool_calls 增量（最后一个 chunk 才完整）
-                    if delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
-                            while len(tool_calls_raw) <= idx:
-                                tool_calls_raw.append({"id": "", "function": {"name": "", "arguments": ""}})
-                            if tc_delta.id:
-                                tool_calls_raw[idx]["id"] = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    tool_calls_raw[idx]["function"]["name"] = tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    tool_calls_raw[idx]["function"]["arguments"] += tc_delta.function.arguments
-
-                final_content = "".join(all_content_chunks)
-
-                # 组装 tool_calls（统一 id/type 格式）
-                tool_calls = []
-                for i, tc_raw in enumerate(tool_calls_raw):
-                    tool_calls.append({
-                        "id": f"tc_{uuid.uuid4().hex[:8]}" if not tc_raw.get("id") else tc_raw["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc_raw["function"]["name"],
-                            "arguments": tc_raw["function"]["arguments"],
-                        }
-                    })
-
-                api_response = {
-                    "content": final_content,
-                    "tool_calls": tool_calls,
-                }
-
-                content = api_response.get("content", "")
-                tool_calls = api_response.get("tool_calls", [])
-
-                # ------------------- 追加 assistant 消息到历史 -------------------
-                assistant_msg = {
-                    "role": "assistant",
-                    "id": f"asst_{uuid.uuid4().hex[:8]}",
-                    "content": content
-                }
-                if tool_calls:
-                    assistant_msg["tool_calls"] = tool_calls
-                self.messages.append(assistant_msg)
-
-                self._emit(event_callback, self.EventType.TURN_END, {"turn": turn + 1})
-
-                if tool_calls:
-                    # ------------------- 执行工具调用 -------------------
-                    for i, tc in enumerate(tool_calls):
-                        tool_name = tc["function"]["name"]
-                        args_raw = tc["function"]["arguments"]
-                        try:
-                            arguments = json.loads(args_raw)
-                        except json.JSONDecodeError:
-                            arguments = {}
-
-                        self._emit(
-                            event_callback,
-                            self.EventType.TOOL_CALL_START,
-                            {"tool": tool_name, "arguments": arguments},
-                        )
-
-                        tool_result = execute_tool(tool_name, arguments)
-                        self.stats["tool_calls"] += 1
-
-                        # 解析 success 状态
-                        tool_success = True
-                        tool_error_msg = None
-                        try:
-                            tr_data = json.loads(tool_result)
-                            tool_success = tr_data.get("success", True)
-                            tool_error_msg = tr_data.get("error")
-                        except Exception:
-                            pass
-
-                        tool_results_summary.append({
-                            "tool": tool_name,
-                            "arguments": arguments,
-                            "success": tool_success,
-                            "error": tool_error_msg,
-                            "result": tool_result,
-                        })
-
-                        tc_id = assistant_msg["tool_calls"][i]["id"]
-
-                        # 添加工具结果消息
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "id": f"tool_{uuid.uuid4().hex[:8]}",
-                            "content": tool_result
-                        })
-
-                        self._emit(
-                            event_callback,
-                            self.EventType.TOOL_CALL_END,
-                            {
-                                "tool": tool_name,
-                                "success": tool_success,
-                                "error": tool_error_msg,
-                                "result": tool_result,
-                            },
-                        )
-
-                    # 继续循环，让模型处理工具结果
-                    continue
-
-                else:
-                    # 无工具调用，返回最终响应
-                    self._save_history()
-                    self._emit(event_callback, self.EventType.FINAL_RESPONSE, {"content": content})
-                    self._emit(event_callback, self.EventType.COMPLETE, {})
-
-                    result = {
-                        "success": True,
-                        "response": content,
-                        "turns": turn + 1,
-                        "stats": self.stats.copy(),
-                        "tool_results": tool_results_summary,
-                    }
-                    if history_warning:
-                        result["history_warning"] = history_warning
-                    yield result
-                    return
-
-            except Exception as e:
-                import traceback as _tb_module
-                tb = _tb_module.format_exc()
-                error_str = str(e)
-
-                is_format_error = (
-                    "missing field 'id'" in error_str or
-                    ("missing field" in error_str and "id" in error_str and "tool_call" in error_str) or
-                    ("messages" in error_str and "id" in error_str and ("required" in error_str or "must" in error_str))
-                )
-
-                if is_format_error:
-                    self._init_system_prompt()
-                    self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
-                    if os.path.exists(self.history_file):
-                        try:
-                            os.remove(self.history_file)
-                        except Exception:
-                            pass
-                    self._emit(
-                        event_callback, self.EventType.ERROR,
-                        {"error": f"对话历史格式异常，已自动重置。请重新输入您的需求。\n详情: {tb}"},
-                    )
-                    self._emit(event_callback, self.EventType.COMPLETE, {})
-                    yield {
-                        "success": False,
-                        "error": "对话历史格式异常，已自动重置。请重新输入您的需求。",
-                        "auto_reset": True,
-                        "turns": turn + 1,
-                        "stats": self.stats.copy(),
-                        "tool_results": tool_results_summary,
-                    }
-                    return
-
-                self.stats["errors"] += 1
-                self._emit(event_callback, self.EventType.ERROR, {"error": f"{error_str}\n{tb}"})
-                self._emit(event_callback, self.EventType.COMPLETE, {})
-                yield {
-                    "success": False,
-                    "error": f"{error_str} (详见终端日志)",
-                    "turns": turn + 1,
-                    "stats": self.stats.copy(),
-                    "tool_results": tool_results_summary,
-                }
-                return
-
-    def chat_stream(
-        self,
-        user_input: str,
-        event_callback: Callable[[str, dict], None] = None,
-        max_turns: Optional[int] = 10,
-    ) -> Generator[Dict[str, Any], None, None]:
-        """
-        流式对话，通过 event_callback 实时推送事件。
-
-        事件类型（EventType.*）：
-            - TURN_START      : 新轮次开始
-            - LLM_THINKING    : LLM token 增量（显示打字效果）
-            - TOOL_CALL_START : 工具调用开始
-            - TOOL_CALL_END   : 工具调用结束
-            - TURN_END        : 轮次结束
-            - FINAL_RESPONSE  : 最终回复完成
-            - ERROR           : 出错
-            - COMPLETE        : 全部完成
-
-        用法示例：
-            for event in agent.chat_stream("南京医院有哪些", my_callback):
-                print(event)
-
-        Returns:
-            Generator，每 yield 一次是一个 event dict：
-                {"event": EventType.XXX, "payload": {...}, ...result}
-        """
-        for item in self._chat_stream_core(user_input, event_callback, max_turns):
-            yield item
-
-    def _init_system_prompt(self):
-        """初始化系统提示"""
-        self.messages = [
-            {"role": "system", "content": GIS_EXPERT_SYSTEM_PROMPT}
-        ]
+    # ── 历史管理 ───────────────────────────────────────────────────────────
 
     def _load_history(self):
-        """加载历史对话（仅在系统提示词未变更时恢复，避免旧格式/旧版本数据污染）"""
         if os.path.exists(self.history_file):
             try:
                 with open(self.history_file, 'r', encoding='utf-8') as f:
@@ -1021,7 +507,7 @@ class GeoAgent:
                         first_msg = data[0]
                         if (isinstance(first_msg, dict) and
                                 first_msg.get("role") == "system" and
-                                first_msg.get("content", "").strip() == GIS_EXPERT_SYSTEM_PROMPT.strip()):
+                                first_msg.get("content", "").strip() == _GIS_EXPERT_SYSTEM_PROMPT.strip()):
                             for msg in data:
                                 if "id" not in msg:
                                     role = msg.get("role", "user")
@@ -1035,7 +521,6 @@ class GeoAgent:
                                             tc["type"] = "function"
                             self.messages = data
                         else:
-                            # 系统提示词不匹配（版本变更或外部修改），清空历史
                             self._init_system_prompt()
                     else:
                         self._init_system_prompt()
@@ -1043,7 +528,6 @@ class GeoAgent:
                 self._init_system_prompt()
 
     def _save_history(self):
-        """保存历史对话"""
         try:
             with open(self.history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.messages, f, ensure_ascii=False, indent=2)
@@ -1051,7 +535,6 @@ class GeoAgent:
             pass
 
     def _check_history_limit(self) -> bool:
-        """检查是否达到历史轮次上限"""
         non_system = [m for m in self.messages if m.get("role") != "system"]
         return len(non_system) >= self.max_history
 
@@ -1069,32 +552,113 @@ class GeoAgent:
         """重置对话历史"""
         self._init_system_prompt()
         self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
-        # 删除本地对话缓存文件
         if os.path.exists(self.history_file):
             try:
                 os.remove(self.history_file)
             except Exception:
                 pass
 
+    def get_conversation_history(self) -> List[Dict[str, Any]]:
+        return self.messages.copy()
+
+    def save_context(self) -> dict:
+        return {"messages": self.messages.copy(), "stats": self.stats.copy()}
+
+    def restore_context(self, context: dict):
+        if context:
+            self.messages = context.get("messages", [{"role": "system", "content": _GIS_EXPERT_SYSTEM_PROMPT}])
+            self.stats = context.get("stats", {"total_turns": 0, "tool_calls": 0, "errors": 0})
+
+    def reset_to_system_prompt(self, user_query: Optional[str] = None):
+        self._init_system_prompt(user_query)
+        self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
+
+    def get_stats(self) -> Dict[str, int]:
+        return self.stats.copy()
+
+    def stop(self):
+        self._stop_event.set()
+
+    # ── LangGraph Workflow ───────────────────────────────────────────────────
+
+    def chat_langgraph(
+        self,
+        user_input: str,
+        event_callback: Callable = None,
+        max_steps: int = 8,
+        max_retries: int = 2,
+        thread_id: str = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        使用 LangGraph DAG 执行对话 — Planner/Executor/Reviewer 三角色分离。
+
+        DAG 节点流转：
+            START → planner → executor → reviewer
+                                      ↑          ↓
+                                      ← (retry) ← ↓
+                                                → summarizer → END
+
+        死循环防护：
+        1. Reviewer 是唯一循环守卫，所有重试必须经过 Reviewer
+        2. 同一工具连续失败 >= 3 次 → 强制跳过（executor 硬截止）
+        3. 单步重试超过 max_retries → 标记 skipped，推进下一步
+        4. 计划解析失败 → 自动降级为受限 ReAct 模式
+
+        参数
+        ----
+        user_input    : 用户输入
+        event_callback: 事件回调，签名为 (event_type: str, payload: dict) -> None
+        max_steps     : 计划最多步数
+        max_retries   : 单步最大重试次数
+        thread_id     : 线程 ID（用于 checkpointer 多轮对话）
+
+        Yields
+        ------
+        事件 dict：plan_start / plan_generated / step_start / step_end /
+                   review_pass / review_retry / review_skip / final_response 等
+
+        最终 yield 包含完整结果 dict。
+        """
+        try:
+            from geoagent.workflow import GeoAgentWorkflow
+            wf = GeoAgentWorkflow(
+                api_key=self.api_key,
+                model=self.model,
+                base_url=self.base_url,
+                max_steps=max_steps,
+                max_retries=max_retries,
+            )
+            for event in wf.run_stream(user_input, event_callback, thread_id):
+                yield event
+        except ImportError:
+            yield {"event": "error", "payload": {"error": "langgraph 未安装，请运行: pip install langgraph"}}
+        except Exception as e:
+            yield {"event": "error", "payload": {"error": str(e)}}
+
+    # ── LangGraph 流水线对话 ───────────────────────────────────────────────
+
+    def chat_with_langgraph(
+        self,
+        user_input: str,
+        event_callback: Callable = None,
+        max_turns: int = 15,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        LangGraph Plan-and-Execute 模式对话（现已委托给 GeoAgentWorkflow）。
+
+        流水线：
+        1. Planner: 生成严格 JSON 计划（含 Workspace State）
+        2. Executor: 按计划顺序执行每步
+        3. Reviewer: 检查文件是否生成
+        4. 生成最终回复
+        """
+        yield from self.chat_langgraph(user_input, event_callback, max_steps=max_turns)
+
+    # ── 核心聊天方法 ───────────────────────────────────────────────────────
+
     def _call_api(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        调用 DeepSeek Chat API（原生 function calling），支持自动重试和联网搜索
-
-        Args:
-            messages: 消息列表
-
-        Returns:
-            包含 content 和 tool_calls 的字典
-        """
+        """调用 DeepSeek Chat API（原生 function calling）"""
         last_error = None
-
-        # 构建搜索参数（启用联网搜索）
-        extra_body = {}
-        if self.enable_search:
-            # DeepSeek 联网搜索通过 deepseek_search 工具实现
-            # 不再使用 extra_body search_params，避免 SDK 版本兼容性问题
-            pass
-
         for attempt in range(self.max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -1103,234 +667,48 @@ class GeoAgent:
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
                     temperature=self.temperature,
-                    **extra_body
                 )
-
                 choice = response.choices[0]
                 message = choice.message
-
                 return {
                     "content": message.content or "",
-                    "tool_calls": getattr(message, 'tool_calls', None) or []
+                    "tool_calls": getattr(message, 'tool_calls', None) or [],
                 }
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
-
-                # API 格式错误（如 missing field 'id'）不重试，直接抛出
-                if ("missing field" in error_str or
-                    "invalid_request_error" in error_str):
+                if ("missing field" in error_str or "invalid_request_error" in error_str):
                     raise last_error
-
-        # 所有重试均失败
         raise last_error
 
-    def chat(self, user_input: str, max_turns: Optional[int] = 10,
-             reasoning_callback: callable = None,
-             tool_result_callback: callable = None) -> Dict[str, Any]:
+    def chat_stream(
+        self,
+        user_input: str,
+        event_callback: Callable[[str, dict], None] = None,
+        max_turns: Optional[int] = 10,
+    ) -> Generator[Dict[str, Any], None, None]:
         """
-        执行一次完整的对话交互（支持 function calling）
-
-        Args:
-            user_input: 用户输入
-            max_turns: 最大轮次数
-            reasoning_callback: 推理过程回调，接收 (turn, reasoning) 参数
-            tool_result_callback: 工具执行结果回调，接收 (tool_name, result) 参数
-
-        Returns:
-            包含最终响应的字典
+        流式对话入口 — 统一使用 LangGraph Plan-and-Execute 流水线。
         """
-        history_warning = None
-        if self._check_history_limit():
-            history_warning = f"已达到历史轮次上限 ({self.max_history})，请手动清空对话"
+        yield from self.chat_with_langgraph(user_input, event_callback, max_turns)
 
-        # 添加用户消息
-        self.messages.append({
-            "role": "user",
-            "id": f"user_{uuid.uuid4().hex[:8]}",
-            "content": user_input
-        })
-
-        tool_results_summary = []
-        for turn in itertools.count():
-            if max_turns is not None and turn >= max_turns:
-                return {
-                    "success": False,
-                    "error": f"达到最大轮次限制 ({max_turns})",
-                    "turns": max_turns,
-                    "stats": self.stats.copy(),
-                    "tool_results": tool_results_summary,
-                }
-
-            self.stats["total_turns"] += 1
-
-            try:
-                api_response = self._call_api(self.messages)
-                content = api_response.get("content", "")
-                tool_calls = api_response.get("tool_calls", [])
-
-                # 添加助手消息到历史
-                assistant_msg = {
-                    "role": "assistant",
-                    "id": f"asst_{uuid.uuid4().hex[:8]}",
-                    "content": content
-                }
-                if tool_calls:
-                    assistant_msg["tool_calls"] = [
-                        {
-                            "id": f"tc_{uuid.uuid4().hex[:8]}",
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }
-                        for tc in tool_calls
-                    ]
-                self.messages.append(assistant_msg)
-
-                if tool_calls:
-                    # 执行所有工具调用
-                    for i, tc in enumerate(tool_calls):
-                        tool_name = tc.function.name
-                        try:
-                            arguments = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
-                            arguments = {}
-
-                        tool_result = execute_tool(tool_name, arguments)
-                        self.stats["tool_calls"] += 1
-
-                        # 解析 success 状态
-                        tool_success = True
-                        tool_error_msg = None
-                        try:
-                            tr_data = json.loads(tool_result)
-                            tool_success = tr_data.get("success", True)
-                            tool_error_msg = tr_data.get("error")
-                        except Exception:
-                            pass
-
-                        tool_results_summary.append({
-                            "tool": tool_name,
-                            "arguments": arguments,
-                            "success": tool_success,
-                            "error": tool_error_msg,
-                            "result": tool_result,
-                        })
-                        tc_id = assistant_msg["tool_calls"][i]["id"]
-
-                        # 添加工具结果消息
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc_id,
-                            "id": f"tool_{uuid.uuid4().hex[:8]}",
-                            "content": tool_result
-                        })
-
-                        # 触发回调
-                        if tool_result_callback:
-                            try:
-                                tool_result_callback(tool_name, arguments, tool_result)
-                            except Exception:
-                                pass
-
-                    # 继续循环，让模型处理工具结果
-                    continue
-
-                else:
-                    # 无工具调用，返回最终响应
-                    self._save_history()
-
-                    result = {
-                        "success": True,
-                        "response": content,
-                        "turns": turn + 1,
-                        "stats": self.stats.copy(),
-                        "tool_results": tool_results_summary,
-                    }
-                    if history_warning:
-                        result["history_warning"] = history_warning
-                    return result
-
-            except Exception as e:
-                import traceback as _tb_module
-                tb = _tb_module.format_exc()
-                error_str = str(e)
-                error_lower = error_str.lower()
-
-                is_format_error = (
-                    "missing field 'id'" in error_lower or
-                    ("missing field" in error_lower and "id" in error_lower and "tool_call" in error_lower) or
-                    ("messages" in error_lower and "id" in error_lower and ("required" in error_lower or "must" in error_lower))
-                )
-
-                if is_format_error:
-                    self._init_system_prompt()
-                    self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
-                    if os.path.exists(self.history_file):
-                        try:
-                            os.remove(self.history_file)
-                        except Exception:
-                            pass
-                    return {
-                        "success": False,
-                        "error": f"对话历史格式异常，已自动重置。请重新输入您的需求。\n详情: {tb}",
-                        "auto_reset": True,
-                        "turns": turn + 1,
-                        "stats": self.stats.copy(),
-                        "tool_results": tool_results_summary,
-                    }
-
-                self.stats["errors"] += 1
-                return {
-                    "success": False,
-                    "error": f"{error_str} (详见终端日志)\n{tb}",
-                    "turns": turn + 1,
-                    "stats": self.stats.copy(),
-                    "tool_results": tool_results_summary,
-                }
-
-    def get_conversation_history(self) -> List[Dict[str, Any]]:
-        """获取对话历史"""
-        return self.messages.copy()
-
-    # -------------------------------------------------------------------------
-    # 对话上下文管理（支持多对话）
-    # -------------------------------------------------------------------------
-    def save_context(self) -> dict:
-        """
-        保存当前 agent 上下文状态（切换对话时调用）。
-        返回一个 dict，包含 messages 列表和 stats。
-        """
-        return {
-            "messages": self.messages.copy(),
-            "stats": self.stats.copy(),
-        }
-
-    def restore_context(self, context: dict):
-        """
-        恢复 agent 上下文状态（切换回某对话时调用）。
-        """
-        if context:
-            self.messages = context.get("messages", [{"role": "system", "content": GIS_EXPERT_SYSTEM_PROMPT}])
-            self.stats = context.get("stats", {"total_turns": 0, "tool_calls": 0, "errors": 0})
-
-    def reset_to_system_prompt(self):
-        """仅重置 messages 为仅含 system prompt，不影响文件历史"""
-        self.messages = [
-            {"role": "system", "content": GIS_EXPERT_SYSTEM_PROMPT}
-        ]
-        self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
-
-    def get_stats(self) -> Dict[str, int]:
-        """获取执行统计"""
-        return self.stats.copy()
+    def chat(
+        self,
+        user_input: str,
+        max_turns: Optional[int] = 10,
+        reasoning_callback: callable = None,
+        tool_result_callback: callable = None,
+    ) -> Dict[str, Any]:
+        """执行一次完整的对话交互（统一使用 LangGraph 流水线）。"""
+        for event in self.chat_with_langgraph(user_input, max_turns=max_turns):
+            if event.get("mode"):
+                    return event
+        return {"success": False, "error": "LangGraph 模式异常"}
 
 
-# =============================================================================
-# 便捷函数
-# =============================================================================
+# ============================================================================
+# 便捷工厂函数
+# ============================================================================
 
 def create_agent(
     api_key: str = None,
@@ -1338,20 +716,10 @@ def create_agent(
     base_url: str = "https://api.deepseek.com",
     max_history: int = 20,
     history_file: str = "conversation_history.json",
-    enable_search: bool = True
+    enable_search: bool = True,
 ) -> GeoAgent:
     """
-    创建 Geo-Agent 实例
-
-    Args:
-        api_key: DeepSeek API 密钥
-        model: 模型名称，默认 deepseek-chat
-        base_url: API 基础 URL
-        max_history: 最大历史轮次
-        history_file: 对话历史保存文件
-
-    Returns:
-        GeoAgent 实例
+    创建 GeoAgent 实例。
     """
     return GeoAgent(
         api_key=api_key,
@@ -1359,5 +727,10 @@ def create_agent(
         base_url=base_url,
         max_history=max_history,
         history_file=history_file,
-        enable_search=enable_search
+        enable_search=enable_search,
     )
+
+
+# 向后兼容导出
+GIS_EXPERT_SYSTEM_PROMPT = _GIS_EXPERT_SYSTEM_PROMPT
+IntentRouter = IntentRouter

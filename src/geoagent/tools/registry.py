@@ -1,4 +1,4 @@
-﻿"""
+"""
 GeoAgent 工具注册表与执行器
 """
 
@@ -95,8 +95,12 @@ def _osmnx_routing_impl(
     plot_type: str = "folium",
 ) -> str:
     """osmnx_routing 工具"""
+    import socket
+    import urllib.request
     import sys, os, io
     from pathlib import Path
+
+    socket.setdefaulttimeout(30.0)
 
     try:
         import osmnx as ox  # pyright: ignore[reportMissingImports]
@@ -183,6 +187,9 @@ def _osmnx_routing_impl(
                 coords.append([G.nodes[node]["x"], G.nodes[node]["y"]])
 
         if plot_type == "matplotlib":
+            import matplotlib.pyplot as plt  # pyright: ignore[reportMissingImports]
+            plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+            plt.rcParams['axes.unicode_minus'] = False
             fig, ax = ox.plot_graph_route(
                 G, route,
                 route_color="red",
@@ -191,7 +198,6 @@ def _osmnx_routing_impl(
                 bgcolor="white"
             )
             fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
-            import matplotlib.pyplot as plt  # pyright: ignore[reportMissingImports]
             plt.close(fig)
             result_info = {
                 "city": city_name,
@@ -213,8 +219,8 @@ def _osmnx_routing_impl(
             m = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=13,
-                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-                attr="© Esri"
+                tiles="http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+                attr="高德地图"
             )
 
             def add_route_line(gdf, color, weight):
@@ -268,6 +274,11 @@ def _osmnx_routing_impl(
             "success": False,
             "error": f"起点到终点无路径可达"
         }, ensure_ascii=False)
+    except (socket.timeout, urllib.error.URLError, ConnectionError) as e:
+        return json.dumps({
+            "success": False,
+            "error": f"网络超时或连接失败 (OSMnx)。请改用 amap 工具（国内高德地图 API）进行路网分析，或使用 search_gis_knowledge 检索本地知识。详细报错: {str(e)}"
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
             "success": False,
@@ -277,6 +288,10 @@ def _osmnx_routing_impl(
 
 def _deepseek_search_impl(query: str, recency_days: int = 30) -> str:
     """deepseek_search 的实际实现"""
+    import socket
+    import urllib.error
+    socket.setdefaulttimeout(30.0)
+
     try:
         freshness_map = {
             1: "d",
@@ -288,7 +303,13 @@ def _deepseek_search_impl(query: str, recency_days: int = 30) -> str:
         freshness = freshness_map.get(recency_days, "y")
 
         results = []
-        from duckduckgo_search import DDGS as _DDGS  # pyright: ignore[reportMissingImports]
+        try:
+            from ddgs import DDGS as _DDGS  # pyright: ignore[reportMissingImports]
+        except ImportError:
+            return json.dumps({
+                "success": False,
+                "error": "ddgs 未安装，请运行: pip install ddgs"
+            }, ensure_ascii=False)
 
         with _DDGS() as ddgs:
             for r in ddgs.news(query, max_results=10, freshness=freshness):
@@ -314,7 +335,12 @@ def _deepseek_search_impl(query: str, recency_days: int = 30) -> str:
     except ImportError:
         return json.dumps({
             "success": False,
-            "error": "duckduckgo-search 未安装"
+            "error": "ddgs 未安装，请运行: pip install ddgs"
+        }, ensure_ascii=False)
+    except (socket.timeout, urllib.error.URLError, ConnectionError) as e:
+        return json.dumps({
+            "success": False,
+            "error": f"网络超时或连接失败 (DuckDuckGo)。请改用 search_gis_knowledge 工具检索本地知识库，或稍后重试。详细报错: {str(e)}"
         }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
@@ -529,6 +555,87 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
                 output_file=arguments.get("output_file", "workspace/output.parquet"),
                 target_crs=arguments.get("target_crs", "EPSG:4326"),
                 compression=arguments.get("compression", "zstd"),
+            )
+
+        elif tool_name == "render_3d_map":
+            from geoagent.gis_tools.advanced_tools import render_3d_map
+            raw_result = render_3d_map(
+                vector_file=arguments.get("vector_file", ""),
+                output_html=arguments.get("output_html", "workspace/3d_map.html"),
+                height_column=arguments.get("height_column"),
+                color_column=arguments.get("color_column"),
+                map_style=arguments.get("map_style", "dark"),
+                layer_type=arguments.get("layer_type", "column"),
+                radius=arguments.get("radius", 100),
+                elevation_scale=arguments.get("elevation_scale", 50),
+                opacity=arguments.get("opacity", 0.8),
+            )
+
+        elif tool_name == "search_stac_imagery":
+            from geoagent.gis_tools.advanced_tools import search_stac_imagery
+            raw_result = search_stac_imagery(
+                bbox=arguments.get("bbox", [116.0, 39.0, 117.0, 40.0]),
+                start_date=arguments.get("start_date", "2024-01-01"),
+                end_date=arguments.get("end_date", "2024-12-31"),
+                collection=arguments.get("collection", "sentinel-2-l2a"),
+                cloud_cover_max=arguments.get("cloud_cover_max", 10),
+                max_items=arguments.get("max_items", 20),
+                output_file=arguments.get("output_file"),
+                bands=arguments.get("bands"),
+            )
+
+        elif tool_name == "geospatial_hotspot_analysis":
+            from geoagent.gis_tools.advanced_tools import geospatial_hotspot_analysis
+            raw_result = geospatial_hotspot_analysis(
+                vector_file=arguments.get("vector_file", ""),
+                value_column=arguments.get("value_column", ""),
+                output_file=arguments.get("output_file", "workspace/hotspot_results.geojson"),
+                analysis_type=arguments.get("analysis_type", "auto"),
+                neighbor_strategy=arguments.get("neighbor_strategy", "queen"),
+                k_neighbors=arguments.get("k_neighbors", 8),
+                permutations=arguments.get("permutations", 999),
+                significance_level=arguments.get("significance_level", 0.05),
+                weighted=arguments.get("weighted", True),
+                normalize_column=arguments.get("normalize_column"),
+            )
+
+        elif tool_name == "multi_criteria_site_selection":
+            from geoagent.gis_tools.advanced_tools import multi_criteria_site_selection
+            raw_result = multi_criteria_site_selection(
+                city_name=arguments.get("city_name", ""),
+                criteria_weights=arguments.get("criteria_weights", {}),
+                aoi_bbox=arguments.get("aoi_bbox"),
+                candidate_count=arguments.get("candidate_count", 10),
+                output_file=arguments.get("output_file", "workspace/site_selection_results.geojson"),
+                use_amap=arguments.get("use_amap", True),
+                use_osm=arguments.get("use_osm", True),
+                use_stac=arguments.get("use_stac", False),
+            )
+
+        elif tool_name == "render_accessibility_map":
+            from geoagent.gis_tools.advanced_tools import render_accessibility_map
+            raw_result = render_accessibility_map(
+                demand_file=arguments.get("demand_file", ""),
+                facilities_file=arguments.get("facilities_file", ""),
+                output_html=arguments.get("output_html", "workspace/accessibility_3d_map.html"),
+                max_travel_time=arguments.get("max_travel_time", 30.0),
+                travel_mode=arguments.get("travel_mode", "drive"),
+                weight_column=arguments.get("weight_column"),
+                bucket_count=arguments.get("bucket_count", 8),
+            )
+
+        elif tool_name == "stac_to_visualization":
+            from geoagent.gis_tools.advanced_tools import stac_to_visualization
+            raw_result = stac_to_visualization(
+                collection=arguments.get("collection", "sentinel-2-l2a"),
+                bbox=arguments.get("bbox", [116.0, 39.0, 117.0, 40.0]),
+                start_date=arguments.get("start_date", "2024-01-01"),
+                end_date=arguments.get("end_date", "2024-01-31"),
+                cloud_cover_max=arguments.get("cloud_cover_max", 10),
+                bands=arguments.get("bands"),
+                output_dir=arguments.get("output_dir", "workspace"),
+                render_type=arguments.get("render_type", "natural_color"),
+                output_html=arguments.get("output_html", "workspace/stac_visualization.html"),
             )
 
         else:

@@ -11,8 +11,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "geoagent"
-version = "0.1.0"
-description = "基于 DeepSeek API 的空间智能 GIS 分析 Agent"
+version = "0.2.0"
+description = "全能 GIS Agent — 四层架构空间智能数字员工流水线（Planner·Executor·Reviewer LangGraph 编排 + 七大矩阵 GeoToolbox + 静态/动态双记忆 RAG）"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -48,7 +48,7 @@ core = [
     "openai>=1.3.0",
     "python-dotenv>=1.0.0",
     "requests>=2.28.0",
-    "duckduckgo-search>=5.0.0",
+    "ddgs>=3.0.0",
 ]
 
 # GIS 核心库
@@ -89,7 +89,7 @@ data = [
 
 # 联网搜索
 search = [
-    "duckduckgo-search>=5.0.0",
+    "ddgs>=3.0.0",
 ]
 
 # LangChain Agent 集成
@@ -99,6 +99,7 @@ langchain = [
     "langchain-experimental>=0.0.50",
     "langchain-community>=0.0.20",
     "langchain-text-splitters>=0.0.1",
+    "langgraph>=0.2.0",
 ]
 
 # LangChain + GIS 增强（推荐安装）
@@ -112,6 +113,7 @@ langchain-gis = [
     "pypdf>=4.0.0",
     "unstructured>=0.11.0",
     "tiktoken>=0.5.0",
+    "langgraph>=0.2.0",
 ]
 
 # RAG 检索增强
@@ -159,13 +161,14 @@ full = [
     "scipy>=1.11.0",
     "python-dotenv>=1.0.0",
     "requests>=2.28.0",
-    "duckduckgo-search>=5.0.0",
+    "ddgs>=3.0.0",
     # LangChain 核心
     "langchain-openai>=0.1.0",
     "langchain-core>=0.1.0",
     "langchain-experimental>=0.0.50",
     "langchain-community>=0.0.20",
     "langchain-text-splitters>=0.0.1",
+    "langgraph>=0.2.0",
     # RAG 检索
     "faiss-cpu>=1.7.4",
     "pypdf>=4.0.0",
@@ -181,10 +184,17 @@ full = [
     "pysal>=23.0.0",
     "laspy>=2.5.0",
     "earthpy>=0.4.0",
+    "spyndex>=0.3.0",        # 30+ 遥感指数计算（Raster 封装）
     "pystac-client>=0.7.0",
     "pystac>=1.10.0",
+    "planetary-computer>=0.8.0",
+    "pydeck>=0.8.0",
     "segmentation-models-pytorch>=0.4.0",
     "torchgeo>=0.5.0",
+    # GeoToolbox 额外依赖
+    "geopy>=2.4.0",         # 地理编码（Vector.geocode_address）
+    "numexpr>=2.8.0",       # 快速栅格计算（Raster 计算优化）
+    "contextily>=1.3.0",     # 底图渲染（Viz 添加底图）
 ]
 
 [project.scripts]
@@ -268,7 +278,19 @@ module = "whitebox.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "duckduckgo_search.*"
+module = "ddgs.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pydeck.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pystac_client.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "planetary_computer.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
