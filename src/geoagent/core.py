@@ -1,11 +1,21 @@
 """
 GeoAgent 核心模块
 =================
-三层收敛架构：用户输入 → 意图分类 → 动态Schema注入 → Pydantic校验 → 确定性执行
+支持两种架构：
+1. 六层架构（确定性优先）：layers/pipeline.py
+2. 三层收敛架构（compiler）：compiler/compiler.py
 
-架构说明：
-  - LLM 只做"翻译"：NL → task + params
-  - 后端代码决定执行：代码路由，不依赖 LLM
+六层架构设计原则：
+  - Layer 1: 用户输入层（Input Layer）
+  - Layer 2: 意图识别层（Intent Classifier）
+  - Layer 3: 场景编排层（Scenario Orchestrator）
+  - Layer 4: 任务编译层（Task DSL Builder）
+  - Layer 5: 执行引擎层（Task Router + Executors）
+  - Layer 6: 结果呈现层（Result Renderer）
+
+核心原则：
+  - LLM 只做"翻译"：NL → DSL，不做决策
+  - 所有执行确定性：后端代码路由，无 ReAct 循环
   - Schema 动态加载：根据 intent 注入对应 schema
   - Pydantic 校验：校验失败立即 retry
   - 无 ReAct：彻底移除循环决策
@@ -13,15 +23,16 @@ GeoAgent 核心模块
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Generator, Optional
 from openai import OpenAI
 import threading
 
 from geoagent.compiler import GISCompiler
 from geoagent.compiler.intent_classifier import IntentClassifier
+from geoagent.layers.pipeline import SixLayerPipeline, PipelineConfig, run_pipeline as run_six_layer
+
 
 # API Key 持久化存储
 _API_KEY_FILE = Path(__file__).parent.parent.parent / ".api_key"
@@ -33,14 +44,11 @@ _API_KEY_FILE = Path(__file__).parent.parent.parent / ".api_key"
 
 class GeoAgent:
     """
-    GeoAgent 核心类 — 基于三层收敛架构
+    GeoAgent 核心类
 
-    架构：User Input → Intent Classifier → Dynamic Schema → Pydantic Validation → Execution
-
-    优势：
-    1. 更稳定：LLM 只做翻译，不做决策
-    2. 更快速：单次 LLM 调用，不需要 ReAct 循环
-    3. 更可控：后端代码决定执行，不依赖 LLM 的工具选择
+    支持两种架构：
+    1. 六层架构（use_six_layer=True）：确定性优先
+    2. 三层收敛架构（use_six_layer=False）：保持向后兼容
     """
 
     def __init__(
@@ -51,6 +59,7 @@ class GeoAgent:
         max_retries: int = 3,
         temperature: float = 0.1,
         enable_fallback: bool = True,
+        use_six_layer: bool = True,
     ):
         if not api_key:
             api_key = self._load_api_key()
@@ -69,6 +78,7 @@ class GeoAgent:
         self.max_retries = max_retries
         self.temperature = temperature
         self.enable_fallback = enable_fallback
+        self.use_six_layer = use_six_layer
 
         self._compiler_instance: Optional[GISCompiler] = None
         self._intent_classifier: IntentClassifier = IntentClassifier()
@@ -100,7 +110,7 @@ class GeoAgent:
     # ── 编译器实例 ──────────────────────────────────────────────────────────
 
     def _get_compiler(self) -> GISCompiler:
-        """获取或创建编译器实例"""
+        """获取或创建编译器实例（三层收敛架构）"""
         if self._compiler_instance is None:
             self._compiler_instance = GISCompiler(
                 api_key=self.api_key,
@@ -120,12 +130,11 @@ class GeoAgent:
         event_callback: Callable[[str, dict], None] = None,
     ) -> Dict[str, Any]:
         """
-        使用三层收敛编译器处理用户请求（同步版本）
+        处理用户请求
 
-        三层流程：
-        1. Intent Classification - 意图分类
-        2. Dynamic Schema Injection - 动态 Schema 注入
-        3. Pydantic Validation + Execution - 校验 + 执行
+        根据 use_six_layer 选择架构：
+        - True（六层架构）：确定性优先，LLM 可选
+        - False（三层收敛）：保持向后兼容
 
         Args:
             user_input: 用户输入的自然语言
@@ -135,12 +144,47 @@ class GeoAgent:
             包含执行结果的字典
         """
         self.stats["total_requests"] += 1
+
+        if self.use_six_layer:
+            return self._compile_six_layer(user_input, event_callback)
+        else:
+            return self._compile_legacy(user_input, event_callback)
+
+    def _compile_six_layer(
+        self,
+        user_input: str,
+        event_callback: Callable[[str, dict], None] = None,
+    ) -> Dict[str, Any]:
+        """六层架构编译"""
+        config = PipelineConfig(
+            enable_clarification=True,
+            enable_fallback=self.enable_fallback,
+            max_retries=self.max_retries,
+            event_callback=event_callback,
+        )
+        result = run_six_layer(user_input, event_callback)
+
+        if result.success:
+            self.stats["successful"] += 1
+        else:
+            self.stats["failed"] += 1
+
+        return result.to_dict()
+
+    def _compile_legacy(
+        self,
+        user_input: str,
+        event_callback: Callable[[str, dict], None] = None,
+    ) -> Dict[str, Any]:
+        """三层收敛架构编译（向后兼容）"""
         compiler = self._get_compiler()
         result = compiler.compile(user_input, event_callback)
+
         if result.get("success"):
             self.stats["successful"] += 1
         else:
             self.stats["failed"] += 1
+
         return result
 
     def compile_stream(
@@ -149,12 +193,48 @@ class GeoAgent:
         event_callback: Callable[[str, dict], None] = None,
     ):
         """
-        使用三层收敛编译器处理用户请求（流式版本）
+        流式处理用户请求
+
+        Args:
+            user_input: 用户输入
+            event_callback: 事件回调
 
         Yields:
             各阶段的事件和最终结果
         """
         self.stats["total_requests"] += 1
+
+        if self.use_six_layer:
+            yield from self._compile_stream_six_layer(user_input, event_callback)
+        else:
+            yield from self._compile_stream_legacy(user_input, event_callback)
+
+    def _compile_stream_six_layer(
+        self,
+        user_input: str,
+        event_callback: Callable[[str, dict], None] = None,
+    ):
+        """六层架构流式编译"""
+        config = PipelineConfig(event_callback=event_callback)
+        pipeline = SixLayerPipeline(config)
+
+        success = False
+        for event in pipeline.run_stream(user_input):
+            yield event
+            if event.get("event") == "layer6_completed":
+                success = event.get("status") == "completed"
+
+        if success:
+            self.stats["successful"] += 1
+        else:
+            self.stats["failed"] += 1
+
+    def _compile_stream_legacy(
+        self,
+        user_input: str,
+        event_callback: Callable[[str, dict], None] = None,
+    ):
+        """三层收敛架构流式编译"""
         compiler = self._get_compiler()
 
         success = False
@@ -223,6 +303,7 @@ def create_agent(
     base_url: str = "https://api.deepseek.com",
     max_retries: int = 3,
     enable_fallback: bool = True,
+    use_six_layer: bool = True,
 ) -> GeoAgent:
     """
     创建 GeoAgent 实例的便捷工厂函数
@@ -233,6 +314,7 @@ def create_agent(
         base_url: API 基础 URL
         max_retries: 最大重试次数
         enable_fallback: 是否启用 fallback
+        use_six_layer: 是否使用六层架构（True=确定性优先，False=向后兼容）
 
     Returns:
         GeoAgent 实例
@@ -243,6 +325,7 @@ def create_agent(
         base_url=base_url,
         max_retries=max_retries,
         enable_fallback=enable_fallback,
+        use_six_layer=use_six_layer,
     )
 
 
