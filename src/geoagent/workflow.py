@@ -49,6 +49,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time as time_module
 from pathlib import Path
 from typing import (
     TypedDict, List, Dict, Any, Optional, Literal, Generator, Callable
@@ -97,6 +99,12 @@ class WorkflowState(TypedDict, total=False):
     total_steps: int
     # 最多执行步数
     max_steps: int
+    # LLM 客户端（内部使用，用于 API 调用）
+    _client: Any
+    # 模型名称（内部使用）
+    _model: str
+    # 最大重试次数（内部使用）
+    _max_retries: int
 
 
 # =============================================================================
@@ -1274,7 +1282,8 @@ def reviewer_node(state: WorkflowState) -> WorkflowState:
     │  步骤失败但次数 < max_retries  │  → 重试同一节点             │
     │  步骤失败且次数 >= max_retries │  → 跳过，继续下一步          │
     │  已无剩余步骤                   │  → 转到 summarizer          │
-    │  模式为 react                   │  → 继续 react_fallback      │
+    │  模式为 react（已完成）          │  → 转到 summarizer          │
+    │  模式为 react（未完成）          │  → 继续 executor            │
     └────────────────────────────────┴────────────────────────────┘
 
     关键保证：所有循环必须经过 Reviewer，不可能从 Executor 直接重试。
@@ -1286,9 +1295,11 @@ def reviewer_node(state: WorkflowState) -> WorkflowState:
     max_retries = state.get("_max_retries", 2)
 
     if mode == "react":
-        # ReAct 模式：reviewer 触发 react_execute_full
-        _emit(state, "react_start", {"msg": "计划解析失败，降级为 ReAct 模式"})
-        state["is_complete"] = False
+        # ReAct 模式：直接路由到 summarizer，由 summarizer 决定后续
+        # 关键修复：不要无条件覆盖 is_complete！让它保持原值
+        # 如果 _react_execute_full 已设置 is_complete=True，路由到 summarizer
+        # 如果还没完成（_react_execute_full 返回），路由到 executor
+        state["is_complete"] = state.get("is_complete", True)
         return state
 
     if current_index >= len(plan):
@@ -1453,10 +1464,15 @@ def _route_after_executor(state: WorkflowState) -> Literal["reviewer", "summariz
 
 def _route_after_reviewer(state: WorkflowState) -> Literal["executor", "summarizer"]:
     """
-    Reviewer → Executor（继续 Plan-and-Execute）
-              → Summarizer（全部完成或 ReAct 模式）
+    Reviewer → Executor（继续 Plan-and-Execute 或 ReAct 未完成）
+              → Summarizer（全部完成）
     """
-    if state.get("is_complete") or state.get("mode") == "react":
+    if state.get("is_complete"):
+        return "summarizer"
+    # ReAct 模式：即使 is_complete=False，只要已完成当前轮就路由到 summarizer
+    # 但如果 is_complete=False 且还在执行中，应该回到 executor
+    # 通过检查 final_response 是否已设置来判断
+    if state.get("mode") == "react" and state.get("final_response"):
         return "summarizer"
     return "executor"
 
@@ -1732,9 +1748,10 @@ class GeoAgentWorkflow:
         user_query: str,
         event_callback: Optional[Callable] = None,
         thread_id: str = "default",
+        timeout: float = 300.0,
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        流式执行 workflow（Generator 风格）。
+        流式执行 workflow（Generator 风格），带超时保护。
 
         每 yield 一次是一个事件 dict，event 字段标识类型。
 
@@ -1744,17 +1761,18 @@ class GeoAgentWorkflow:
         - review_pass / review_retry / review_skip
         - react_start / react_complete / react_max_steps / react_error / react_turn_start
         - tool_call_start / tool_call_end
-        - final_response / error
+        - final_response / error / timeout
 
         最终 yield 包含完整结果 dict。
         """
         # 事件缓冲
         events_buffer: List[Dict] = []
+        stream_error: Dict[str, Any] = {"type": None}  # {"type": "error", "error": ...} or {"type": "result", "result": ...}
+        stream_lock = threading.Lock()
 
         def wrapped_callback(event_type: str, payload: dict):
             item = {"event": event_type, "payload": payload}
             events_buffer.append(item)
-            # 实时推送给前端
             if event_callback:
                 try:
                     event_callback(event_type, payload)
@@ -1794,28 +1812,80 @@ class GeoAgentWorkflow:
 
         config = {"configurable": {"thread_id": thread_id}}
 
-        # ── 使用 stream() 实时获取每个节点的状态变化 ─────────────────
-        # stream_mode="values" 会在每个节点执行后 yield 完整状态
-        # 我们利用它来收集最终状态，同时让 wrapped_callback 实时推送事件
-        try:
-            final_state: Optional[WorkflowState] = None
-            for step_state in self._compiled.stream(initial_state, config, stream_mode="values"):
-                final_state = step_state
-                # 事件由节点内部的 _emit() 通过 wrapped_callback 实时 yield，
-                # 这里不再重复 yield，以免重复
+        # ── 带超时保护的 stream 执行 ────────────────────────────────
+        # 使用线程 + Event 实现可中断的 stream 迭代
+        def _stream_with_timeout():
+            nonlocal stream_error
+            # 累积最终状态（因为 updates 模式只返回增量）
+            accumulated_state = dict(initial_state)
+            try:
+                # 使用 stream_mode="updates" 获取每个节点的状态更新
+                # 这样可以正确触发 wrapped_callback 回调
+                for step_update in self._compiled.stream(initial_state, config, stream_mode="updates"):
+                    if stream_error.get("type") == "interrupt":
+                        break
+                    # 合并更新到累积状态（只更新存在的字段，保留 _client 等内部字段）
+                    for node_name, node_state in step_update.items():
+                        if node_state and isinstance(node_state, dict):
+                            # 只更新 node_state 中存在的字段，避免覆盖 _client 等内部字段
+                            for key, value in node_state.items():
+                                if value is not None:
+                                    accumulated_state[key] = value
+                    with stream_lock:
+                        stream_error = {"type": "state", "state": accumulated_state}
+            except Exception as e:
+                with stream_lock:
+                    stream_error = {"type": "error", "error": str(e)}
 
-            if final_state is None:
-                final_state = initial_state
+        stream_thread = threading.Thread(target=_stream_with_timeout, daemon=True)
+        stream_thread.start()
 
-        except Exception as e:
-            self.stats["errors"] += 1
-            yield {
-                "event": "error",
-                "payload": {"error": str(e)},
-                "success": False,
-                "final_response": f"Workflow 执行异常: {e}",
-            }
-            return
+        # 等待 stream 完成或超时
+        start_time = time_module.time()
+        final_state: Optional[WorkflowState] = None
+        while stream_thread.is_alive():
+            if time_module.time() - start_time > timeout:
+                stream_error = {"type": "interrupt"}
+                wrapped_callback("timeout", {
+                    "msg": f"Workflow 执行超时（{timeout}秒），已强制中断",
+                    "timeout": timeout,
+                })
+                break
+            time_module.sleep(0.5)
+
+        stream_thread.join(timeout=5.0)
+
+        with stream_lock:
+            if stream_error["type"] == "state":
+                final_state = stream_error["state"]
+            elif stream_error["type"] == "error":
+                self.stats["errors"] += 1
+                yield {
+                    "event": "error",
+                    "payload": {"error": stream_error["error"]},
+                    "success": False,
+                    "final_response": f"Workflow 执行异常: {stream_error['error']}",
+                }
+                return
+            elif stream_error["type"] == "interrupt":
+                self.stats["errors"] += 1
+                yield {
+                    "event": "timeout",
+                    "payload": {"msg": f"Workflow 执行超时（{timeout}秒）", "timeout": timeout},
+                    "success": False,
+                    "final_response": (
+                        f"⚠️ Workflow 执行超时（{timeout}秒）。"
+                        "可能是网络问题或任务过于复杂，请尝试简化任务或稍后重试。"
+                    ),
+                    "mode": "timeout",
+                    "plan": [],
+                    "step_results": [],
+                    "stats": self.stats.copy(),
+                }
+                return
+
+        if final_state is None:
+            final_state = initial_state
 
         self.stats["total_turns"] += final_state.get("stats", {}).get("total_turns", 0)
         self.stats["tool_calls"] += final_state.get("stats", {}).get("tool_calls", 0)

@@ -68,3 +68,8 @@ logs/
 src/*.egg-info/
 # 忽略 Visual Studio 和插件的缓存
 .vs/
+.vs/
+.history/
+*.db
+*.opendb
+workspace/2025 GIS考核(公开）.zip

@@ -21,6 +21,7 @@ UI 设计：Large-Format · 巨型字体 · 超大控件 · 地图主屏
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import os
 import sys
@@ -288,6 +289,7 @@ def _init_session_state():
         "_rendered_msg_ids": set(),
         "agent_log": [],
         "sidebar_collapsed": False,
+        "llm_status": "idle",  # idle | thinking | speaking | stopped
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -295,6 +297,121 @@ def _init_session_state():
 
 
 _init_session_state()
+
+
+# =============================================================================
+# LLM 状态指示器
+# =============================================================================
+
+def _render_llm_status():
+    """侧边栏 LLM 状态灯。第二行为当前步骤简述。
+
+    使用 components.html 而非 st.markdown，避免 Streamlit 对 HTML 消毒时剥掉标签、
+    只留下字面量 </span> / </div> 的问题。
+    """
+    status = st.session_state.get("llm_status", "idle")
+
+    if status == "idle":
+        color = "#D1D5DB"
+        label = "待机"
+        glow = "none"
+    elif status == "thinking":
+        color = "#FBBF24"
+        label = "思考中"
+        glow = f"0 0 10px {color}, 0 0 18px {color}40"
+    elif status == "speaking":
+        color = "#34D399"
+        label = "输出中"
+        glow = f"0 0 10px {color}, 0 0 18px {color}40"
+    else:  # stopped
+        color = "#F87171"
+        label = "已停止"
+        glow = "none"
+
+    pulse_style = "animation: llm-pulse 1.5s ease-in-out infinite;" if status in ("thinking", "speaking") else ""
+
+    node = (st.session_state.get("llm_current_node", "") or "").strip()
+    node_safe = html.escape(node)
+    label_safe = html.escape(label)
+    node_block = (
+        '<p class="llm-node">' + node_safe + "</p>" if node_safe else ""
+    )
+
+    # 有副标题时略增高 iframe，避免裁切
+    iframe_h = 92 if node_safe else 64
+
+    # 用户文案用拼接写入，避免 f-string 与花括号冲突
+    page = (
+        f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"/>
+<style>
+  * {{ box-sizing: border-box; }}
+  html, body {{
+    margin: 0; padding: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: transparent;
+  }}
+  @keyframes llm-pulse {{
+    0%, 100% {{ opacity: 1; transform: scale(1); }}
+    50% {{ opacity: 0.65; transform: scale(0.94); }}
+  }}
+  .llm-status {{
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #FAFAFA 0%, #F3F4F6 100%);
+    border-radius: 12px;
+    border: 1px solid #E5E7EB;
+  }}
+  .llm-dot {{
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: {color};
+    box-shadow: {glow};
+    flex-shrink: 0;
+    margin-top: 2px;
+    {pulse_style}
+  }}
+  .llm-right {{
+    flex: 1;
+    min-width: 0;
+  }}
+  .llm-label {{
+    font-size: 14px;
+    font-weight: 600;
+    color: #374151;
+    letter-spacing: 0.02em;
+    margin: 0;
+    line-height: 1.35;
+  }}
+  .llm-node {{
+    font-size: 12px;
+    color: #6B7280;
+    margin: 4px 0 0 0;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }}
+</style></head>
+<body>
+  <div class="llm-status">
+    <div class="llm-dot" aria-hidden="true"></div>
+    <div class="llm-right">
+      <p class="llm-label">LLM · """
+        + label_safe
+        + """</p>"""
+        + node_block
+        + """
+    </div>
+  </div>
+</body></html>"""
+    )
+
+    st.components.v1.html(page, height=iframe_h, scrolling=False)
 
 
 # =============================================================================
@@ -368,6 +485,7 @@ def _format_click_context(clicked: dict) -> str:
 
 def _render_sidebar():
     with st.sidebar:
+        _render_llm_status()
         st.header("⚙️ 配置")
 
         st.button(
@@ -586,16 +704,19 @@ def main():
             padding-right: 0 !important;
             min-width: 280px !important;
             max-width: 280px !important;
-            overflow: visible !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
             visibility: visible !important;
             display: flex !important;
             flex-direction: column !important;
         }
         [data-testid="stSidebar"] > div {
-            overflow: visible !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
             visibility: visible !important;
             display: flex !important;
             flex-direction: column !important;
+            max-height: 100% !important;
         }
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] .stTextInput label,
@@ -647,8 +768,24 @@ def main():
             overflow-y: auto !important;
             overflow-x: hidden !important;
             padding-right: 8px !important;
-            min-height: 38vh !important;
+            min-height: unset !important;
             max-height: 61.75vh !important;
+        }
+
+        /* Streamlit chatMessage容器之间默认有大间距，收紧 */
+        [data-testid="stChatMessage"] {
+            margin-top: 0px !important;
+            margin-bottom: 4px !important;
+        }
+
+        /* chatMessageContent 去掉多余底部 padding */
+        [data-testid="stChatMessageContent"] {
+            padding-bottom: 4px !important;
+        }
+
+        /* chatInput 上方间距收紧，贴近消息 */
+        [data-testid="stChatInput"] {
+            margin-top: 6px !important;
         }
 
         /* ── 8. CHAT BUBBLES — 超大字体 ───────────────── */
@@ -1068,6 +1205,14 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # 动态步骤说明（实时更新）
+    node_text = st.session_state.get("llm_current_node", "")
+    if node_text and node_text not in ("🚀 启动中...", ""):
+        st.markdown(
+            f"<div style='text-align:center; margin-top:4px; font-size:0.72rem; color:#6B7280'>{html.escape(node_text)}</div>",
+            unsafe_allow_html=True,
+        )
+
     st.markdown("<hr>", unsafe_allow_html=True)
 
     # ── 核心布局：地图在上，聊天在下，填满剩余空间 ──────────────
@@ -1266,9 +1411,12 @@ def _handle_user_message(prompt: str, agent):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        status_ph = st.empty()
         content_ph = st.empty()
-        status_ph.info("🏃 正在启动 Agent...")
+        # 追踪已渲染文本（用于流式追加）
+        rendered_text = ""
+
+        st.session_state["llm_status"] = "thinking"
+        st.session_state["llm_current_node"] = "🚀 启动中..."
 
         stream_state = {
             "text": "",
@@ -1285,179 +1433,113 @@ def _handle_user_message(prompt: str, agent):
         if _OUTPUTS_DIR.exists():
             baseline = set(_OUTPUTS_DIR.glob("*.html"))
 
+        def _update_stream(text: str):
+            """追加新内容并渲染，末尾加闪烁光标表示正在输出。"""
+            nonlocal rendered_text
+            new = text[len(rendered_text):]
+            rendered_text = text
+            if new:
+                cursor = '<span style="animation:blink 1s infinite">▍</span>'
+                content_ph.markdown(text + cursor, unsafe_allow_html=True)
+
+        # ── 统一日志追加辅助（所有事件统一写入思考日志）──────────────
+        def _log(etype: str, msg: str):
+            st.session_state["agent_log"].append({
+                "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                "type": etype,
+                "msg": msg,
+            })
+
         def on_event(event_type: str, payload: dict):
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
             et_lower = event_type.lower()
 
-            # ── 实时更新状态标签 ──────────────────────────────
+            # ── 仅更新内部状态，不调用 st.*（全部收敛到思考日志）──
             if et_lower == "plan_start":
-                stream_state["current_node"] = "🧠 **Planner** 生成计划中..."
-                status_ph.info("🧠 Planner 生成计划中...")
+                stream_state["current_node"] = "🧠 Planner 生成计划中..."
+                _log("plan", "📋 Planner 启动，正在制定任务计划...")
             elif et_lower == "plan_generated":
-                stream_state["current_node"] = "🧠 **Planner** 计划已就绪"
-                stream_state["plan_steps"] = payload.get("plan", [])
-                status_ph.success("✅ Planner 完成")
+                stream_state["current_node"] = "🧠 Planner 计划已就绪"
+                plan = payload.get("plan", [])
+                steps = [
+                    f"  步骤{i+1}: {s.get('action_name','?')} — {s.get('description','')}"
+                    for i, s in enumerate(plan)
+                ]
+                _log("plan", f"✅ 计划已生成，共 {len(plan)} 步:\n" + "\n".join(steps[:8]))
             elif et_lower == "step_start":
                 stream_state["step_count"] += 1
                 step_num = stream_state["step_count"]
                 tool = payload.get("tool", "")
-                stream_state["current_node"] = f"⚡ **Executor** 执行中 ({step_num}步) · `{tool}`"
-                status_ph.info(f"⚡ Executor 执行第 {step_num} 步: `{tool}`")
+                desc = payload.get("description", "")
+                stream_state["current_node"] = f"⚡ Executor 执行中 ({step_num}步) · {tool}"
+                _log("step", f"⚡ 第 {step_num} 步: `{tool}` — {desc}")
             elif et_lower == "step_end":
-                status_ph.success("✅ 步骤完成")
+                _log("review", f"{'✅' if payload.get('success') else '❌'} 步骤完成: `{payload.get('tool','')}`")
             elif et_lower == "react_start":
-                stream_state["current_node"] = "🔄 **ReAct** 模式启动"
-                status_ph.info("🔄 降级为 ReAct 模式")
+                stream_state["current_node"] = "🔄 ReAct 模式启动"
+                _log("plan", "🔄 计划解析失败，降级为 ReAct 模式")
             elif et_lower == "react_turn_start":
                 turn = payload.get("turn", "")
                 max_turns = payload.get("max_turns", "")
-                stream_state["current_node"] = f"🔄 **ReAct** 第 {turn}/{max_turns} 轮"
-                status_ph.info(f"🔄 ReAct 第 {turn}/{max_turns} 轮中...")
+                stream_state["current_node"] = f"🔄 ReAct 第 {turn}/{max_turns} 轮"
+                _log("step", f"🔄 ReAct 第 {turn}/{max_turns} 轮中...")
             elif et_lower == "react_error":
-                status_ph.error(f"❌ ReAct 错误: {str(payload.get('error',''))[:60]}")
+                stream_state["current_node"] = "❌ ReAct 错误"
+                _log("error", f"❌ ReAct 错误: {str(payload.get('error',''))[:300]}")
+            elif et_lower == "react_max_steps":
+                _log("error", f"⚠️ ReAct 达到最大步数限制 ({payload.get('turns','')})")
             elif et_lower == "react_complete":
-                stream_state["current_node"] = "✅ **ReAct** 执行完成"
-                status_ph.success("✅ ReAct 执行完成")
+                stream_state["current_node"] = "✅ ReAct 执行完成"
+                _log("info", "✅ ReAct 执行完成")
             elif et_lower == "tool_call_start":
                 tool = payload.get("tool", "")
-                stream_state["current_node"] = f"🔧 调用工具: `{tool}`"
+                stream_state["current_node"] = f"🔧 调用工具: {tool}"
+                _log("tool", f"🔧 触发工具: `{tool}`")
             elif et_lower == "tool_call_end":
                 succ = payload.get("success", False)
-                stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 `{payload.get('tool','')}` {'成功' if succ else '失败'}"
+                stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 {payload.get('tool','')}"
+                _log("tool", f"{'✅' if succ else '❌'} `{payload.get('tool','')}` {'成功' if succ else '失败'}")
             elif et_lower == "review_pass":
-                stream_state["current_node"] = "🔍 **Reviewer** 审查通过"
-                status_ph.success("🔍 Reviewer 审查通过")
+                stream_state["current_node"] = "🔍 Reviewer 审查通过"
+                _log("review", f"✅ 审查通过: 步骤 {payload.get('step_id','')}")
             elif et_lower == "review_retry":
-                stream_state["current_node"] = "🔄 **Reviewer** 重试中"
-                status_ph.warning("🔄 Reviewer 正在重试...")
+                stream_state["current_node"] = "🔄 Reviewer 重试中"
+                _log("review", f"🔄 审查重试: `{payload.get('tool','')}` (第 {payload.get('attempt','')} 次)")
             elif et_lower == "review_skip":
-                stream_state["current_node"] = "⚠️ **Reviewer** 跳过"
-                status_ph.warning("⚠️ Reviewer 跳过该步骤")
+                stream_state["current_node"] = "⚠️ Reviewer 跳过"
+                _log("error", f"⚠️ 审查跳过: `{payload.get('tool','')}` 已重试 {payload.get('attempt','')} 次")
+            elif et_lower == "step_skipped_deadloop":
+                stream_state["current_node"] = "⚠️ 死循环防护"
+                _log("error", f"⚠️ `{payload.get('tool','')}` 连续失败，强制跳过 — {payload.get('reason','')}")
             elif et_lower == _EVT.ERROR:
                 stream_state["has_error"] = True
                 stream_state["error_msg"] = payload.get("error", "未知错误")
-                status_ph.error(f"❌ 系统错误: {stream_state['error_msg'][:60]}")
-            elif et_lower == _EVT.LLM_THINKING:
-                stream_state["text"] = payload.get("full_text", "")
-
-            # ── 日志追加 ───────────────────────────────────
-            log_entry = {"ts": ts, "type": "info", "msg": f"Event: {event_type}"}
-            if et_lower == "plan_start":
-                log_entry = {"ts": ts, "type": "plan", "msg": "📋 Planner 启动，正在制定任务计划..."}
-            elif et_lower == "plan_generated":
-                plan = payload.get("plan", [])
-                steps = [
-                    f"步骤{i+1}: {s.get('action_name','?')} ({s.get('description','')})"
-                    for i, s in enumerate(plan)
-                ]
-                log_entry = {
-                    "ts": ts, "type": "plan",
-                    "msg": f"✅ 计划已生成，共 {len(plan)} 步:\n" + "\n".join(steps[:5]),
-                }
-            elif et_lower == "step_start":
-                log_entry = {
-                    "ts": ts, "type": "step",
-                    "msg": f"⚡ 执行中: {payload.get('description','')} [工具: {payload.get('tool','')}]",
-                }
-            elif et_lower == "step_end":
-                status_s = "✅" if payload.get("success") else "❌"
-                log_entry = {
-                    "ts": ts, "type": "review",
-                    "msg": f"{status_s} 步骤完成: {payload.get('tool','')}",
-                }
-            elif et_lower == "step_skipped_deadloop":
-                log_entry = {
-                    "ts": ts, "type": "error",
-                    "msg": f"⚠️ {payload.get('tool','')} 连续失败，强制跳过",
-                }
-            elif et_lower == "review_pass":
-                log_entry = {
-                    "ts": ts, "type": "review",
-                    "msg": f"✅ 审查通过: 步骤 {payload.get('step_id','')}",
-                }
-            elif et_lower == "review_retry":
-                log_entry = {
-                    "ts": ts, "type": "review",
-                    "msg": f"🔄 审查重试: {payload.get('tool','')} (第 {payload.get('attempt','')} 次)",
-                }
-            elif et_lower == "review_skip":
-                log_entry = {
-                    "ts": ts, "type": "review",
-                    "msg": f"⚠️ 审查跳过: {payload.get('tool','')} 已重试 {payload.get('attempt','')} 次",
-                }
-            elif et_lower == "react_start":
-                log_entry = {
-                    "ts": ts, "type": "plan",
-                    "msg": "🔄 计划解析失败，降级为 ReAct 模式",
-                }
-            elif et_lower == "react_turn_start":
-                log_entry = {
-                    "ts": ts, "type": "step",
-                    "msg": f"🔄 ReAct 第 {payload.get('turn','')}/{payload.get('max_turns','')} 轮...",
-                }
-            elif et_lower == "react_error":
-                log_entry = {
-                    "ts": ts, "type": "error",
-                    "msg": f"❌ ReAct 错误: {payload.get('error','')}",
-                }
-            elif et_lower == "react_max_steps":
-                log_entry = {
-                    "ts": ts, "type": "info",
-                    "msg": f"⚠️ ReAct 达到最大步数限制 ({payload.get('turns','')})",
-                }
-            elif et_lower == "react_complete":
-                log_entry = {
-                    "ts": ts, "type": "info",
-                    "msg": "✅ ReAct 执行完成",
-                }
-            elif et_lower == "tool_call_start":
-                log_entry = {
-                    "ts": ts, "type": "tool",
-                    "msg": f"🔧 触发工具: `{payload.get('tool','')}`",
-                }
-            elif et_lower == "tool_call_end":
-                succ = payload.get("success", False)
-                log_entry = {
-                    "ts": ts, "type": "tool",
-                    "msg": f"{'✅' if succ else '❌'} {payload.get('tool','')}",
-                }
-            elif et_lower == _EVT.ERROR:
-                log_entry = {
-                    "ts": ts, "type": "error",
-                    "msg": f"❌ 错误: {payload.get('error','')}",
-                }
-            elif et_lower == _EVT.LLM_THINKING:
-                pass
-            elif et_lower == _EVT.FINAL_RESPONSE:
-                log_entry = {"ts": ts, "type": "info", "msg": "💬 推理完成"}
+                _log("error", f"❌ 系统错误: {stream_state['error_msg'][:300]}")
+            elif et_lower == "timeout":
+                stream_state["has_error"] = True
+                stream_state["error_msg"] = payload.get("msg", "执行超时")
+                _log("error", f"⏱️ 执行超时: {payload.get('msg', '执行超时')}")
             elif et_lower == "plan_retry":
-                log_entry = {
-                    "ts": ts, "type": "plan",
-                    "msg": f"🔄 {payload.get('msg', '解析失败，正在重试...')} (第 {payload.get('attempt', 1)} 次)",
-                }
+                _log("plan", f"🔄 {payload.get('msg', '解析失败，正在重试...')} (第 {payload.get('attempt', 1)} 次)")
             elif et_lower == "plan_failed":
+                _log("error", f"⚠️ 计划解析失败，降级为 ReAct 模式: {payload.get('msg','')}")
                 raw = payload.get("raw", "")
-                st.warning(f"⚠️ 计划解析失败，降级为 ReAct 模式: {payload.get('msg', '')}")
                 if raw:
-                    with st.expander("🔍 模型原始输出（调试用）"):
-                        st.code(raw[:1000] if len(raw) > 1000 else raw, language="text")
-                log_entry = {
-                    "ts": ts, "type": "info",
-                    "msg": f"⚠️ 计划失败: {payload.get('msg','')}",
-                }
+                    _log("info", f"🔍 模型原始输出: {raw[:400]}...")
             elif et_lower == "plan_error":
-                err_msg = payload.get("msg", "")
-                st.error(f"❌ Planner 异常: {err_msg}")
-                log_entry = {
-                    "ts": ts, "type": "error",
-                    "msg": f"❌ Planner 节点异常: {err_msg}",
-                }
-
-            if log_entry:
-                st.session_state["agent_log"].append(log_entry)
+                _log("error", f"❌ Planner 异常: {payload.get('msg','')}")
+            elif et_lower == _EVT.FINAL_RESPONSE:
+                _log("info", "💬 推理完成")
+            elif et_lower == "final_response":
+                _log("info", "💬 Workflow 执行完成")
+            elif et_lower == _EVT.LLM_THINKING:
+                full_text = payload.get("full_text", "")
+                stream_state["text"] = full_text
+                st.session_state["llm_status"] = "speaking"
+                st.session_state["llm_current_node"] = "LLM 输出中"
+                _update_stream(full_text)
 
         if hasattr(agent, "chat_langgraph"):
-            status_ph.info("🧠 LangGraph DAG — Planner 生成计划中...")
+            _log("info", "🚀 LangGraph DAG 启动 — Planner 生成计划中...")
             result = None
             for event in agent.chat_langgraph(
                 prompt,
@@ -1466,42 +1548,42 @@ def _handle_user_message(prompt: str, agent):
                 max_retries=2,
                 thread_id=cid,
             ):
-                if isinstance(event, dict):
-                    if "final_response" in event:
-                        result = event
-                    elif event.get("final_response"):
-                        result = event
+                if isinstance(event, dict) and event.get("final_response") is not None:
+                    result = event
 
             if result:
                 final_content = result.get("final_response", "")
                 stream_state["tools"] = result.get("step_results", [])
+                mode = result.get("mode", "")
+                if mode:
+                    _log("info", f"📋 执行模式: {mode}")
             else:
                 final_content = ""
+                _log("error", "⚠️ 未获取到执行结果，可能超时或异常中断")
         else:
+            _log("info", "🚀 Agent 启动...")
             for _ in agent.chat_stream(prompt, on_event):
                 pass
             final_content = stream_state["text"]
 
         if stream_state["has_error"]:
-            final_content = (final_content or "") + f"\n\n> **❌ 系统提示:** `{stream_state['error_msg']}`"
+            final_content = (final_content or "") + f"\n\n> **⚠️ 提示:** {stream_state['error_msg']}"
 
-        # ── 显示最终回复 ────────────────────────────────────
-        status_ph.empty()
-        if stream_state["current_node"]:
-            node_display = stream_state["current_node"].replace("**", "").replace("`", "")
-            status_ph.markdown(
-                f"<span style='font-size:0.875rem; color:#6B7280'>"
-                f"{node_display}"
-                f"</span>",
-                unsafe_allow_html=True,
-            )
+        # ── 显示最终回复（已无光标）──
         if final_content:
             content_ph.markdown(final_content)
         elif stream_state["tools"]:
-            tool_list = "，".join(f"`{t.get('tool','')}`" for t in stream_state["tools"])
-            content_ph.info(f"✅ Agent 执行完成，共调用 {len(stream_state['tools'])} 个工具：{tool_list}")
+            tool_list = "，".join(f"`{t.get('tool','')}" for t in stream_state["tools"])
+            content_ph.markdown(f"✅ Agent 执行完成，共调用 **{len(stream_state['tools'])}** 个工具：{tool_list}")
         else:
-            content_ph.info("✅ Agent 响应完成（无文本输出）")
+            content_ph.markdown("✅ Agent 响应完成（无文本输出）")
+
+        # 将最终状态写入思考日志
+        if stream_state["has_error"]:
+            _log("error", f"🏁 执行完成（含错误）: {stream_state['error_msg'][:200]}")
+        else:
+            node = stream_state.get("current_node", "")
+            _log("info", f"🏁 执行完成 — {node.replace('**', '')}" if node else "🏁 执行完成")
 
         asst_msg_id = f"asst_{uuid.uuid4().hex[:8]}"
         st.session_state["conversations"][cid]["messages"].append({
