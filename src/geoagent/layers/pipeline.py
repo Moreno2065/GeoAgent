@@ -8,6 +8,11 @@
 - 统一的 PipelineResult 格式
 - 支持事件回调（用于前端进度展示）
 - 完全确定性，无 LLM 决策
+
+LLM 配置（可选）：
+- use_reasoner=False（推荐）：确定性 DSL 构建，不用 LLM
+- use_reasoner=True：NL → GeoDSL（用 DeepSeek Reasoner）
+  仅在复杂多步骤任务时启用
 """
 
 from __future__ import annotations
@@ -108,11 +113,15 @@ class PipelineConfig:
         enable_fallback: 是否启用 fallback
         max_retries: 最大重试次数
         event_callback: 事件回调函数
+        use_reasoner: 是否使用 Reasoner 模式（NL → GeoDSL）
+        reasoner_factory: Reasoner 实例工厂函数（可选）
     """
     enable_clarification: bool = True
     enable_fallback: bool = True
     max_retries: int = 3
     event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    use_reasoner: bool = False
+    reasoner_factory: Optional[Callable[[], Any]] = None
 
 
 # =============================================================================
@@ -302,6 +311,8 @@ class SixLayerPipeline:
             dsl = build_dsl(
                 scenario=orchestration_result.scenario,
                 extracted_params=orchestration_result.extracted_params,
+                use_reasoner=self.config.use_reasoner,
+                reasoner_factory=self.config.reasoner_factory,
             )
 
             result.dsl = dsl

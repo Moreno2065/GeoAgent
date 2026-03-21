@@ -12,7 +12,7 @@ GeoAgent 统一任务描述语言（GeoDSL）的核心协议定义。
 from __future__ import annotations
 
 from typing import Literal, Optional, Any, Dict, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
 
 
@@ -104,8 +104,7 @@ class GeoDSL(BaseModel):
         description="追问的答案"
     )
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # =============================================================================

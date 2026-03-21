@@ -90,34 +90,52 @@ class ParameterExtractor:
     - 文件名提取
     """
 
-    # 距离提取正则
+    # ── GIS 文件扩展名（已扩展）────────────────────────────────────────
+    GIS_EXTENSIONS = [
+        ".shp", ".geojson", ".json", ".gpkg", ".tif", ".tiff",
+        ".kml", ".gml", ".xyz", ".topojson", ".osm",
+        ".csv", ".xlsx", ".xls", ".fgb", ".mvt",
+    ]
+
+    # ── 中文动词（用于过滤文件引用误匹配）────────────────────────────────
+    CHINESE_VERBS = [
+        "叠加", "解析", "读取", "写入", "保存", "转换",
+        "打开", "导入", "导出", "裁剪", "合并", "分析", "处理",
+        "叠加", "融合", "生成", "制作", "创建",
+    ]
+
+    # ── 距离提取模式──────────────────────────────────────────────────
+    # 关键：\b 是 ASCII 单词边界，不识别中文字符！
+    # 所有以中文结尾的模式必须移除 \b
     DISTANCE_PATTERNS = [
+        # 公里/千米
         (r"(\d+(?:\.\d+)?)\s*(?:公里|km|kilometers?)", "kilometers"),
-        (r"(\d+(?:\.\d+)?)\s*(?:米|meters?|m(?![a-z]))", "meters"),
-        (r"(\d+(?:\.\d+)?)\s*(?:千米|km)", "kilometers"),
         (r"方圆\s*(\d+(?:\.\d+)?)\s*(?:公里|km)", "kilometers"),
+        (r"(\d+(?:\.\d+)?)\s*(?:公里|km)\s*(?:范围|内|以外)", "kilometers"),
+        # 米
+        (r"(\d+(?:\.\d+)?)\s*(?:米|meters?)", "meters"),
+        (r"(\d+(?:\.\d+)?)\s*m\b(?![a-zA-Z])", "meters"),  # buffer 200m (英文)
         (r"方圆\s*(\d+(?:\.\d+)?)\s*(?:米|m)", "meters"),
+        # 独立数字（语境判断：周边/缓冲/方圆 + 数字）
+        (r"(?:周边|方圆|半径|范围|距离|缓冲)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)?", "meters"),
     ]
 
-    # 时间提取正则（分钟）
+    # ── 时间提取模式──────────────────────────────────────────────────
     TIME_PATTERNS = [
-        (r"(\d+)\s*分钟", "minutes"),
-        (r"(\d+)\s*min", "minutes"),
-        (r"(\d+)\s*小时", "hours"),
+        (r"(\d+(?:\.\d+)?)\s*分钟", "minutes"),
+        (r"(\d+(?:\.\d+)?)\s*min\b", "minutes"),
+        (r"(\d+(?:\.\d+)?)\s*小时", "hours"),
+        (r"(\d+(?:\.\d+)?)\s*h\b", "hours"),
+        (r"(\d+(?:\.\d+)?)\s*天", "days"),
     ]
 
-    # 模式提取关键词
+    # ── 交通模式关键词────────────────────────────────────────────────
     MODE_KEYWORDS = {
         "walking": ["步行", "走路", "徒步", "walk", "walking"],
-        "driving": ["驾车", "开车", "自驾", "drive", "driving", "开车"],
+        "driving": ["驾车", "开车", "自驾", "drive", "driving"],
         "transit": ["公交", "地铁", "公共交通", "transit", "bus"],
         "cycling": ["骑行", "骑车", "bike", "cycling"],
     }
-
-    # 地点连接词
-    LOCATION_CONNECTORS = [
-        "到", "至", "→", "->", "从", "from", "to",
-    ]
 
     def extract_distance(self, query: str) -> Optional[Dict[str, Any]]:
         """从查询中提取距离参数"""
@@ -125,6 +143,9 @@ class ParameterExtractor:
             match = re.search(pattern, query, re.IGNORECASE)
             if match:
                 value = float(match.group(1))
+                if unit == "kilometers":
+                    value *= 1000  # 转换为米
+                    unit = "meters"
                 return {
                     "distance": value,
                     "unit": unit,
@@ -138,7 +159,9 @@ class ParameterExtractor:
             if match:
                 value = float(match.group(1))
                 if unit == "hours":
-                    value *= 60  # 转换为分钟
+                    value *= 60
+                elif unit == "days":
+                    value *= 1440
                 return {
                     "time_threshold": value,
                     "time_unit": "minutes",
@@ -154,40 +177,74 @@ class ParameterExtractor:
                     return mode
         return None
 
+    def extract_numeric_param(self, query: str, unit: str = None) -> Optional[float]:
+        """从查询中提取数值参数（通用）"""
+        patterns = [
+            r"(\d+(?:\.\d+)?)\s*(?:米|m|km|seconds?|分钟|min|小时|h|days?|天)",
+            r"(\d+(?:\.\d+)?)\s*m\s*(?![a-zA-Z])",  # e.g. 500m (ASCII)
+            r"(\d+(?:\.\d+)?)",  # 纯数字备用
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query)
+            if match:
+                return float(match.group(1))
+        return None
+
     def extract_locations(self, query: str) -> Dict[str, Optional[str]]:
         """从查询中提取起点和终点"""
         result = {"start": None, "end": None}
 
-        # 尝试匹配 "从X到Y" 模式
+        # 模式按优先级排序（最宽松的放最后兜底）
+        # 关键：\s* 两端都允许零个空格，因为中文经常没有空格分隔
         patterns = [
-            r"从\s*(.+?)\s*(?:到|至)\s*(.+)",
-            r"(?:from|origin|起点)\s*[:：]?\s*(.+?)\s*(?:to|end|终点|destination|目的地)\s*[:：]?\s*(.+)",
+            # 1. 标准中文：从X到Y / 从X至Y（到某地的路径）
+            (r"\u4ece\s*(.+?)\s*(?:\u5230|\u81f3|\u2192|->|=>)\s*(.+?)(?:\s*\u7684|\s*\u8def|\s*\u7ebf\u8def|\s*\u5bfc\u822a|$)", None),
+            # 2. 直接分隔符（无"从"前缀）：芜湖南站到方特欢乐世界的步行路径
+            # .*? 非贪婪捕获终点，后接 "的..." 或行尾；否则回退到贪婪
+            (r"^(.*?)\s*(?:\u5230|\u81f3)\s*(.*?)(?:\s*\u7684.*|$)", None),
+            # 3. 英文：from X to Y / origin:end
+            (r"(?:from|origin|起点)\s*[:\uff1a]?\s*(.+?)\s*(?:to|end|终点|destination|目的地)\s*[:\uff1a]?\s*(.+?)(?:\s*$|\s*\?|\s*\u7684)", None),
         ]
 
-        for pattern in patterns:
+        for pattern, _ in patterns:
             match = re.search(pattern, query, re.IGNORECASE)
-            if match:
-                result["start"] = match.group(1).strip()
-                result["end"] = match.group(2).strip()
-                break
+            if match and match.lastindex is not None and match.lastindex >= 2:
+                start = match.group(1).strip()
+                end = match.group(2).strip()
+                # 过滤掉太短的或明显不是地点的
+                if len(start) >= 2 and len(end) >= 2:
+                    result["start"] = start
+                    result["end"] = end
+                    break
 
         return result
 
     def extract_file_references(self, query: str) -> List[str]:
-        """从查询中提取文件引用"""
-        # 匹配常见的 GIS 文件扩展名
-        extensions = [".shp", ".geojson", ".json", ".gpkg", ".tif", ".tiff", ".csv"]
+        """从查询中提取 GIS 文件引用"""
         references = []
-
         query_lower = query.lower()
-        for ext in extensions:
-            if ext in query_lower:
-                # 提取文件名
-                pattern = rf"[\'\"\\]?([^\'\"\\\n]*{re.escape(ext)})[\'\"\\]?"
-                matches = re.findall(pattern, query_lower)
-                references.extend(matches)
 
-        return list(set(references))
+        for ext in self.GIS_EXTENSIONS:
+            if ext.lower() not in query_lower:
+                continue
+            # 匹配文件名：字母开头 + 字母数字下划线连字符 + 扩展名
+            # 这避免了捕获纯中文动词前缀
+            pattern = rf"([a-zA-Z][a-zA-Z0-9_\-\.]*{re.escape(ext)})"
+            matches = re.findall(pattern, query_lower)
+            for m in matches:
+                stripped = m.strip()
+                # 跳过太长或太短的误匹配
+                if 3 < len(stripped) < 200:
+                    references.append(stripped)
+
+        # 去重并按长度排序（短的优先）
+        seen = set()
+        unique = []
+        for r in sorted(references, key=len):
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
 
     def extract_value_field(self, query: str) -> Optional[str]:
         """从查询中提取数值字段名"""
@@ -204,7 +261,98 @@ class ParameterExtractor:
 
         return None
 
-    def extract_all(self, query: str, scenario: str) -> Dict[str, Any]:
+    def extract_coordinates(self, query: str) -> Optional[str]:
+        """从查询中提取坐标"""
+        patterns = [
+            # 标准格式：lon, lat / lon，lat
+            (r"([+-]?\d+\.?\d*)\s*[,，]\s*([+-]?\d+\.?\d*)", "standard"),
+            # 带括号：(118.5, 31.2)
+            (r"\(\s*([+-]?\d+\.?\d*)\s*[,，]\s*([+-]?\d+\.?\d*)\s*\)", "bracketed"),
+            # 经纬度标注（逗号分隔）：经度X，纬度Y / lon X, lat Y
+            (r"经[度]?\s*([+-]?\d+\.?\d*)[度]?\s*[，,]\s*纬[度]?\s*([+-]?\d+\.?\d*)[度]?", "labeled_cn_comma"),
+            (r"lon[gitude]?\s*([+-]?\d+\.?\d*)\s*[，,]\s*lat[gitude]?\s*([+-]?\d+\.?\d*)", "labeled_en_comma"),
+            # 经纬度标注（空格分隔）：经度X 纬度Y / 经 X 纬 Y
+            (r"经[度]?\s*([+-]?\d+\.?\d*)[度]?\s+纬[度]?\s*([+-]?\d+\.?\d*)[度]?", "labeled_cn_space"),
+            (r"lon[gitude]?\s*([+-]?\d+\.?\d*)\s+lat[gitude]?\s*([+-]?\d+\.?\d*)", "labeled_en_space"),
+        ]
+        for pattern, style in patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                lon = match.group(1)
+                lat = match.group(2)
+                # 验证合理性（经度 -180~180，纬度 -90~90）
+                try:
+                    lon_f = float(lon)
+                    lat_f = float(lat)
+                    if -180 <= lon_f <= 180 and -90 <= lat_f <= 90:
+                        return f"{lon_f},{lat_f}"
+                except ValueError:
+                    continue
+        return None
+
+    def extract_resolution(self, query: str) -> Optional[float]:
+        """从查询中提取栅格分辨率"""
+        patterns = [
+            # 分辨率X米/精度X米
+            (r"(\d+(?:\.\d+)?)\s*(?:米|m)\s*(?:分辨率|精度)", 1.0),
+            # 栅格大小/像元大小
+            (r"(\d+(?:\.\d+)?)\s*(?:米|m)\s*(?:栅格|像元|像元大小|格子)", 1.0),
+            # 分辨率500m
+            (r"(\d+(?:\.\d+)?)\s*m\s*(?:分辨率|精度)", 1.0),
+            # 公里分辨率
+            (r"(\d+(?:\.\d+)?)\s*km\s*(?:分辨率|精度)", 1000.0),
+        ]
+        for pattern, multiplier in patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                return float(match.group(1)) * multiplier
+        return None
+
+    def extract_height(self, query: str, height_type: str = "observer") -> float:
+        """从查询中提取高度"""
+        patterns = [
+            # 中文：高度/海拔/楼高 + 数字 + 单位（无 \b 因为中文字符后无边界）
+            (r"高度\s*(\d+(?:\.\d+)?)\s*(?:米|m)", 1.0),
+            (r"(\d+(?:\.\d+)?)\s*米\s*(?:高|高程)?", 1.0),
+            (r"海拔\s*(\d+(?:\.\d+)?)\s*(?:米|m)", 1.0),
+            (r"楼高\s*(\d+(?:\.\d+)?)\s*(?:米|m)", 1.0),
+            # 英文：height/elevation/altitude + 数字 + m/meters
+            (r"(?:height|elevation|altitude)\s*[:\s]*(\d+(?:\.\d+)?)\s*(?:m|meters?)\b", 1.0),
+            (r"(?:building\s*)?height\s*(\d+(?:\.\d+)?)\s*(?:m|meters?)\b", 1.0),
+            # 独立数字模式：仅数字+米（在特定语境词附近）
+            (r"(?:楼|建筑|物体|塔)\s*(\d+(?:\.\d+)?)\s*(?:米|m)", 1.0),
+        ]
+        for pattern, multiplier in patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                return float(match.group(1)) * multiplier
+        # 有语境词的回退值
+        if height_type == "observer":
+            return 1.7
+        return 0.0
+
+    def extract_datetime(self, query: str) -> Optional[str]:
+        """从查询中提取日期时间"""
+        # ISO8601 格式
+        pattern = r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\s*T?\s*\d{1,2}:\d{2}(?::\d{2})?)?)"
+        match = re.search(pattern, query)
+        if match:
+            dt = match.group(1).replace("/", "-")
+            if "T" not in dt and ":" in dt:
+                dt = dt.replace(" ", "T")
+            return dt
+        # 相对时间
+        relative = {
+            "now": "now",
+            "today": "today",
+            "tomorrow": "tomorrow",
+        }
+        for key, val in relative.items():
+            if key in query.lower():
+                return val
+        return None
+
+    def extract_all(self, query: str, scenario: "str | Scenario | None" = None) -> Dict[str, Any]:
         """
         从查询中提取所有相关参数
 
@@ -212,11 +360,17 @@ class ParameterExtractor:
 
         Args:
             query: 用户查询
-            scenario: 场景类型
+            scenario: 场景类型（字符串或 Scenario 枚举）
 
         Returns:
             提取的参数字典
         """
+        # 支持传入 Scenario 枚举或字符串
+        if scenario is not None:
+            _scenario_str = scenario.value if hasattr(scenario, "value") else str(scenario)
+        else:
+            _scenario_str = "general"
+
         params = {}
 
         # ── 通用提取（所有场景共用）───────────────────────────────────
@@ -226,6 +380,9 @@ class ParameterExtractor:
         params["locations"] = self.extract_locations(query)
         params["files"] = self.extract_file_references(query)
         params["value_field"] = self.extract_value_field(query)
+        params["coordinates"] = self.extract_coordinates(query)
+        params["resolution"] = self.extract_resolution(query)
+        params["datetime"] = self.extract_datetime(query)
 
         # 通用地点（起点/位置）
         params["start"] = params["locations"]["start"]
@@ -233,13 +390,13 @@ class ParameterExtractor:
         params["location"] = params["start"]  # 中心点
 
         # ── route 场景 ───────────────────────────────────────────────
-        if scenario == "route":
+        if _scenario_str == "route":
             params["start"] = params["locations"]["start"]
             params["end"] = params["locations"]["end"]
             # mode 已通过通用提取获取
 
         # ── buffer 场景 ─────────────────────────────────────────────
-        elif scenario == "buffer":
+        elif _scenario_str == "buffer":
             # 从文件名引用中提取图层名
             files = params["files"]
             if files:
@@ -254,7 +411,7 @@ class ParameterExtractor:
                 params["input_layer"] = entity
 
         # ── overlay 场景 ─────────────────────────────────────────────
-        elif scenario == "overlay":
+        elif _scenario_str == "overlay":
             files = params["files"]
             if len(files) >= 2:
                 params["layer1"] = files[0]
@@ -265,7 +422,7 @@ class ParameterExtractor:
             params["operation"] = self._extract_overlay_operation(query)
 
         # ── interpolation 场景 ───────────────────────────────────────
-        elif scenario == "interpolation":
+        elif _scenario_str == "interpolation":
             files = params["files"]
             if files:
                 params["input_points"] = files[0]
@@ -273,18 +430,18 @@ class ParameterExtractor:
             # 方法
             params["method"] = self._extract_interpolation_method(query)
             # 分辨率
-            resolution = self._extract_resolution(query)
+            resolution = self.extract_resolution(query)
             if resolution:
                 params["output_resolution"] = resolution
 
         # ── accessibility 场景 ───────────────────────────────────────
-        elif scenario == "accessibility":
+        elif _scenario_str == "accessibility":
             params["location"] = params["locations"]["start"]
             if params["time_info"]:
                 params["time_threshold"] = params["time_info"]["time_threshold"]
 
         # ── suitability 场景 ────────────────────────────────────────
-        elif scenario == "suitability":
+        elif _scenario_str == "suitability":
             files = params["files"]
             if files:
                 params["criteria_layers"] = files
@@ -293,13 +450,13 @@ class ParameterExtractor:
             # 权重（暂时不支持从 NL 提取）
 
         # ── viewshed 场景 ────────────────────────────────────────────
-        elif scenario == "viewshed":
+        elif _scenario_str == "viewshed":
             params["location"] = params["locations"]["start"]
             if not params["location"]:
                 # 尝试从 query 中提取坐标
-                params["location"] = self._extract_coordinates(query)
+                params["location"] = self.extract_coordinates(query)
             # 观察高度
-            params["observer_height"] = self._extract_height(query, "observer")
+            params["observer_height"] = self.extract_height(query, "observer")
             files = params["files"]
             if files:
                 params["dem_file"] = files[0]
@@ -308,29 +465,29 @@ class ParameterExtractor:
                 params["max_distance"] = params["distance_info"]["distance"] * 1000 if params["distance_info"]["unit"] == "kilometers" else params["distance_info"]["distance"]
 
         # ── shadow_analysis 场景 ──────────────────────────────────────
-        elif scenario == "shadow_analysis":
+        elif _scenario_str == "shadow_analysis":
             files = params["files"]
             if files:
                 params["buildings"] = files[0]
             # 时间
-            params["time"] = self._extract_datetime(query)
+            params["time"] = self.extract_datetime(query)
 
         # ── ndvi 场景 ───────────────────────────────────────────────
-        elif scenario == "ndvi":
+        elif _scenario_str == "ndvi":
             files = params["files"]
             if files:
                 params["input_file"] = files[0]
             # 传感器类型（默认 auto）
 
         # ── hotspot 场景 ─────────────────────────────────────────────
-        elif scenario == "hotspot":
+        elif _scenario_str == "hotspot":
             files = params["files"]
             if files:
                 params["input_file"] = files[0]
             # 字段名已通过通用提取获取
 
         # ── visualization 场景 ───────────────────────────────────────
-        elif scenario == "visualization":
+        elif _scenario_str == "visualization":
             files = params["files"]
             if files:
                 params["input_files"] = files
@@ -548,23 +705,23 @@ class ScenarioOrchestrator:
         """
         # 1. 意图分类
         intent_result = self.intent_classifier.classify(user_input)
-        scenario = intent_result.primary
+        scenario_str = intent_result.primary
 
         if event_callback:
             event_callback("intent_classified", {
-                "scenario": scenario,
+                "scenario": scenario_str,
                 "confidence": intent_result.confidence,
                 "matched_keywords": intent_result.matched_keywords,
                 "all_intents": list(intent_result.all_intents),
             })
 
         # 2. 提取参数
-        extracted_params = self.parameter_extractor.extract_all(user_input, scenario)
+        extracted_params = self.parameter_extractor.extract_all(user_input, scenario_str)
 
         if event_callback:
             event_callback("params_extracted", {
                 "extracted_params": {k: v for k, v in extracted_params.items() if k not in ("locations",)},
-                "scenario": scenario,
+                "scenario": scenario_str,
             })
 
         # 合并上下文
@@ -572,23 +729,23 @@ class ScenarioOrchestrator:
             extracted_params.update(context)
 
         # 3. 检查缺失参数
-        clarification = self.clarification_engine.check_params(scenario, extracted_params)
+        clarification = self.clarification_engine.check_params(scenario_str, extracted_params)
 
         if clarification.needs_clarification:
             return OrchestrationResult(
                 status=OrchestrationStatus.CLARIFICATION_NEEDED,
-                scenario=scenario,
+                scenario=scenario_str,
                 questions=clarification.questions,
                 auto_filled=clarification.auto_filled,
                 intent_result=intent_result,
             )
 
         # 4. 构建任务 DSL
-        task = self._build_task(scenario, extracted_params)
+        task = self._build_task(scenario_str, extracted_params)
 
         return OrchestrationResult(
             status=OrchestrationStatus.READY,
-            scenario=scenario,
+            scenario=scenario_str,
             task=task,
             intent_result=intent_result,
         )

@@ -673,6 +673,77 @@ class Raster:
         print(f"✅ [Raster] 重分类完成，{len(ranges)} 个类别，保存至 {output_file}")
 
 
+    @staticmethod
+    def gdal_info(input_file: str) -> dict:
+        """
+        用 GDAL 获取栅格文件的完整元数据（比 rasterio 更底层、更完整）
+
+        Returns:
+            dict: 包含 CRS、尺寸、仿射变换、波段数、数据类型等
+        """
+        try:
+            from osgeo import gdal
+        except ImportError:
+            raise ImportError(
+                "GDAL 未安装，请运行: pip install GDAL "
+                "(Windows: conda install gdal, Linux: apt install libgdal-dev && pip install GDAL)"
+            )
+
+        fpath = _resolve(input_file)
+        if not fpath.exists():
+            raise FileNotFoundError(f"文件不存在: {fpath}")
+
+        ds = gdal.Open(str(fpath))
+        if ds is None:
+            raise RuntimeError(f"GDAL 无法打开文件: {fpath}")
+
+        geo_transform = ds.GetGeoTransform()
+        projection = ds.GetProjection()
+
+        bands = []
+        for i in range(1, ds.RasterCount + 1):
+            band = ds.GetRasterBand(i)
+            bands.append({
+                "index": i,
+                "dtype": gdal.GetDataTypeName(band.DataType),
+                "nodata": band.GetNoDataValue(),
+                "min": band.GetMinimum(),
+                "max": band.GetMaximum(),
+                "statistics_valid": band.GetStatistics(True, True) is not None,
+            })
+
+        result = {
+            "file": str(fpath),
+            "width": ds.RasterXSize,
+            "height": ds.RasterYSize,
+            "band_count": ds.RasterCount,
+            "crs": projection,
+            "geo_transform": {
+                "origin_x": geo_transform[0],
+                "origin_y": geo_transform[3],
+                "pixel_width": geo_transform[1],
+                "pixel_height": geo_transform[5],
+                "rotation_x": geo_transform[2],
+                "rotation_y": geo_transform[4],
+            },
+            "bounds": {
+                "left": geo_transform[0],
+                "top": geo_transform[3],
+                "right": geo_transform[0] + ds.RasterXSize * geo_transform[1],
+                "bottom": geo_transform[3] + ds.RasterYSize * geo_transform[5],
+            },
+            "resolution": {
+                "x": abs(geo_transform[1]),
+                "y": abs(geo_transform[5]),
+            },
+            "bands": bands,
+        }
+
+        ds = None  # 释放 GDAL dataset
+        print(f"✅ [Raster/GDAL] GDAL 元数据读取完成: {result['width']}×{result['height']}, {result['band_count']} 波段")
+        return result
+
+
 # =============================================================================
 # Network — 路网分析
 # =============================================================================
@@ -1451,6 +1522,7 @@ class GeoToolbox:
         GeoToolbox.Raster.slope_aspect("dem.tif")
         GeoToolbox.Raster.zonal_statistics("pop.tif", "zones.shp", "stats.csv")
         GeoToolbox.Raster.reclassify("ndvi.tif", "ndvi_class.tif", "0,0.2:1;0.2,0.5:2;0.5,1:3")
+        GeoToolbox.Raster.gdal_info("dem.tif")   # GDAL 底层元数据
 
         # 路网分析
         GeoToolbox.Network.isochrone("北京天安门", "isochrone.shp", walk_time_mins=15)
@@ -1505,10 +1577,11 @@ class GeoToolbox:
             "  .calculate_spyndex(in, idx, out, band)    遥感指数(spyndex)",
             "  .clip_by_mask(raster, mask, out)          栅格掩膜裁剪",
             "  .reproject(in, out, target_crs)          栅格重投影",
-            "  .resample(in, out, scale_factor)          重采样",
-            "  .slope_aspect(dem, out_dir)               坡度坡向计算",
+            "  .resample(in, out, scale_factor)           重采样",
+            "  .slope_aspect(dem, out_dir)                坡度坡向计算",
             "  .zonal_statistics(raster, zones, csv)    分区统计",
             "  .reclassify(in, out, remap)              栅格重分类",
+            "  .gdal_info(in)                            GDAL底层元数据",
             "【矩阵三】Network — 城市路网",
             "  .isochrone(address, out, mins)             等时圈",
             "  .shortest_path(city, origin, dest, out)   最短路径",

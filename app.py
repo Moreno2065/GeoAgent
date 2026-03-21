@@ -511,30 +511,19 @@ def _render_sidebar():
 
         st.divider()
 
+        # ── API Key 配置 ────────────────────────────────────────
+        # V2 六层架构只需要 DeepSeek Key（路由/执行由确定性后端代码完成）
         dk = st.text_input(
             "DeepSeek API Key",
             value=st.session_state["deepseek_key"],
             type="password",
+            key="deepseek_key_input",
         )
         ak = st.text_input(
-            "高德 Web API Key（可选）",
+            "高德 Web API Key（可选，用于真实路径规划）",
             value=st.session_state["amap_key"],
             type="password",
-        )
-        if ak:
-            os.environ["AMAP_API_KEY"] = ak
-
-        st.divider()
-
-        dk = st.text_input(
-            "DeepSeek API Key",
-            value=st.session_state["deepseek_key"],
-            type="password",
-        )
-        ak = st.text_input(
-            "高德 Web API Key（可选）",
-            value=st.session_state["amap_key"],
-            type="password",
+            key="amap_key_input",
         )
         if ak:
             os.environ["AMAP_API_KEY"] = ak
@@ -1291,12 +1280,14 @@ def main():
         )
 
         # ── 聊天输入框（在消息上方）────────────────────────────
-        placeholder = "向 GeoAgent 发布空间分析指令..." if agent else "请先启动 Agent"
+        # 优先使用 V2 agent_v2，降级到 V1 agent
+        agent_for_input = st.session_state.get("agent_v2") or st.session_state.get("agent")
+        placeholder = "向 GeoAgent 发布空间分析指令..." if agent_for_input else "请先启动 Agent"
         prompt = st.chat_input(
             placeholder
             if not st.session_state.get("pending_click")
             else "📍 已捕获地图点击，继续分析...",
-            disabled=not agent,
+            disabled=not agent_for_input,
             key="main_chat_input",
         )
 
@@ -1324,7 +1315,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         if prompt:
-            _handle_user_message(prompt, agent)
+            _handle_user_message(prompt, agent_for_input)
 
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown(

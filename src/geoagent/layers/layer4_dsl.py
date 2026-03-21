@@ -11,14 +11,19 @@
 - 不是 Python
 - 不是 ArcGIS tool 名称
 - 是你的标准协议
+
+NL→DSL 模式（可选）：
+- 默认（推荐）：确定性 DSL 构建，不用 LLM
+- Reasoner 模式：NL → GeoDSL（用 DeepSeek Reasoner 模型）
+  仅在复杂多步骤任务时启用，如 "先做500m缓冲区再找里面的餐厅"
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field, field_validator
+from typing import Any, Callable, Dict, List, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from geoagent.layers.architecture import Scenario
 
@@ -85,8 +90,7 @@ class GeoDSL(BaseModel):
         description="追问的答案"
     )
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # =============================================================================
@@ -307,19 +311,31 @@ class DSLBuilder:
 
         return inputs, parameters
 
-    def build_from_orchestration(self, orchestration_result: Any) -> GeoDSL:
+    def build_from_orchestration(
+        self,
+        orchestration_result: Any,
+        use_reasoner: bool = False,
+        reasoner_factory: Optional[Callable[[], Any]] = None,
+    ) -> GeoDSL:
         """
         从编排结果构建 DSL
 
         Args:
             orchestration_result: OrchestrationResult 对象
+            use_reasoner: 是否使用 Reasoner 模式
+            reasoner_factory: Reasoner 实例工厂
 
         Returns:
             GeoDSL 对象
         """
         scenario = orchestration_result.scenario
         extracted_params = orchestration_result.extracted_params
-        return self.build(scenario, extracted_params)
+        return build_dsl(
+            scenario,
+            extracted_params,
+            use_reasoner=use_reasoner,
+            reasoner_factory=reasoner_factory,
+        )
 
 
 # =============================================================================
@@ -361,14 +377,142 @@ def build_dsl(
     scenario: Scenario,
     extracted_params: Dict[str, Any],
     task_suffix: str = "",
+    use_reasoner: bool = False,
+    reasoner_factory: Optional[Callable[[], Any]] = None,
 ) -> GeoDSL:
     """
     便捷函数：构建 GeoDSL
 
+    Args:
+        scenario: 场景类型
+        extracted_params: 从 Layer 3 提取的参数（包含 user_input 自然语言原文）
+        task_suffix: 任务后缀（如 walking_route, point_buffer 等）
+        use_reasoner: 是否使用 Reasoner 模式（NL → DSL）
+        reasoner_factory: Reasoner 实例工厂（用于注入 mock）
+
+    Returns:
+        GeoDSL 对象
+
     这是第4层的标准出口函数。
     """
+    # ── Reasoner 模式 ──────────────────────────────────────────────────────
+    if use_reasoner:
+        reasoner = reasoner_factory() if reasoner_factory else None
+        if reasoner is None:
+            raise ValueError(
+                "use_reasoner=True 但未提供 reasoner_factory。"
+                "请传入 lambda: lambda: get_reasoner()"
+            )
+        user_input = extracted_params.get("user_input", "")
+        raw_dsl = reasoner.translate(user_input, scenario=scenario)
+        return _build_from_reasoner_output(raw_dsl, scenario, extracted_params)
+
+    # ── 默认：确定性 DSL 构建 ───────────────────────────────────────────────
     builder = get_builder()
     return builder.build(scenario, extracted_params, task_suffix)
+
+
+def _build_from_reasoner_output(
+    raw_dsl: Dict[str, Any],
+    fallback_scenario: Scenario,
+    extracted_params: Dict[str, Any],
+) -> GeoDSL:
+    """
+    将 Reasoner 输出的原始 DSL 字典转换为 GeoDSL，并进行 Schema 校验。
+    """
+    # 补充 scenario（Reasoner 可能输出字符串）
+    scenario_str = raw_dsl.get("scenario", fallback_scenario.value)
+    try:
+        scenario = Scenario(scenario_str)
+    except ValueError:
+        scenario = fallback_scenario
+
+    # 合并 extracted_params（用于补充 Reasoner 漏掉的字段）
+    merged = {**raw_dsl}
+
+    # 补充 inputs/parameters 中的缺失字段
+    inputs = merged.get("inputs", {})
+    parameters = merged.get("parameters", {})
+    for k, v in extracted_params.items():
+        if k == "user_input":
+            continue
+        if k in inputs or k in parameters:
+            continue
+        # 根据字段名决定放哪
+        if k in ("start", "end", "input_layer", "layer1", "layer2",
+                 "input_points", "input_file", "location", "dem_file"):
+            if k not in inputs:
+                inputs[k] = v
+        else:
+            if k not in parameters:
+                parameters[k] = v
+
+    # Schema 校验（会填充默认值、报错缺失必填字段）
+    validator = get_validator()
+    try:
+        validator.validate(scenario, inputs, parameters)
+    except SchemaValidationError:
+        # Reasoner 模式：允许校验失败时尝试自动修正
+        inputs, parameters = _fix_missing_fields(
+            scenario, inputs, parameters
+        )
+
+    merged["scenario"] = scenario
+    merged["inputs"] = inputs
+    merged["parameters"] = parameters
+    merged.setdefault("version", "1.0")
+    merged.setdefault("task", scenario.value)
+    merged.setdefault("outputs", {"map": True, "summary": True})
+
+    return GeoDSL(**merged)
+
+
+def _fix_missing_fields(
+    scenario: Scenario,
+    inputs: Dict[str, Any],
+    parameters: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """尝试用默认值填充缺失的必填字段（Reasoner 模式保底）"""
+    from geoagent.layers.layer4_dsl import SCHEMA_REQUIRED_PARAMS
+    schema = SCHEMA_REQUIRED_PARAMS.get(scenario, {})
+    fixed_inputs = dict(inputs)
+    fixed_params = dict(parameters)
+
+    for field_name, spec in schema.items():
+        required = spec.get("required", False)
+        default = spec.get("default")
+        target = fixed_params if field_name not in ("start", "end", "input_layer",
+                                                      "layer1", "layer2", "input_points",
+                                                      "input_file", "location", "dem_file") else fixed_inputs
+
+        if required:
+            if field_name not in target or target[field_name] is None:
+                if default is not None:
+                    target[field_name] = default
+                else:
+                    target[field_name] = f"[MISSING:{field_name}]"
+
+    return fixed_inputs, fixed_params
+
+
+def build_dsl_with_reasoner(
+    user_input: str,
+    scenario: Scenario,
+    extracted_params: Dict[str, Any],
+    api_key: Optional[str] = None,
+    model: str = "deepseek-r1",
+) -> GeoDSL:
+    """
+    使用 Reasoner 模式构建 DSL（便捷函数，直接传入 API Key）。
+
+    适用于：复杂 NL（多步骤、复合条件）。
+    不适用于：简单 NL（如 "从 A 到 B"），请直接用 build_dsl()。
+    """
+    from geoagent.layers.reasoner import get_reasoner
+
+    reasoner = get_reasoner(api_key=api_key, model=model)
+    raw_dsl = reasoner.translate(user_input, scenario=scenario)
+    return _build_from_reasoner_output(raw_dsl, scenario, extracted_params)
 
 
 __all__ = [
@@ -382,4 +526,6 @@ __all__ = [
     "get_builder",
     "validate_dsl",
     "build_dsl",
+    "build_dsl_with_reasoner",
+    "_build_from_reasoner_output",
 ]

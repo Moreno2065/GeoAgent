@@ -46,16 +46,26 @@ class GeoAgentV2:
     基于六层架构的新版本 API：
       User Input → Intent → Orchestrate → DSL → Execute → Render
 
-    优势：
-    1. 更稳定：LLM 只做翻译，不做决策
-    2. 更快速：确定性执行，无需 ReAct 循环
-    3. 更可控：后端代码路由
-    4. 更友好：结果面向业务结论
+    支持两种运行模式（通过 use_reasoner 参数切换）：
 
-    使用方式：
-        agent = GeoAgentV2()
-        result = agent.run("芜湖南站到方特的步行路径")
-        print(result.to_user_text())
+    【MVP 模式 - 推荐，默认】
+      确定性执行，无 LLM 参与决策，响应快、稳定。
+      适用于：简单 NL（"从 A 到 B"、"500m 缓冲区"）
+
+      agent = GeoAgentV2()                    # 默认 use_reasoner=False
+      result = agent.run("芜湖南站到方特的步行路径")
+
+    【Reasoner 模式 - 复杂 NL 时启用】
+      Layer 4 使用 DeepSeek Reasoner 做 NL→DSL 翻译，
+      用于复杂复合任务（如 buffer+overlay 链、多步骤推理）。
+      代价：更容易"越界思考"，必须配合严格 prompt 约束。
+
+      from geoagent.layers.reasoner import get_reasoner
+      agent = GeoAgentV2(
+          use_reasoner=True,
+          reasoner_factory=lambda: get_reasoner(),
+      )
+      result = agent.run("先做500m缓冲区再找里面的餐厅")
     """
 
     def __init__(
@@ -64,7 +74,20 @@ class GeoAgentV2:
         model: str = "deepseek-chat",
         base_url: str = "https://api.deepseek.com",
         enable_clarification: bool = True,
+        use_reasoner: bool = False,
+        reasoner_factory: Callable[[], Any] = None,
     ):
+        """
+        Args:
+            api_key: DeepSeek API 密钥
+            model: 模型名称
+            base_url: API 基础 URL
+            enable_clarification: 是否启用追问机制
+            use_reasoner: 是否使用 Reasoner 模式（NL → GeoDSL）
+                - False（默认）：MVP 确定性模式，Layer 4 纯规则构建，不用 LLM
+                - True：复杂 NL（如"先做500m缓冲区再找里面的餐厅"）使用 Reasoner 翻译
+            reasoner_factory: Reasoner 实例工厂（use_reasoner=True 时必须提供）
+        """
         if not api_key:
             api_key = self._load_api_key()
         if not api_key:
@@ -81,9 +104,14 @@ class GeoAgentV2:
         self.model = model
         self.base_url = base_url
         self.enable_clarification = enable_clarification
+        self.use_reasoner = use_reasoner
 
         # 初始化 Pipeline
-        self._pipeline = GeoAgentPipeline(enable_clarification=enable_clarification)
+        self._pipeline = GeoAgentPipeline(
+            enable_clarification=enable_clarification,
+            use_reasoner=use_reasoner,
+            reasoner_factory=reasoner_factory,
+        )
 
         # 统计
         self.stats: Dict[str, int] = {
@@ -306,12 +334,24 @@ def create_agent_v2(
     model: str = "deepseek-chat",
     base_url: str = "https://api.deepseek.com",
     enable_clarification: bool = True,
+    use_reasoner: bool = False,
+    reasoner_factory: Callable[[], Any] = None,
 ) -> GeoAgentV2:
     """
     创建 GeoAgent V2 实例的便捷工厂函数
 
     使用方式：
+        # MVP 确定性模式（推荐）
         agent = create_agent_v2(api_key="sk-...")
+
+        # Reasoner 模式（复杂 NL 时启用）
+        from geoagent.layers.reasoner import get_reasoner
+        agent = create_agent_v2(
+            api_key="sk-...",
+            use_reasoner=True,
+            reasoner_factory=lambda: get_reasoner(),
+        )
+
         result = agent.run("芜湖南站到方特的步行路径")
     """
     return GeoAgentV2(
@@ -319,6 +359,8 @@ def create_agent_v2(
         model=model,
         base_url=base_url,
         enable_clarification=enable_clarification,
+        use_reasoner=use_reasoner,
+        reasoner_factory=reasoner_factory,
     )
 
 

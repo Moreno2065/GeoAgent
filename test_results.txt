@@ -1,6 +1,6 @@
-1. orchestrator.py: FAIL - No module named 'geoagent.compiler.orchestrator'
-2. intent_classifier.py: FAIL - No module named 'geoagent.compiler.intent_classifier'
-3. compiler package: FAIL - cannot import name 'ParameterExtractor' from 'geoagent.compiler' (unknown location)
-4-7. ParameterExtractor tests: FAIL - name 'ParameterExtractor' is not defined
-8. IntentClassifier: FAIL - cannot import name 'IntentClassifier' from 'geoagent.compiler' (unknown location)
-9. extract_all: FAIL - No module named 'geoagent.compiler.orchestrator'
+[OK] compiler 全部导入
+[OK] dsl.protocol 导入
+[OK] layers.pipeline 导入
+[OK] layers 全部导入
+[OK] core.GeoAgent 导入
+[OK] geoagent 全部导入
