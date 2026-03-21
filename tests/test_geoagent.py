@@ -1,4 +1,4 @@
-﻿"""
+"""
 Geo-Agent 测试套件
 """
 
@@ -45,11 +45,11 @@ class TestFixedTools:
 
     def test_get_data_info_file_not_found(self, temp_workspace):
         """测试文件不存在的情况"""
-        from gis_tools.fixed_tools import get_data_info, get_workspace_dir
+        from geoagent.gis_tools.fixed_tools import get_data_info, get_workspace_dir
         
         # 临时修改 workspace 路径
         original_get_workspace_dir = get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        import geoagent.gis_tools.fixed_tools as ft
         ft.get_workspace_dir = lambda: temp_workspace
         
         try:
@@ -64,8 +64,8 @@ class TestFixedTools:
 
     def test_get_data_info_unsupported_format(self, temp_workspace):
         """测试不支持的文件格式"""
-        from gis_tools.fixed_tools import get_data_info, get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        from geoagent.gis_tools.fixed_tools import get_data_info, get_workspace_dir
+        import geoagent.gis_tools.fixed_tools as ft
         
         # 创建临时文件
         test_file = temp_workspace / "test.xyz"
@@ -86,8 +86,8 @@ class TestFixedTools:
 
     def test_list_workspace_files_empty(self, temp_workspace):
         """测试空 workspace 目录"""
-        from gis_tools.fixed_tools import list_workspace_files, get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        from geoagent.gis_tools.fixed_tools import list_workspace_files, get_workspace_dir
+        import geoagent.gis_tools.fixed_tools as ft
         
         original_get_workspace_dir = get_workspace_dir
         ft.get_workspace_dir = lambda: temp_workspace
@@ -100,8 +100,8 @@ class TestFixedTools:
 
     def test_list_workspace_files_with_files(self, temp_workspace):
         """测试包含 GIS 文件的目录"""
-        from gis_tools.fixed_tools import list_workspace_files, get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        from geoagent.gis_tools.fixed_tools import list_workspace_files, get_workspace_dir
+        import geoagent.gis_tools.fixed_tools as ft
         
         # 创建测试文件
         (temp_workspace / "test.shp").write_bytes(b"")
@@ -125,8 +125,8 @@ class TestFixedTools:
 
     def test_vector_file_with_none_crs(self, temp_workspace):
         """测试无 CRS 的矢量文件"""
-        from gis_tools.fixed_tools import get_data_info, get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        from geoagent.gis_tools.fixed_tools import get_data_info, get_workspace_dir
+        import geoagent.gis_tools.fixed_tools as ft
         
         original_get_workspace_dir = get_workspace_dir
         ft.get_workspace_dir = lambda: temp_workspace
@@ -168,24 +168,24 @@ class TestAgentCore:
         """测试未提供 API Key 的情况"""
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
-        import agent_core as ac
+        import geoagent.core as ac
         original_load = ac._load_api_key
         ac._load_api_key = lambda: None  # 模拟无保存的 key
 
         try:
-            from agent_core import GeoAgent
+            from geoagent.core import GeoAgent
             with pytest.raises(ValueError, match="API"):
                 GeoAgent()
         finally:
             ac._load_api_key = original_load
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_create_agent_with_api_key(self, mock_openai, mock_env):
         """测试提供 API Key 的情况"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         # 创建临时历史文件
         import tempfile
@@ -203,13 +203,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_add_user_message(self, mock_openai, mock_env):
         """测试添加用户消息（通过直接操作 messages 列表）"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -233,13 +233,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_clear_history(self, mock_openai, mock_env):
         """测试清除历史对话"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -268,13 +268,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_reset_conversation(self, mock_openai, mock_env):
         """测试重置对话"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -298,13 +298,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_check_history_limit(self, mock_openai, mock_env):
         """测试历史轮次限制检查"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -330,13 +330,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_parse_tool_calls(self, mock_openai, mock_env):
         """测试工具调用解析（当前通过 API 原生 tool_calls 实现，此测试验证 registry 集成）"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         from tools import execute_tool
         
         import tempfile
@@ -353,13 +353,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_parse_tool_calls_data_info(self, mock_openai, mock_env):
         """测试数据查询工具调用"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         from tools import execute_tool
         
         import tempfile
@@ -376,13 +376,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_parse_tool_calls_invalid_json(self, mock_openai, mock_env):
         """测试 execute_tool 对未知工具名的处理"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         from tools import execute_tool
         
         import tempfile
@@ -399,13 +399,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_clean_response(self, mock_openai, mock_env):
         """测试对话历史清理后仅保留 system 消息"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -430,13 +430,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_get_conversation_history(self, mock_openai, mock_env):
         """测试获取对话历史"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -459,13 +459,13 @@ class TestAgentCore:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_get_stats(self, mock_openai, mock_env):
         """测试获取统计信息"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -490,7 +490,7 @@ class TestAgentCore:
 class TestAgentSelfHealing:
     """测试 Agent 自我纠错功能"""
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_self_healing_on_traceback(self, mock_openai, mock_env):
         """测试工具执行结果传入后的 API 响应"""
         mock_client = MagicMock()
@@ -504,7 +504,7 @@ class TestAgentSelfHealing:
         
         mock_client.chat.completions.create.side_effect = [mock_response]
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         import tempfile
         import shutil
@@ -565,15 +565,15 @@ class TestAppInitialization:
 class TestToolExecution:
     """测试工具执行"""
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_execute_get_data_info_tool(self, mock_openai, mock_env, temp_workspace):
         """测试 get_data_info 工具通过 registry 执行"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
-        from gis_tools.fixed_tools import get_workspace_dir
-        import gis_tools.fixed_tools as ft
+        from geoagent.core import GeoAgent
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        import geoagent.gis_tools.fixed_tools as ft
         from tools import execute_tool
         
         original_get_workspace_dir = get_workspace_dir
@@ -606,7 +606,7 @@ class TestApiKeyPersistence:
 
     def test_save_and_load_api_key(self):
         """测试 API Key 保存和加载"""
-        import agent_core as ac
+        import geoagent.core as ac
         
         temp_key_file = Path(tempfile.gettempdir()) / "test_api_key.txt"
         original_file = ac._API_KEY_FILE
@@ -629,7 +629,7 @@ class TestApiKeyPersistence:
 
     def test_load_api_key_file_not_exists(self):
         """测试 API Key 文件不存在时返回 None"""
-        import agent_core as ac
+        import geoagent.core as ac
         
         temp_key_file = Path(tempfile.gettempdir()) / "nonexistent_key_file.txt"
         original_file = ac._API_KEY_FILE
@@ -646,8 +646,8 @@ class TestApiKeyPersistence:
 
     def test_agent_saves_api_key(self):
         """测试 Agent 创建时保存 API Key"""
-        from agent_core import GeoAgent
-        import agent_core as ac
+        from geoagent.core import GeoAgent
+        import geoagent.core as ac
         
         temp_key_file = Path(tempfile.gettempdir()) / "test_agent_key.txt"
         original_file = ac._API_KEY_FILE
@@ -661,7 +661,7 @@ class TestApiKeyPersistence:
             temp_history = Path(temp_dir) / "hist.json"
             
             try:
-                with patch('agent_core.OpenAI'):
+                with patch('openai.OpenAI'):
                     GeoAgent(api_key="my_test_key", history_file=str(temp_history))
                 
                 # 验证文件已创建且内容正确
@@ -679,13 +679,13 @@ class TestApiKeyPersistence:
 class TestAutoResetOnError:
     """测试错误时自动重置对话"""
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_auto_reset_on_missing_field_id(self, mock_openai, mock_env):
         """测试 missing field id 错误时自动重置"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         from openai import BadRequestError
         mock_error = BadRequestError(
             message="Failed to deserialize the JSON body into the target type: messages[2]: missing field id",
@@ -718,13 +718,13 @@ class TestAutoResetOnError:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_auto_reset_on_invalid_request_error(self, mock_openai, mock_env):
         """测试 invalid_request_error 时自动重置"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         from openai import BadRequestError
         mock_error = BadRequestError(
             message="invalid_request_error: some message",
@@ -751,13 +751,13 @@ class TestAutoResetOnError:
         finally:
             shutil.rmtree(temp_dir)
 
-    @patch('agent_core.OpenAI')
+    @patch('openai.OpenAI')
     def test_message_ids_are_added(self, mock_openai, mock_env):
         """测试新消息会自动添加 id 字段"""
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         
-        from agent_core import GeoAgent
+        from geoagent.core import GeoAgent
         
         temp_dir = tempfile.mkdtemp()
         temp_history = Path(temp_dir) / "hist.json"

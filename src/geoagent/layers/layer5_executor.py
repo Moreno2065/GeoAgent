@@ -8,222 +8,73 @@
 
 设计原则：
 - 后端代码路由，不依赖 LLM
-- TaskRouter 是唯一的调度入口
-- 统一 ExecutorResult 格式
+- TaskRouter 是唯一的调度入口（统一由 executors/router.py 提供）
+- 统一 ExecutorResult 格式（统一由 executors/base.py 提供）
+- 本模块是 layers 层对 executors 层的代理门面
+
+重要重构说明（2026-03-21）：
+- ExecutorResult 已统一到 geoagent.executors.base
+- TaskRouter 已统一到 geoagent.executors.router
+- 本模块不再重复定义，而是委托给 executors 层
+- 保留 execute_* 便捷函数作为 layers 层的 API 入口
 """
 
 from __future__ import annotations
 
-import json
-import traceback
-from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Callable
-from enum import Enum
+from typing import Dict, Any, Optional, List
 
-from geoagent.layers.architecture import Scenario, Engine
-
-
-# =============================================================================
-# 执行结果标准化
-# =============================================================================
-
-@dataclass
-class ExecutorResult:
-    """
-    Executor 返回的标准化结果
-
-    所有 GIS Executor 必须返回此格式的结果，
-    确保前端可以统一展示。
-    """
-    success: bool
-    scenario: str
-    task: str
-    engine: str
-    data: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    error_detail: Optional[str] = None
-    warnings: list = field(default_factory=list)
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-    def to_json(self) -> str:
-        """序列化为 JSON 字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            "success": self.success,
-            "scenario": self.scenario,
-            "task": self.task,
-            "engine": self.engine,
-            "data": self.data,
-            "error": self.error,
-            "error_detail": self.error_detail,
-            "warnings": self.warnings,
-            "meta": self.meta,
-        }
-
-    @classmethod
-    def ok(
-        cls,
-        scenario: str,
-        task: str,
-        engine: str,
-        data: Dict[str, Any],
-        **kwargs
-    ) -> "ExecutorResult":
-        return cls(
-            success=True,
-            scenario=scenario,
-            task=task,
-            engine=engine,
-            data=data,
-            **kwargs
-        )
-
-    @classmethod
-    def err(
-        cls,
-        scenario: str,
-        task: str,
-        error: str,
-        engine: str = "unknown",
-        error_detail: Optional[str] = None,
-        **kwargs
-    ) -> "ExecutorResult":
-        return cls(
-            success=False,
-            scenario=scenario,
-            task=task,
-            engine=engine,
-            error=error,
-            error_detail=error_detail or traceback.format_exc(),
-            **kwargs
-        )
+# ── 统一委托给 executors 层 ────────────────────────────────────────────────
+# 所有类型和核心逻辑都委托给 geoagent.executors
+from geoagent.executors.base import BaseExecutor, ExecutorResult as _BaseExecutorResult
+from geoagent.executors.router import (
+    TaskRouter,
+    execute_task as _execute_task,
+    get_router as _get_router,
+)
 
 
 # =============================================================================
-# Scenario → Executor 映射表
+# ExecutorResult（委托给 executors.base，保持向后兼容）
 # =============================================================================
 
-SCENARIO_EXECUTOR_MAP: Dict[Scenario, str] = {
-    Scenario.ROUTE: "route",
-    Scenario.BUFFER: "buffer",
-    Scenario.OVERLAY: "overlay",
-    Scenario.INTERPOLATION: "idw",
-    Scenario.VIEWSHED: "shadow",
-    Scenario.STATISTICS: "hotspot",
-    Scenario.RASTER: "ndvi",
+ExecutorResult = _BaseExecutorResult
+
+
+# =============================================================================
+# TaskRouter（委托给 executors.router，保持向后兼容）
+# =============================================================================
+
+SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
+    "route": "route",
+    "buffer": "buffer",
+    "overlay": "overlay",
+    "interpolation": "idw",
+    "viewshed": "shadow",
+    "statistics": "hotspot",
+    "raster": "ndvi",
 }
 
 
-# =============================================================================
-# TaskRouter
-# =============================================================================
-
-class TaskRouter:
-    """
-    统一任务路由器
-
-    核心职责：
-    1. 根据 scenario 确定使用哪个 Executor
-    2. 调用 Executor.run(task) 执行任务
-    3. 统一返回 ExecutorResult 格式
-    4. 处理降级和错误
-
-    设计原则：
-    - 后端代码路由，不依赖 LLM
-    - 所有库都是"被调用者"
-    """
+class TaskRouter(_get_router().__class__):
+    """任务路由器（委托给 geoagent.executors.router.TaskRouter）"""
 
     def __init__(self):
-        self._cache: Dict[str, Any] = {}
+        super().__init__()
 
-    def _get_executor(self, executor_key: str):
-        """获取 Executor 实例（延迟加载）"""
-        if executor_key in self._cache:
-            return self._cache[executor_key]
+    def route(self, scenario_or_str, task_dict: Dict[str, Any]) -> ExecutorResult:
+        """执行任务路由"""
+        from geoagent.layers.architecture import Scenario
 
-        # 延迟导入
-        executor_map = {
-            "route": ("geoagent.executors.route_executor", "RouteExecutor"),
-            "buffer": ("geoagent.executors.buffer_executor", "BufferExecutor"),
-            "overlay": ("geoagent.executors.overlay_executor", "OverlayExecutor"),
-            "idw": ("geoagent.executors.idw_executor", "IDWExecutor"),
-            "shadow": ("geoagent.executors.shadow_executor", "ShadowExecutor"),
-            "hotspot": ("geoagent.executors.hotspot_executor", "HotspotExecutor"),
-            "ndvi": ("geoagent.executors.ndvi_executor", "NdviExecutor"),
-        }
+        if isinstance(scenario_or_str, Scenario):
+            scenario_str = scenario_or_str.value
+        else:
+            scenario_str = str(scenario_or_str)
 
-        if executor_key not in executor_map:
-            return None
+        executor_key = SCENARIO_EXECUTOR_MAP.get(scenario_str, "general")
+        task_dict = dict(task_dict)
+        task_dict["task"] = scenario_str
 
-        module_name, class_name = executor_map[executor_key]
-        try:
-            module = __import__(module_name, fromlist=[class_name])
-            executor_cls = getattr(module, class_name)
-            executor = executor_cls()
-            self._cache[executor_key] = executor
-            return executor
-        except (ImportError, AttributeError):
-            return None
-
-    def route(self, scenario: Scenario, task_dict: Dict[str, Any]) -> ExecutorResult:
-        """
-        执行任务路由
-
-        Args:
-            scenario: 场景类型
-            task_dict: 任务参数字典
-
-        Returns:
-            ExecutorResult 统一结果格式
-        """
-        _scenario = scenario.value if hasattr(scenario, 'value') else scenario
-        executor_key = SCENARIO_EXECUTOR_MAP.get(scenario, "general")
-        executor = self._get_executor(executor_key)
-
-        if executor is None:
-            return ExecutorResult.err(
-                scenario=_scenario,
-                task=task_dict.get("task", _scenario),
-                error=f"无法加载 Executor: {executor_key}，场景 '{_scenario}' 暂不支持",
-                engine="router"
-            )
-        try:
-            result = executor.run(task_dict)
-            return self._convert_result(result, _scenario, executor_key)
-        except Exception as e:
-            return ExecutorResult.err(
-                scenario=_scenario,
-                task=task_dict.get("task", _scenario),
-                error=f"Executor {executor_key} 执行失败: {str(e)}",
-                engine=executor_key,
-                error_detail=traceback.format_exc(),
-            )
-
-    def _convert_result(self, result: Any, scenario: str, executor_key: str) -> ExecutorResult:
-        """转换 Executor 结果为标准化格式"""
-        if isinstance(result, ExecutorResult):
-            return result
-
-        if isinstance(result, dict):
-            return ExecutorResult(
-                success=result.get("success", True),
-                scenario=scenario,
-                task=result.get("task_type", scenario),
-                engine=result.get("engine", executor_key),
-                data=result.get("data"),
-                error=result.get("error"),
-                error_detail=result.get("error_detail"),
-            )
-
-        return ExecutorResult.ok(
-            scenario=scenario,
-            task=scenario,
-            engine=executor_key,
-            data={"raw_result": str(result)},
-        )
+        return _execute_task(task_dict)
 
 
 # =============================================================================
@@ -245,7 +96,7 @@ def get_router() -> TaskRouter:
 # 核心执行函数
 # =============================================================================
 
-def execute_task(scenario: Scenario, task_dict: Dict[str, Any]) -> ExecutorResult:
+def execute_task(scenario: Any, task_dict: Dict[str, Any]) -> ExecutorResult:
     """
     统一任务执行入口
 
@@ -257,7 +108,7 @@ def execute_task(scenario: Scenario, task_dict: Dict[str, Any]) -> ExecutorResul
     - 统一返回 ExecutorResult
 
     Args:
-        scenario: 场景类型
+        scenario: 场景类型（Scenario 枚举或字符串）
         task_dict: 任务参数字典
 
     Returns:
@@ -273,41 +124,135 @@ def execute_task(scenario: Scenario, task_dict: Dict[str, Any]) -> ExecutorResul
 
 def execute_route(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行路径规划任务"""
-    return execute_task(Scenario.ROUTE, task_dict)
+    return execute_task("route", task_dict)
 
 
 def execute_buffer(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行缓冲区分析任务"""
-    return execute_task(Scenario.BUFFER, task_dict)
+    return execute_task("buffer", task_dict)
 
 
 def execute_overlay(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行叠置分析任务"""
-    return execute_task(Scenario.OVERLAY, task_dict)
+    return execute_task("overlay", task_dict)
 
 
 def execute_interpolation(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行插值分析任务"""
-    return execute_task(Scenario.INTERPOLATION, task_dict)
+    return execute_task("interpolation", task_dict)
 
 
 def execute_viewshed(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行视域分析任务"""
-    return execute_task(Scenario.VIEWSHED, task_dict)
+    return execute_task("viewshed", task_dict)
 
 
 def execute_statistics(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行统计分析任务"""
-    return execute_task(Scenario.STATISTICS, task_dict)
+    return execute_task("statistics", task_dict)
 
 
 def execute_raster(task_dict: Dict[str, Any]) -> ExecutorResult:
     """执行栅格分析任务"""
-    return execute_task(Scenario.RASTER, task_dict)
+    return execute_task("raster", task_dict)
+
+
+def execute_shadow(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行阴影分析任务"""
+    return execute_task("shadow_analysis", task_dict)
+
+
+def execute_ndvi(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行 NDVI 任务"""
+    return execute_task("ndvi", task_dict)
+
+
+def execute_hotspot(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行热点分析任务"""
+    return execute_task("hotspot", task_dict)
+
+
+def execute_visualization(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行可视化任务"""
+    return execute_task("visualization", task_dict)
+
+
+def execute_accessibility(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行可达性分析任务"""
+    return execute_task("accessibility", task_dict)
+
+
+def execute_suitability(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行选址分析任务"""
+    return execute_task("suitability", task_dict)
+
+
+def execute_general(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """执行通用任务"""
+    return execute_task("general", task_dict)
+
+
+# =============================================================================
+# Capability Registry 便捷函数（54 个标准化能力节点）
+# =============================================================================
+
+def execute_capability(capability_name: str, inputs: Dict[str, Any], params: Dict[str, Any]) -> ExecutorResult:
+    """
+    通过 CapabilityRegistry 执行标准化能力
+
+    Args:
+        capability_name: 能力名称（如 "vector_buffer", "raster_ndvi" 等）
+        inputs: 输入数据
+        params: 分析参数
+
+    Returns:
+        ExecutorResult
+    """
+    from geoagent.geo_engine.capability import execute_capability as cap_exec
+    return cap_exec(capability_name, inputs, params)
+
+
+def execute_capability_from_task(task: Dict[str, Any]) -> ExecutorResult:
+    """
+    通过 Task DSL 执行能力
+
+    Args:
+        task: Task DSL 字典，包含 task/inputs/params 字段
+
+    Returns:
+        ExecutorResult
+    """
+    from geoagent.geo_engine.capability.router import execute_capability_task
+    return execute_capability_task(task)
+
+
+def list_all_capabilities() -> List[str]:
+    """列出所有可用能力"""
+    from geoagent.geo_engine.capability import list_capabilities
+    return list_capabilities()
+
+
+def list_capabilities_by_category(category: str) -> List[str]:
+    """按类别列出能力"""
+    from geoagent.geo_engine.capability import list_capabilities
+    return list_capabilities(category=category)
+
+
+def search_capabilities(query: str) -> List[str]:
+    """搜索能力"""
+    from geoagent.geo_engine.capability import search_capabilities as search
+    return search(query)
+
+
+def get_capability_info(name: str) -> Optional[Dict[str, Any]]:
+    """获取能力详细信息"""
+    from geoagent.geo_engine.capability import capability_info
+    return capability_info(name)
 
 
 __all__ = [
     "ExecutorResult",
+    "BaseExecutor",
     "SCENARIO_EXECUTOR_MAP",
     "TaskRouter",
     "get_router",
@@ -319,4 +264,18 @@ __all__ = [
     "execute_viewshed",
     "execute_statistics",
     "execute_raster",
+    "execute_shadow",
+    "execute_ndvi",
+    "execute_hotspot",
+    "execute_visualization",
+    "execute_accessibility",
+    "execute_suitability",
+    "execute_general",
+    # Capability Registry
+    "execute_capability",
+    "execute_capability_from_task",
+    "list_all_capabilities",
+    "list_capabilities_by_category",
+    "search_capabilities",
+    "get_capability_info",
 ]

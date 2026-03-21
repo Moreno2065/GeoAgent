@@ -482,9 +482,12 @@ class ResultRenderer:
         Returns:
             渲染后的结果字典
         """
-        # 使用场景特定渲染器
-        renderer = self.renderers.get(scenario, render_basic_result)
-        return renderer(result_data, explanation)
+        # 检查是否有场景特定渲染器
+        if scenario in self.renderers:
+            # 场景特定渲染器签名：_render_xxx(result_data)，忽略 scenario
+            return self.renderers[scenario](result_data)
+        # 否则使用通用渲染器
+        return render_basic_result(scenario, result_data, explanation)
 
     def render_from_json(
         self,

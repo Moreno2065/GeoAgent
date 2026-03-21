@@ -674,7 +674,7 @@ def execute_task(tool_name: str, arguments: dict) -> str:
     """
     根据任务类型确定性地执行 GIS 操作（新架构）
 
-    这是三层收敛架构的执行层入口。
+    这是六层架构 Layer 5 执行层的入口。
     优先使用 task_executor 中的确定性执行器。
 
     Args:
@@ -684,16 +684,16 @@ def execute_task(tool_name: str, arguments: dict) -> str:
     Returns:
         JSON 格式的执行结果
     """
-    # 尝试使用新的任务执行器
+    # 使用新的任务执行器（executors layer）
     try:
-        from geoagent.compiler.task_executor import execute_task_by_dict
-        from geoagent.compiler.task_schema import parse_task_from_dict
+        from geoagent.executors import execute_task_by_dict
 
         # 构建任务字典
         task_data = {"task": tool_name, **arguments}
 
-        # 解析并执行
-        return execute_task_by_dict(task_data)
+        # 执行并转换为 JSON 字符串
+        result = execute_task_by_dict(task_data)
+        return result.to_json()
 
     except ImportError:
         # 回退到旧的 execute_tool
@@ -707,7 +707,7 @@ def execute_task(tool_name: str, arguments: dict) -> str:
 
 def execute_task_from_dict(task_data: dict) -> str:
     """
-    从字典执行任务（新架构）
+    从字典执行任务（executors layer）
 
     便捷函数，直接传入包含 task 字段的字典。
 
@@ -718,10 +718,11 @@ def execute_task_from_dict(task_data: dict) -> str:
         JSON 格式的执行结果
     """
     try:
-        from geoagent.compiler.task_executor import execute_task_by_dict
-        return execute_task_by_dict(task_data)
+        from geoagent.executors import execute_task_by_dict
+        result = execute_task_by_dict(task_data)
+        return result.to_json()
     except ImportError:
         return json.dumps(
-            {"success": False, "error": "compiler 模块不可用", "result": None},
+            {"success": False, "error": "executors 模块不可用", "result": None},
             ensure_ascii=False,
         )

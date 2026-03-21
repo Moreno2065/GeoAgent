@@ -1,7 +1,7 @@
 """
 GeoAgent - 基于 DeepSeek API 的空间智能 GIS 分析 Agent
 ================================================================
-三层收敛架构：用户输入 → 意图分类 → 动态Schema → Pydantic校验 → 确定性执行
+六层架构：Input → Intent → Orchestrate → DSL → Execute → Render
 
 新增 V2 六层架构（推荐）：
     User Input → Intent → Orchestrate → DSL → Execute → Render
@@ -95,19 +95,8 @@ from geoagent.renderer.result_renderer import (
     render_result,
 )
 
-# 编译器模块
-from geoagent.compiler import (
-    GISCompiler,
-    IntentClassifier,
-    classify_intent,
-    execute_task,
-    TaskType,
-    RouteTask, BufferTask, OverlayTask, InterpolationTask,
-    ShadowTask, NdviTask, HotspotTask, VisualizationTask, GeneralTask,
-)
+# 编译器模块已移除（六层架构统一替代）
 
-# Workflow（编译器封装）
-from geoagent.workflow import SimpleCompilerWorkflow, create_compiler_workflow
 
 # GeoEngine 统一执行系统
 from geoagent.geo_engine import (
@@ -211,15 +200,8 @@ __all__ = [
     "GeoAgent",
     "create_agent",
 
-    # 编译器
-    "GISCompiler",
-    "TaskType",
-    "RouteTask", "BufferTask", "OverlayTask", "InterpolationTask",
-    "ShadowTask", "NdviTask", "HotspotTask", "VisualizationTask", "GeneralTask",
-
-    # Workflow
-    "SimpleCompilerWorkflow",
-    "create_compiler_workflow",
+    # ── 编译器 ───────────────────────────────────────────────────────────
+    # 编译器模块已移除（六层架构统一替代）
 
     # GeoEngine
     "GeoEngine",

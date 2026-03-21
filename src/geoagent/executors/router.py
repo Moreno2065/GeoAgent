@@ -76,6 +76,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "general":        lambda: __import__(
                               "geoagent.executors.general_executor",
                               fromlist=["GeneralExecutor"]).GeneralExecutor,
+        # GDAL 工具执行器（支持 raster_clip, raster_reproject, vector_buffer 等）
+        "gdal":          lambda: __import__(
+                              "geoagent.executors.gdal_executor",
+                              fromlist=["GDALExecutor"]).GDALExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -108,6 +112,16 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "accessibility":    "route",              # accessibility 路由到 route executor
     "suitability":     "general",             # suitability 暂用 general executor
     "general":         "general",
+    # GDAL 工具（raster_clip, raster_reproject, vector_buffer 等）
+    "gdal":            "gdal",
+    "raster_clip":     "gdal",
+    "raster_reproject": "gdal",
+    "raster_translate": "gdal",
+    "raster_resample":  "gdal",
+    "vector_reproject": "gdal",
+    "vector_buffer":    "gdal",
+    "vector_clip":      "gdal",
+    "vector_intersect": "gdal",
 }
 
 
@@ -135,6 +149,16 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "surface":          "interpolation",
     "spatial join":     "overlay",
     "spatial_join":     "overlay",
+    # GDAL 工具 → gdal scenario
+    "gdal":             "gdal",
+    "raster_clip":      "gdal",
+    "raster_reproject": "gdal",
+    "raster_translate": "gdal",
+    "raster_resample":  "gdal",
+    "vector_reproject": "gdal",
+    "vector_buffer":    "gdal",
+    "vector_clip":      "gdal",
+    "vector_intersect": "gdal",
 }
 
 

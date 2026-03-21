@@ -51,7 +51,6 @@ from geoagent.layers.layer3_orchestrate import (
     ParameterExtractor,
     ClarificationEngine,
     ScenarioOrchestrator,
-    CLARIFICATION_TEMPLATES,
     get_orchestrator,
     orchestrate,
 )
@@ -128,7 +127,6 @@ __all__ = [
     "ParameterExtractor",
     "ClarificationEngine",
     "ScenarioOrchestrator",
-    "CLARIFICATION_TEMPLATES",
     "get_orchestrator",
     "orchestrate",
     # layer 4

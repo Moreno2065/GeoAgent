@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, Optional, List
 
 from geoagent.layers.layer5_executor import ExecutorResult
@@ -44,6 +44,16 @@ class ExplanationCard:
     data_used: Optional[str] = None
     caveats: Optional[str] = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.title,
+            "what_i_did": self.what_i_did,
+            "why": self.why,
+            "what_it_means": self.what_it_means,
+            "data_used": self.data_used,
+            "caveats": self.caveats,
+        }
+
 
 # =============================================================================
 # 业务结论
@@ -61,6 +71,9 @@ class BusinessConclusion:
     recommendations: List[str] = field(default_factory=list)  # 建议
     data_quality: str = "unknown"  # 数据质量
     confidence: str = "medium"  # 置信度: high/medium/low
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 # =============================================================================
@@ -195,7 +208,7 @@ class ResultRenderer:
             return self._render_error(result)
 
         # 根据场景渲染
-        render_method = self._RENDER_METHODS.get(result.scenario, "_render_generic")
+        render_method = self._RENDER_METHODS.get(result.task_type, "_render_generic")
         method = getattr(self, render_method, self._render_generic)
         return method(result)
 
@@ -214,16 +227,17 @@ class ResultRenderer:
         output_files = [data.get("output_file", "")] if data.get("output_file") else []
         output_files.extend(data.get("files", []) if isinstance(data.get("files"), list) else [])
 
+        task_type = result.task_type
         return RenderResult(
             success=True,
-            summary=f"{result.scenario} 分析完成",
+            summary=f"{task_type} 分析完成",
             conclusion=BusinessConclusion(
-                summary=f"{result.scenario} 分析完成",
+                summary=f"{task_type} 分析完成",
                 key_findings=[f"使用了 {result.engine} 引擎"],
             ),
             explanation=ExplanationCard(
-                title=f"{result.scenario} 分析结果",
-                what_i_did=f"执行了 {result.task} 任务",
+                title=f"{task_type} 分析结果",
+                what_i_did=f"执行了 {task_type} 任务",
                 why="用户请求",
                 what_it_means="分析已完成",
                 data_used=data.get("data_source"),

@@ -299,8 +299,7 @@ def test_layer6_render():
 
     # 测试 route 渲染
     executor_result = ExecutorResult.ok(
-        scenario="route",
-        task="route",
+        task_type="route",
         engine="amap",
         data={
             "start": "芜湖南站",
@@ -319,8 +318,7 @@ def test_layer6_render():
 
     # 测试 buffer 渲染
     executor_result = ExecutorResult.ok(
-        scenario="buffer",
-        task="buffer",
+        task_type="buffer",
         engine="geopandas",
         data={
             "input_layer": "schools.shp",
@@ -338,8 +336,7 @@ def test_layer6_render():
 
     # 测试 overlay 渲染
     executor_result = ExecutorResult.ok(
-        scenario="overlay",
-        task="overlay",
+        task_type="overlay",
         engine="geopandas",
         data={
             "operation": "intersect",

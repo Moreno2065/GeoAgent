@@ -2,7 +2,7 @@
 Executor Layer - 统一执行层
 =============================
 核心设计原则：
-- 所有库（ArcPy, GeoPandas, NetworkX, Amap, PostGIS）都是"被调用者"，不是"决策者"
+- 所有库（ArcPy, GeoPandas, NetworkX, Amap, PostGIS, GDAL）都是"被调用者"，不是"决策者"
 - 每个 Executor 封装一个特定能力，内部决定用哪个库
 - 统一数据格式：输入 → GeoJSON/GeoDataFrame → 输出
 - TaskRouter 统一调度，不让库之间互相调用
@@ -21,6 +21,10 @@ Executor Layer - 统一执行层
     viz_executor.py   # 可视化（Folium + PyDeck）
     postgis_executor.py # PostGIS查询（GeoPandas + psycopg2）
     general_executor.py # 通用任务（sandboxed Python）
+    gdal_engine.py     # GDAL 工具引擎（raster/vector 操作）
+    gdal_tool_caller.py # LLM 任务 JSON → GDAL 执行
+    gdal_schema.py     # GDAL 工具 Pydantic Schema
+    gdal_executor.py    # GDAL Executor（集成到 Layer 5）
 """
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
@@ -52,6 +56,28 @@ from geoagent.executors.hotspot_executor import HotspotExecutor
 from geoagent.executors.viz_executor import VisualizationExecutor
 from geoagent.executors.postgis_executor import PostGISExecutor
 from geoagent.executors.general_executor import GeneralExecutor
+from geoagent.executors.gdal_executor import GDALExecutor
+
+# GDAL 工具相关
+from geoagent.executors.gdal_engine import (
+    GDAL_TOOL_WHITELIST,
+    GDAL_TOOL_DEFINITIONS,
+    GDALResult,
+    GDALEngine,
+    get_gdal_engine,
+)
+from geoagent.executors.gdal_tool_caller import (
+    ToolCallResult,
+    GDALToolCaller,
+    get_tool_caller,
+    call_gdal_tool,
+)
+from geoagent.executors.gdal_schema import (
+    TASK_SCHEMA_MAP,
+    GDALSchemaValidator,
+    get_schema_validator,
+    validate_gdal_task,
+)
 
 __all__ = [
     # ---- 基础 ----
@@ -68,6 +94,21 @@ __all__ = [
     "VisualizationExecutor",
     "PostGISExecutor",
     "GeneralExecutor",
+    "GDALExecutor",
+    # ---- GDAL 工具 ----
+    "GDAL_TOOL_WHITELIST",
+    "GDAL_TOOL_DEFINITIONS",
+    "GDALResult",
+    "GDALEngine",
+    "get_gdal_engine",
+    "ToolCallResult",
+    "GDALToolCaller",
+    "get_tool_caller",
+    "call_gdal_tool",
+    "TASK_SCHEMA_MAP",
+    "GDALSchemaValidator",
+    "get_schema_validator",
+    "validate_gdal_task",
     # ---- 路由 ----
     "TaskRouter",
     "execute_task",
