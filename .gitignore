@@ -64,6 +64,8 @@ Thumbs.db
 *.log
 logs/
 
+# Cache
+cache/
 # Local packages
 src/*.egg-info/
 # 忽略 Visual Studio 和插件的缓存
@@ -73,3 +75,4 @@ src/*.egg-info/
 *.db
 *.opendb
 workspace/2025 GIS考核(公开）.zip
+cache/15347569ac6798bbced1e1cb467c09fda661a804.json

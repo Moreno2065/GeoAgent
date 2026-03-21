@@ -485,7 +485,10 @@ def _format_click_context(clicked: dict) -> str:
 
 def _render_sidebar():
     with st.sidebar:
-        _render_llm_status()
+        # 🌟 修改 1：使用占位符包裹状态灯，赋予它动态刷新的超能力
+        st.session_state["sidebar_status_ph"] = st.empty()
+        with st.session_state["sidebar_status_ph"]:
+            _render_llm_status()
         st.header("⚙️ 配置")
 
         st.button(
@@ -1422,6 +1425,11 @@ def _handle_user_message(prompt: str, agent):
 
         st.session_state["llm_status"] = "thinking"
         st.session_state["llm_current_node"] = "🚀 启动中..."
+        
+        # 🌟 修改 2：刚按下发送键时，立刻让指示灯变黄！
+        if "sidebar_status_ph" in st.session_state:
+            with st.session_state["sidebar_status_ph"]:
+                _render_llm_status()
 
         stream_state = {
             "text": "",
@@ -1543,6 +1551,19 @@ def _handle_user_message(prompt: str, agent):
                 st.session_state["llm_current_node"] = "LLM 输出中"
                 _update_stream(full_text)
 
+            # 🌟 修改 3：在 on_event 的最底部加上这段代码
+            # 每次收到后台事件，都把最新的节点状态同步给 UI，并强制重新渲染！
+            if et_lower != _EVT.LLM_THINKING:
+                if stream_state.get("has_error"):
+                    st.session_state["llm_status"] = "stopped"
+                else:
+                    st.session_state["llm_status"] = "thinking"
+                st.session_state["llm_current_node"] = stream_state.get("current_node", "")
+
+            if "sidebar_status_ph" in st.session_state:
+                with st.session_state["sidebar_status_ph"]:
+                    _render_llm_status()
+
         if hasattr(agent, "chat_langgraph"):
             _log("info", "🚀 LangGraph DAG 启动 — Planner 生成计划中...")
             result = None
@@ -1553,8 +1574,16 @@ def _handle_user_message(prompt: str, agent):
                 max_retries=2,
                 thread_id=cid,
             ):
-                if isinstance(event, dict) and event.get("final_response") is not None:
-                    result = event
+                if isinstance(event, dict):
+                    # 🌟 新增：拦截底层抛出的 error 事件并显式报警
+                    if event.get("event") == "error":
+                        error_msg = event.get("payload", {}).get("error", "未知底层错误")
+                        _log("error", f"💥 核心框架崩溃: {error_msg}")
+                        stream_state["has_error"] = True
+                        stream_state["error_msg"] = error_msg
+                        
+                    if event.get("final_response") is not None:
+                        result = event
 
             if result:
                 final_content = result.get("final_response", "")
