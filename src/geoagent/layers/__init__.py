@@ -7,7 +7,7 @@ GeoAgent Layers Package
   Layer 3: Scenario Orchestrator（场景编排层）
   Layer 4: Task DSL Builder（任务编译层）
   Layer 5: Task Router + Executors（执行引擎层）
-  Layer 6: Result Renderer（结果呈现层）
+  Layer 6: Result Renderer（结果呈现层）—— 已由 renderer/result_renderer.py 提供
 """
 
 from geoagent.layers.architecture import (
@@ -84,23 +84,12 @@ from geoagent.layers.layer5_executor import (
     execute_raster,
 )
 
-from geoagent.layers.layer6_render import (
-    ExplanationCard,
-    BusinessConclusion,
-    RenderResult,
-    ResultRenderer,
-    get_renderer,
-    render_result,
-)
-
-from geoagent.pipeline import (
-    PipelineEvent,
-    PipelineContext,
+from geoagent.layers.pipeline import (
     PipelineResult,
-    GeoAgentPipeline,
+    PipelineConfig,
+    SixLayerPipeline,
     get_pipeline,
     run_pipeline,
-    run_pipeline_mvp,
 )
 
 __all__ = [
@@ -166,19 +155,10 @@ __all__ = [
     "execute_viewshed",
     "execute_statistics",
     "execute_raster",
-    # layer 6
-    "ExplanationCard",
-    "BusinessConclusion",
-    "RenderResult",
-    "ResultRenderer",
-    "get_renderer",
-    "render_result",
     # pipeline
-    "PipelineEvent",
-    "PipelineContext",
     "PipelineResult",
-    "GeoAgentPipeline",
+    "PipelineConfig",
+    "SixLayerPipeline",
     "get_pipeline",
     "run_pipeline",
-    "run_pipeline_mvp",
 ]

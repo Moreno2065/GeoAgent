@@ -79,6 +79,7 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         # 中文
         "视域", "视域分析", "通视", "通视分析", "可见性",
         "阴影", "shadow", "日照", "遮挡", "采光",
+        "可视范围", "可视区域", "视野范围", "视野分析",
         "建筑阴影", "日照分析", "阴影分析",
         # 英文
         "viewshed", "viewshed analysis", "visibility", "visible",

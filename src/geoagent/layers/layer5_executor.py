@@ -179,24 +179,24 @@ class TaskRouter:
         Returns:
             ExecutorResult 统一结果格式
         """
+        _scenario = scenario.value if hasattr(scenario, 'value') else scenario
         executor_key = SCENARIO_EXECUTOR_MAP.get(scenario, "general")
         executor = self._get_executor(executor_key)
 
         if executor is None:
             return ExecutorResult.err(
-                scenario=scenario.value,
-                task=task_dict.get("task", scenario.value),
-                error=f"无法加载 Executor: {executor_key}，场景 '{scenario.value}' 暂不支持",
+                scenario=_scenario,
+                task=task_dict.get("task", _scenario),
+                error=f"无法加载 Executor: {executor_key}，场景 '{_scenario}' 暂不支持",
                 engine="router"
             )
-
         try:
             result = executor.run(task_dict)
-            return self._convert_result(result, scenario.value, executor_key)
+            return self._convert_result(result, _scenario, executor_key)
         except Exception as e:
             return ExecutorResult.err(
-                scenario=scenario.value,
-                task=task_dict.get("task", scenario.value),
+                scenario=_scenario,
+                task=task_dict.get("task", _scenario),
                 error=f"Executor {executor_key} 执行失败: {str(e)}",
                 engine=executor_key,
                 error_detail=traceback.format_exc(),

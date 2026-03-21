@@ -52,7 +52,7 @@ from geoagent.pipeline import (
     get_pipeline,
 )
 
-# Layers
+# Layers（核心架构定义）
 from geoagent.layers import (
     # architecture
     Scenario,
@@ -82,11 +82,16 @@ from geoagent.layers import (
     TaskRouter,
     ExecutorResult,
     execute_task,
-    # layer 6
+    # pipeline
+    PipelineResult,
+    SixLayerPipeline,
+    get_pipeline,
+)
+
+# layer 6: Result Renderer
+from geoagent.renderer.result_renderer import (
     ResultRenderer,
-    RenderResult,
-    BusinessConclusion,
-    ExplanationCard,
+    get_renderer,
     render_result,
 )
 
@@ -194,10 +199,12 @@ __all__ = [
     "TaskRouter",
     "ExecutorResult",
     "execute_task",
+    "PipelineResult",
+    "SixLayerPipeline",
+    "get_pipeline",
+    # layer 6
     "ResultRenderer",
-    "RenderResult",
-    "BusinessConclusion",
-    "ExplanationCard",
+    "get_renderer",
     "render_result",
 
     # 核心

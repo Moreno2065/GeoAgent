@@ -220,7 +220,7 @@ def test_layer4_dsl():
             }
         )
         print("[OK] Route DSL 构建成功")
-        print(f"     scenario: {dsl.scenario.value}")
+        print(f"     scenario: {dsl.scenario}")
         print(f"     task: {dsl.task}")
         print(f"     inputs: {dsl.inputs}")
         print(f"     parameters: {dsl.parameters}")
