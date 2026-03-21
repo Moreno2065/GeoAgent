@@ -31,12 +31,21 @@
   <ItemGroup>
     <Compile Include="src\geoagent\__init__.py" />
     <Compile Include="src\geoagent\version.py" />
-    <Compile Include="src\geoagent\system_prompts.py" />
     <Compile Include="src\geoagent\core.py" />
+    <Compile Include="src\geoagent\workflow.py" />
     <Compile Include="src\geoagent\streamlit_app.py" />
     <Compile Include="src\geoagent\py_repl.py" />
     <Compile Include="src\geoagent\cli.py" />
-    <Compile Include="src\geoagent\langchain_agent.py" />
+  </ItemGroup>
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- geoagent.compiler 子包 — 三层收敛编译器                         -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <Compile Include="src\geoagent\compiler\__init__.py" />
+    <Compile Include="src\geoagent\compiler\task_schema.py" />
+    <Compile Include="src\geoagent\compiler\intent_classifier.py" />
+    <Compile Include="src\geoagent\compiler\task_executor.py" />
+    <Compile Include="src\geoagent\compiler\compiler.py" />
   </ItemGroup>
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.tools 子包                                             -->
@@ -45,6 +54,7 @@
     <Compile Include="src\geoagent\tools\__init__.py" />
     <Compile Include="src\geoagent\tools\registry.py" />
     <Compile Include="src\geoagent\tools\arcgis_tools.py" />
+    <Compile Include="src\geoagent\tools\tool_rag.py" />
   </ItemGroup>
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- geoagent.plugins 子包                                           -->
@@ -90,7 +100,7 @@
     <Compile Include="tests\__init__.py" />
     <Compile Include="tests\conftest.py" />
     <Compile Include="tests\test_geoagent.py" />
-    <Compile Include="tests\test_langchain_rag_integration.py" />
+    <Compile Include="tests\test_compiler.py" />
   </ItemGroup>
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <!-- 配置文件                                                        -->
@@ -109,6 +119,7 @@
     <Folder Include="src\geoagent\knowledge\" />
     <Folder Include="src\geoagent\plugins\" />
     <Folder Include="src\geoagent\tools\" />
+    <Folder Include="src\geoagent\compiler\" />
     <Folder Include="tests\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />

@@ -1,54 +1,98 @@
 """
 GeoAgent - 基于 DeepSeek API 的空间智能 GIS 分析 Agent
 ================================================================
-标准的 Python 包结构，支持:
-- pip install -e . 开发模式安装
-- python -m geoagent 运行
-- geoagent CLI 命令
-- 导入 geoagent.core / geoagent.gis_tools 等子模块
+三层收敛架构：用户输入 → 意图分类 → 动态Schema → Pydantic校验 → 确定性执行
 
-增强功能:
-- LangChain Agent 集成 (geoagent.langchain_agent)
-- 增强版 System Prompt (geoagent.system_prompts)
-- 综合技术知识库 (2万+字)
-- 高级 GIS/RS 工具集 (geoagent.gis_tools.advanced_tools)
+新增 GeoEngine 统一执行系统：
+    GeoEngine
+    ├── vector_engine   (GeoPandas)
+    ├── raster_engine   (Rasterio)
+    ├── network_engine  (NetworkX / OSMnx)
+    ├── analysis_engine (SciPy / PySAL)
+    └── io_engine       (Fiona / STAC)
+
+核心设计原则：
+    1. LLM 不直接调用 geopandas，只调用 GeoEngine
+    2. 所有模块间统一格式：矢量→GeoDataFrame，栅格→xarray/rasterio，输出→GeoJSON
+    3. 每个 task = 一个 executor，无 ReAct 循环
+    4. 确定性执行，后端代码路由
+
+标准用法:
+    from geoagent import GeoAgent, create_agent
+    agent = create_agent(api_key="sk-...")
+
+    # 三层收敛编译器（推荐）
+    result = agent.compile("芜湖南站到方特的步行路径")
+
+    # 直接使用 GeoEngine
+    from geoagent import GeoEngine
+    engine = GeoEngine()
+    result = engine.execute({
+        "task": "route",
+        "type": "shortest_path",
+        "inputs": {"start": "芜湖南站", "end": "方特欢乐世界"},
+        "params": {"mode": "walking", "city": "芜湖"},
+    })
 """
 
 from geoagent.version import __version__
 
-# 公开 API
-from geoagent.core import GeoAgent, create_agent, GIS_EXPERT_SYSTEM_PROMPT
+# 核心
+from geoagent.core import GeoAgent, create_agent
 
-# LangGraph Workflow（可选，优雅降级）
-try:
-    from geoagent.workflow import GeoAgentWorkflow
-    LANGGRAPH_AVAILABLE = True
-except ImportError:
-    GeoAgentWorkflow = None
-    LANGGRAPH_AVAILABLE = False
+# 编译器模块
+from geoagent.compiler import (
+    GISCompiler,
+    IntentClassifier,
+    classify_intent,
+    execute_task,
+    TaskType,
+    RouteTask, BufferTask, OverlayTask, InterpolationTask,
+    ShadowTask, NdviTask, HotspotTask, VisualizationTask, GeneralTask,
+)
 
-# LangChain Agent（可选，优雅降级）
-try:
-    from geoagent.langchain_agent import (
-        GISReActAgent,
-        create_gis_react_agent,
-        AgentConfig,
-        AgentResponse,
-        LANGCHAIN_AVAILABLE,
-    )
-except ImportError:
-    GISReActAgent = None
-    create_gis_react_agent = None
-    AgentConfig = None
-    AgentResponse = None
-    LANGCHAIN_AVAILABLE = False
+# Workflow（编译器封装）
+from geoagent.workflow import SimpleCompilerWorkflow, create_compiler_workflow
 
-# System Prompts
-from geoagent.system_prompts import (
-    GIS_EXPERT_SYSTEM_PROMPT_V2,
-    GIS_EXPERT_MINIMAL_PROMPT,
-    LANGCHAIN_GIS_PROMPT,
-    RAG_GIS_PROMPT,
+# GeoEngine 统一执行系统
+from geoagent.geo_engine import (
+    GeoEngine,
+    create_geo_engine,
+    get_geo_engine,
+    route_task,
+    ENGINE_MAP,
+    TASK_EXECUTOR_KEY,
+    route_to_executor,
+    geo_execute_task,
+    execute_task_via_executor_layer,
+)
+from geoagent.geo_engine.router import (
+    EngineName, TASK_EXAMPLES, validate_task_structure,
+)
+from geoagent.geo_engine.executor import (
+    execute_vector,
+    execute_raster,
+    execute_network,
+    execute_analysis,
+    execute_io,
+)
+
+# Executor Layer（新架构，优先使用）
+from geoagent.executors import (
+    BaseExecutor,
+    ExecutorResult,
+    TaskRouter,
+    execute_task as executor_execute_task,
+    execute_task_by_dict,
+    execute_scenario,
+    get_router,
+    SCENARIO_EXECUTOR_KEY,
+    ScenarioConfig,
+    SCENARIO_CONFIGS,
+    get_scenario_config,
+    get_all_scenarios,
+    get_executor_key,
+    resolve_engine,
 )
 
 # 知识库（可选，优雅降级）
@@ -68,21 +112,49 @@ __all__ = [
     # 核心
     "GeoAgent",
     "create_agent",
-    "GIS_EXPERT_SYSTEM_PROMPT",
-    # LangGraph Workflow
-    "GeoAgentWorkflow",
-    "LANGGRAPH_AVAILABLE",
-    # LangChain
-    "GISReActAgent",
-    "create_gis_react_agent",
-    "AgentConfig",
-    "AgentResponse",
-    "LANGCHAIN_AVAILABLE",
-    # System Prompt
-    "GIS_EXPERT_SYSTEM_PROMPT_V2",
-    "GIS_EXPERT_MINIMAL_PROMPT",
-    "LANGCHAIN_GIS_PROMPT",
-    "RAG_GIS_PROMPT",
+    # 编译器
+    "GISCompiler",
+    "IntentClassifier",
+    "classify_intent",
+    "execute_task",
+    "TaskType",
+    "RouteTask", "BufferTask", "OverlayTask", "InterpolationTask",
+    "ShadowTask", "NdviTask", "HotspotTask", "VisualizationTask", "GeneralTask",
+    # Workflow
+    "SimpleCompilerWorkflow",
+    "create_compiler_workflow",
+    # GeoEngine
+    "GeoEngine",
+    "create_geo_engine",
+    "get_geo_engine",
+    "route_task",
+    "ENGINE_MAP",
+    "TASK_EXECUTOR_KEY",
+    "route_to_executor",
+    "EngineName",
+    "geo_execute_task",
+    "execute_task_via_executor_layer",
+    "TASK_EXAMPLES",
+    "validate_task_structure",
+    "execute_vector",
+    "execute_raster",
+    "execute_network",
+    "execute_analysis",
+    "execute_io",
+    # Executor Layer（新架构）
+    "BaseExecutor",
+    "ExecutorResult",
+    "TaskRouter",
+    "executor_execute_task",
+    "execute_scenario",
+    "get_router",
+    "SCENARIO_EXECUTOR_KEY",
+    "ScenarioConfig",
+    "SCENARIO_CONFIGS",
+    "get_scenario_config",
+    "get_all_scenarios",
+    "get_executor_key",
+    "resolve_engine",
     # 知识库
     "GISKnowledgeBase",
     "get_knowledge_base",

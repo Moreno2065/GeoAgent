@@ -1,21 +1,13 @@
 """
 ===================================================================
-GeoAgent 第四层架构：交互控制层 — 全能 Agent 指挥舱
+GeoAgent 交互控制层 — 基于三层收敛架构
 ===================================================================
-┌───────────────────────────────────────────────────────────────────┐
-│  全能 GIS Agent — 空间智能数字员工流水线                          │
-│  左侧 1/3.5  →  指令输入舱 + Agent 思考日志                    │
-│  右侧 2.5/3.5 → PyDeck 3D 大屏 + 数据面板 + 指标仪表盘         │
-└───────────────────────────────────────────────────────────────────┘
+三层收敛架构：用户输入 → 意图分类 → 动态Schema → Pydantic校验 → 确定性执行
 
-核心升级：
-1. Agent 思考日志面板 — 实时展示 Planner/Executor/Reviewer 三节点状态
-2. PyDeck 3D 大屏 — 百万级大数据高性能可视化
-3. KPI 动态指标墙 — 实时感知空间分析态势
-4. Workspace State 展示 — 根治文件幻觉
-5. 1:3.5 宽屏布局（地图主导）
-
-UI 设计：Large-Format · 巨型字体 · 超大控件 · 地图主屏
+核心优势：
+  - 更稳定：LLM 只做翻译，不做决策
+  - 更快速：单次 LLM 调用，不需要 ReAct 循环
+  - 更可控：后端代码决定执行，不依赖 LLM 的工具选择
 """
 
 from __future__ import annotations
@@ -33,7 +25,7 @@ st.set_page_config(page_title="🌍 GeoAgent — 全能空间智能引擎", page
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        "About": "GeoAgent — 全能空间智能引擎 · LangGraph Plan-and-Execute · LangChain Agent · RAG",
+        "About": "GeoAgent — 三层收敛架构空间智能引擎 · 意图分类 · Pydantic校验 · 确定性执行",
     })
 from streamlit_folium import st_folium
 
@@ -44,15 +36,11 @@ for _p in (_ROOT, _SRC):
         sys.path.insert(0, str(_p))
 
 from geoagent.core import (
-    GIS_EXPERT_SYSTEM_PROMPT,
     GeoAgent,
-    IntentRouter,
     create_agent,
     get_workspace_state,
 )
 from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files
-
-_EVT = GeoAgent.EventType
 
 # =============================================================================
 # 常量配置
@@ -554,20 +542,17 @@ def _render_sidebar():
                         api_key=dk,
                         model=DEFAULT_LLM_MODEL,
                     )
-                    st.session_state["agent"].messages = [
-                        {"role": "system", "content": GIS_EXPERT_SYSTEM_PROMPT}
-                    ]
                     st.success("✅ Agent 已初始化！")
                     st.info(
-                        "🧠 LangGraph Plan-and-Execute 流水线已启用："
-                        "Planner → Executor → Reviewer"
+                        "🎯 三层收敛编译器已启用："
+                        "意图分类 → Schema注入 → Pydantic校验 → 确定性执行"
                     )
                 except Exception as e:
                     st.error(f"初始化失败：{e}")
 
         agent_online = bool(st.session_state.get("agent"))
         if agent_online:
-            st.success("🟢 Agent 在线 — 🧠 LangGraph Plan-and-Execute 流水线")
+            st.success("🟢 Agent 在线 — 🎯 三层收敛编译器")
         else:
             st.error("🔴 Agent 离线 — 请先启动")
 
@@ -1425,7 +1410,51 @@ def _handle_user_message(prompt: str, agent):
 
     cid = st.session_state["active_conv_id"]
 
-    if st.session_state.get("pending_click"):
+    # ── 追问 UI：检查是否有待回答的追问 ─────────────────────────────
+    clarification_key = "pending_clarification"
+    if st.session_state.get(clarification_key):
+        pending = st.session_state[clarification_key]
+        original_input = pending.get("original_input", "")
+        answers = pending.get("answers", {})
+
+        # 将用户输入作为最新问题的答案
+        if prompt.strip():
+            questions = pending.get("questions", [])
+            for q in questions:
+                field = q.get("field", "")
+                if q.get("required", True) and not answers.get(field):
+                    answers[field] = prompt.strip()
+                    break
+
+        # 检查是否所有必填问题都已回答
+        all_answered = True
+        for q in pending.get("questions", []):
+            field = q.get("field", "")
+            if q.get("required", True) and not answers.get(field):
+                all_answered = False
+                break
+
+        if all_answered:
+            # 所有问题已回答：直接使用 orchestrator 的 orchestrate_with_answers
+            st.session_state[clarification_key] = None
+            # 创建上下文供 orchestrator 使用
+            context = {**pending.get("auto_filled", {}), **answers}
+            # 将 context 存入 session，在 agent 调用时使用
+            st.session_state["_clarification_context"] = context
+        else:
+            # 还有问题未回答
+            with st.chat_message("assistant"):
+                st.info("💬 为了完成分析，请继续回答：")
+                for i, q in enumerate(pending.get("questions", [])):
+                    field = q.get("field", "")
+                    if not answers.get(field):
+                        st.write(f"**{i+1}. {q.get('question', field)}**")
+                        if q.get("options"):
+                            st.write(f"   可选：{' / '.join(q['options'])}")
+                st.warning("请在下方输入框中继续回答...")
+            return
+
+    # ── 正常处理用户输入 ──────────────────────────────────────────
         injected_ctx = _format_click_context(st.session_state["pending_click"])
         prompt = prompt + injected_ctx
         st.session_state["pending_click"] = None
@@ -1567,28 +1596,38 @@ def _handle_user_message(prompt: str, agent):
             elif et_lower == "step_skipped_deadloop":
                 stream_state["current_node"] = "⚠️ 死循环防护"
                 _log("error", f"⚠️ `{payload.get('tool','')}` 连续失败，强制跳过 — {payload.get('reason','')}")
-            elif et_lower == _EVT.ERROR:
+            elif et_lower == "error":
                 stream_state["has_error"] = True
                 stream_state["error_msg"] = payload.get("error", "未知错误")
                 _log("error", f"❌ 系统错误: {stream_state['error_msg'][:300]}")
-            elif et_lower == "timeout":
-                stream_state["has_error"] = True
-                stream_state["error_msg"] = payload.get("msg", "执行超时")
-                _log("error", f"⏱️ 执行超时: {payload.get('msg', '执行超时')}")
-            elif et_lower == "plan_retry":
-                _log("plan", f"🔄 {payload.get('msg', '解析失败，正在重试...')} (第 {payload.get('attempt', 1)} 次)")
-            elif et_lower == "plan_failed":
-                _log("error", f"⚠️ 计划解析失败，降级为 ReAct 模式: {payload.get('msg','')}")
-                raw = payload.get("raw", "")
-                if raw:
-                    _log("info", f"🔍 模型原始输出: {raw[:400]}...")
-            elif et_lower == "plan_error":
-                _log("error", f"❌ Planner 异常: {payload.get('msg','')}")
-            elif et_lower == _EVT.FINAL_RESPONSE:
-                _log("info", "💬 推理完成")
             elif et_lower == "final_response":
-                _log("info", "💬 Workflow 执行完成")
-            elif et_lower == _EVT.LLM_THINKING:
+                _log("info", "💬 执行完成")
+            elif et_lower == "intent_classified":
+                stream_state["current_node"] = f"🎯 意图识别: {payload.get('intent', '')}"
+                confidence = payload.get('confidence', 0)
+                keywords = payload.get('matched_keywords', [])
+                kw_str = ', '.join(keywords[:5]) if keywords else '无'
+                _log("plan", f"🎯 意图识别: **{payload.get('intent', '')}** (置信度 {confidence:.2f}, 匹配: {kw_str})")
+            elif et_lower == "schema_loaded":
+                stream_state["current_node"] = f"📋 Schema 加载: {payload.get('intent', '')}"
+                _log("plan", f"📋 Schema 加载: {payload.get('intent', '')}, 参数: {payload.get('schema_keys', [])}")
+            elif et_lower == "llm_response":
+                _log("plan", f"📝 LLM 参数提取完成")
+            elif et_lower == "task_parsed":
+                stream_state["current_node"] = f"✅ 任务解析: {payload.get('task_type', '')}"
+                _log("step", f"✅ 任务解析成功: **{payload.get('task_type', '')}**")
+            elif et_lower == "task_executed":
+                stream_state["current_node"] = f"⚡ 执行完成"
+                _log("step", "⚡ 任务执行完成")
+            elif et_lower == "complete":
+                success = payload.get('success', False)
+                stream_state["current_node"] = f"{'✅' if success else '❌'} 编译器执行完成"
+                _log("info", f"{'✅' if success else '❌'} 编译器执行{'成功' if success else '失败'}")
+            elif et_lower == "validation_error":
+                stream_state["has_error"] = True
+                stream_state["error_msg"] = payload.get('error', '参数校验失败')
+                _log("error", f"❌ 参数校验失败: {payload.get('error', '')[:200]}")
+            elif et_lower == "llm_thinking":
                 full_text = payload.get("full_text", "")
                 stream_state["text"] = full_text
                 st.session_state["llm_status"] = "speaking"
@@ -1597,7 +1636,7 @@ def _handle_user_message(prompt: str, agent):
 
             # 🌟 修改 3：在 on_event 的最底部加上这段代码
             # 每次收到后台事件，都把最新的节点状态同步给 UI，并强制重新渲染！
-            if et_lower != _EVT.LLM_THINKING:
+            if et_lower != "llm_thinking":
                 if stream_state.get("has_error"):
                     st.session_state["llm_status"] = "stopped"
                 else:
@@ -1608,41 +1647,205 @@ def _handle_user_message(prompt: str, agent):
                 with st.session_state["sidebar_status_ph"]:
                     _render_llm_status()
 
-        if hasattr(agent, "chat_langgraph"):
-            _log("info", "🚀 LangGraph DAG 启动 — Planner 生成计划中...")
-            result = None
-            for event in agent.chat_langgraph(
-                prompt,
-                event_callback=on_event,
-                max_steps=8,
-                max_retries=2,
-                thread_id=cid,
-            ):
-                if isinstance(event, dict):
-                    # 🌟 新增：拦截底层抛出的 error 事件并显式报警
-                    if event.get("event") == "error":
-                        error_msg = event.get("payload", {}).get("error", "未知底层错误")
-                        _log("error", f"💥 核心框架崩溃: {error_msg}")
-                        stream_state["has_error"] = True
-                        stream_state["error_msg"] = error_msg
-                        
-                    if event.get("final_response") is not None:
-                        result = event
+        # ── 根据选择的模式执行 ───────────────────────────────────────
+        agent_mode = st.session_state.get("agent_mode", "compiler")
 
-            if result:
-                final_content = result.get("final_response", "")
-                stream_state["tools"] = result.get("step_results", [])
-                mode = result.get("mode", "")
-                if mode:
-                    _log("info", f"📋 执行模式: {mode}")
-            else:
-                final_content = ""
-                _log("error", "⚠️ 未获取到执行结果，可能超时或异常中断")
+        if agent_mode == "compiler" and hasattr(agent, "compile"):
+            # 三层收敛编译器模式
+            _log("info", "🚀 三层收敛编译器启动 — 意图分类中...")
+
+            def compiler_event_callback(event_type: str, payload: dict):
+                # 编译器事件映射
+                if event_type == "intent_classified":
+                    on_event("intent_classified", payload)
+                elif event_type == "orchestration_complete":
+                    on_event("orchestration_complete", payload)
+                elif event_type == "clarification_needed":
+                    on_event("clarification_needed", payload)
+                elif event_type == "schema_loaded":
+                    on_event("schema_loaded", payload)
+                elif event_type == "llm_response":
+                    on_event("llm_response", payload)
+                elif event_type == "task_parsed":
+                    on_event("task_parsed", payload)
+                elif event_type == "task_executed":
+                    on_event("task_executed", payload)
+                elif event_type == "complete":
+                    on_event("complete", payload)
+                elif event_type == "validation_error":
+                    on_event("validation_error", payload)
+                elif event_type == "error":
+                    on_event("error", payload)
+                elif event_type == "final_response":
+                    on_event("final_response", payload)
+
+            try:
+                # 传递追问上下文给编译器
+                context = st.session_state.pop("_clarification_context", None)
+                if context:
+                    # 使用 orchestrator_with_answers 进行追问答案回传
+                    from geoagent.compiler.orchestrator import ScenarioOrchestrator
+                    orchestrator = ScenarioOrchestrator()
+                    orch_result = orchestrator.orchestrate(prompt, context=context)
+                    if orch_result.needs_clarification:
+                        # 追问答案仍不完整，继续追问
+                        questions = [
+                            {"field": q.field, "question": q.question, "options": q.options}
+                            for q in orch_result.questions
+                        ]
+                        with st.chat_message("assistant"):
+                            st.info("💬 请继续回答：")
+                            for i, q in enumerate(questions):
+                                st.write(f"**{i+1}. {q.get('question', q.get('field', ''))}**")
+                                if q.get("options"):
+                                    st.write(f"   可选：{' / '.join(q['options'])}")
+                        st.session_state["pending_clarification"] = {
+                            "original_input": prompt,
+                            "questions": questions,
+                            "answers": context,
+                        }
+                        return
+                    elif orch_result.task:
+                        # 追问完整，直接执行
+                        task_dsl = orch_result.task
+                        task_dict = {
+                            "task": orch_result.scenario,
+                        }
+                        task_dict.update(task_dsl.inputs)
+                        task_dict.update(task_dsl.parameters)
+
+                        from geoagent.compiler.task_executor import execute_task
+                        from geoagent.compiler.task_schema import parse_task_from_dict
+
+                        try:
+                            task = parse_task_from_dict(task_dict)
+                            result = execute_task(task)
+                            import json
+                            result_data = json.loads(result)
+                            success = result_data.get("success", False)
+                            if success:
+                                content_ph.markdown(f"**✅ 任务执行成功**\n\n{json.dumps(result_data, ensure_ascii=False, indent=2)}")
+                            else:
+                                content_ph.markdown(f"**❌ 执行失败**: {result_data.get('error', '未知错误')}")
+                        except Exception as e:
+                            content_ph.markdown(f"**❌ 执行异常**: {str(e)}")
+                        return
+
+                result = agent.compile(prompt, event_callback=compiler_event_callback)
+                if result:
+                    success = result.get("success", False)
+                    clarification_needed = result.get("clarification_needed", False)
+                    intent = result.get("intent", "")
+                    error = result.get("error", "")
+                    fallback = result.get("fallback_message", "")
+
+                    if success:
+                        task = result.get("task", {})
+                        task_type = task.get("task", intent)
+                        stream_state["current_node"] = f"✅ 任务 {task_type} 执行成功"
+                        _log("info", f"✅ 任务 {task_type} 执行成功")
+
+                        # 格式化结果输出
+                        exec_result = result.get("raw_result", "")
+                        if exec_result:
+                            try:
+                                import json
+                                exec_data = json.loads(exec_result)
+                                if exec_data.get("success"):
+                                    final_content = f"**✅ {task_type.upper()} 任务执行成功**\n\n"
+                                    for k, v in exec_data.items():
+                                        if k not in ("success",):
+                                            final_content += f"- **{k}**: {v}\n"
+                                else:
+                                    final_content = f"**❌ 执行失败**: {exec_data.get('error', '未知错误')}"
+                            except Exception:
+                                final_content = exec_result
+                        else:
+                            final_content = f"**✅ 任务 {task_type} 执行成功**"
+                    elif clarification_needed:
+                        # 参数不完整，需要追问
+                        questions = result.get("questions", [])
+                        auto_filled = result.get("auto_filled", {})
+                        
+                        if questions:
+                            clarification_text = fallback or "为了完成分析，我需要确认以下几点：\n"
+                            for i, q in enumerate(questions, 1):
+                                clarification_text += f"\n**{i}. {q.get('question', q.get('field', '未知问题'))}**"
+                                if q.get("options"):
+                                    opts = " / ".join(q["options"])
+                                    clarification_text += f"\n   可选：{opts}"
+                            
+                            final_content = f"**⚠️ 需要更多信息**\n\n{clarification_text}"
+
+                            # 存储追问上下文供后续使用（支持追问 UI）
+                            st.session_state["pending_clarification"] = {
+                                "original_input": prompt,
+                                "intent": intent,
+                                "questions": questions,
+                                "auto_filled": auto_filled,
+                                "answers": {},  # 追踪用户已回答的问题
+                            }
+                        else:
+                            final_content = f"**⚠️ 需要更多信息**\n\n{fallback}"
+                        stream_state["has_error"] = True
+                        stream_state["error_msg"] = "参数不完整"
+                    else:
+                        stream_state["has_error"] = True
+                        if fallback:
+                            final_content = f"**⚠️ 需要更多信息**\n\n{fallback}"
+                            stream_state["error_msg"] = error
+                            _log("error", f"⚠️ {error}")
+                        else:
+                            final_content = f"**❌ 执行失败**: {error}"
+                            stream_state["error_msg"] = error
+                            _log("error", f"❌ {error}")
+                else:
+                    final_content = ""
+                    _log("error", "⚠️ 编译器未返回结果")
+            except Exception as e:
+                final_content = f"**❌ 编译器异常**: {str(e)}"
+                _log("error", f"❌ 编译器异常: {str(e)}")
+                stream_state["has_error"] = True
+                stream_state["error_msg"] = str(e)
+
         else:
-            _log("info", "🚀 Agent 启动...")
-            for _ in agent.chat_stream(prompt, on_event):
-                pass
-            final_content = stream_state["text"]
+            # 降级：使用 compile 方法
+            try:
+                result = agent.compile(prompt, event_callback=on_event)
+                if result:
+                    success = result.get("success", False)
+                    if success:
+                        raw_result = result.get("raw_result", "")
+                        task = result.get("task", {})
+                        task_type = task.get("task", "unknown")
+                        if raw_result:
+                            try:
+                                import json
+                                exec_data = json.loads(raw_result)
+                                if exec_data.get("success"):
+                                    final_content = f"**✅ {task_type.upper()} 任务执行成功**\n\n"
+                                    for k, v in exec_data.items():
+                                        if k not in ("success",):
+                                            final_content += f"- **{k}**: {v}\n"
+                                else:
+                                    final_content = f"**❌ 执行失败**: {exec_data.get('error', '未知错误')}"
+                            except Exception:
+                                final_content = raw_result
+                        else:
+                            final_content = f"**✅ 任务 {task_type} 执行成功**"
+                    else:
+                        fallback = result.get("fallback_message", "")
+                        error = result.get("error", "")
+                        if fallback:
+                            final_content = f"**⚠️ 需要更多信息**\n\n{fallback}"
+                        else:
+                            final_content = f"**❌ 执行失败**: {error}"
+                else:
+                    final_content = ""
+                    _log("error", "⚠️ Agent 未返回结果")
+            except Exception as e:
+                final_content = f"**❌ 执行异常**: {str(e)}"
+                _log("error", f"❌ Agent 异常: {str(e)}")
 
         if stream_state["has_error"]:
             final_content = (final_content or "") + f"\n\n> **⚠️ 提示:** {stream_state['error_msg']}"

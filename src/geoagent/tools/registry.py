@@ -664,3 +664,64 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             {"success": False, "error": f"Tool execution failed: {str(e)}", "result": None},
             ensure_ascii=False,
         )
+
+
+# =============================================================================
+# 新增：execute_task - 基于任务编译器的确定性执行
+# =============================================================================
+
+def execute_task(tool_name: str, arguments: dict) -> str:
+    """
+    根据任务类型确定性地执行 GIS 操作（新架构）
+
+    这是三层收敛架构的执行层入口。
+    优先使用 task_executor 中的确定性执行器。
+
+    Args:
+        tool_name: 工具名称（task type）
+        arguments: 参数字典
+
+    Returns:
+        JSON 格式的执行结果
+    """
+    # 尝试使用新的任务执行器
+    try:
+        from geoagent.compiler.task_executor import execute_task_by_dict
+        from geoagent.compiler.task_schema import parse_task_from_dict
+
+        # 构建任务字典
+        task_data = {"task": tool_name, **arguments}
+
+        # 解析并执行
+        return execute_task_by_dict(task_data)
+
+    except ImportError:
+        # 回退到旧的 execute_tool
+        return execute_tool(tool_name, arguments)
+    except Exception as e:
+        return json.dumps(
+            {"success": False, "error": f"任务执行失败: {str(e)}", "result": None},
+            ensure_ascii=False,
+        )
+
+
+def execute_task_from_dict(task_data: dict) -> str:
+    """
+    从字典执行任务（新架构）
+
+    便捷函数，直接传入包含 task 字段的字典。
+
+    Args:
+        task_data: 包含 task 字段的字典
+
+    Returns:
+        JSON 格式的执行结果
+    """
+    try:
+        from geoagent.compiler.task_executor import execute_task_by_dict
+        return execute_task_by_dict(task_data)
+    except ImportError:
+        return json.dumps(
+            {"success": False, "error": "compiler 模块不可用", "result": None},
+            ensure_ascii=False,
+        )

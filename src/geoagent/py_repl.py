@@ -312,6 +312,7 @@ def _build_sandbox_globals(
         # GIS 核心
         "geopandas", "gpd",
         "rasterio", "rio",
+        "arcpy",
         "numpy", "np",
         "pandas", "pd",
         "shapely", "sp",
