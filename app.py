@@ -286,7 +286,7 @@ def _init_session_state():
             "count_delta": "",
             "count_label": "等待分析",
         },
-        "_rendered_msg_ids": set(),
+        "_rendered_msg_ids": [],  # 使用 list 而非 set（Streamlit 不支持 set 序列化）
         "agent_log": [],
         "sidebar_collapsed": False,
         "llm_status": "idle",  # idle | thinking | speaking | stopped
@@ -422,8 +422,12 @@ def _new_conversation():
     agent = st.session_state.get("agent")
     active_cid = st.session_state.get("active_conv_id")
     if agent and active_cid:
+        if "agent_contexts" not in st.session_state:
+            st.session_state["agent_contexts"] = {}
         st.session_state["agent_contexts"][active_cid] = agent.save_context()
     cid = str(uuid.uuid4())[:8]
+    if "conversations" not in st.session_state:
+        st.session_state["conversations"] = {}
     st.session_state["conversations"][cid] = {
         "title": datetime.datetime.now().strftime("%m-%d %H:%M"),
         "messages": [],
@@ -438,14 +442,20 @@ def _switch_conversation(cid: str):
     agent = st.session_state.get("agent")
     old_cid = st.session_state.get("active_conv_id")
     if agent and old_cid and old_cid != cid:
+        if "agent_contexts" not in st.session_state:
+            st.session_state["agent_contexts"] = {}
         st.session_state["agent_contexts"][old_cid] = agent.save_context()
     st.session_state["active_conv_id"] = cid
     st.session_state["agent_log"] = []
-    if agent and cid in st.session_state["agent_contexts"]:
+    if agent and "agent_contexts" in st.session_state and cid in st.session_state["agent_contexts"]:
         agent.restore_context(st.session_state["agent_contexts"][cid])
 
 
 def _delete_conversation(cid: str):
+    if "conversations" not in st.session_state:
+        st.session_state["conversations"] = {}
+    if "agent_contexts" not in st.session_state:
+        st.session_state["agent_contexts"] = {}
     st.session_state["conversations"].pop(cid, None)
     st.session_state["agent_contexts"].pop(cid, None)
     if st.session_state.get("active_conv_id") == cid:
@@ -459,7 +469,7 @@ def _delete_conversation(cid: str):
 def _get_active_messages():
     cid = st.session_state.get("active_conv_id")
     return (
-        st.session_state["conversations"].get(cid, {}).get("messages", [])
+        st.session_state.get("conversations", {}).get(cid, {}).get("messages", [])
         if cid
         else []
     )
@@ -497,7 +507,7 @@ def _render_sidebar():
             use_container_width=True,
         )
 
-        for cid, conv in reversed(list(st.session_state["conversations"].items())):
+        for cid, conv in reversed(list(st.session_state.get("conversations", {}).items())):
             row_col1, row_col2 = st.columns([1, 6])
             row_col1.button(
                 "🗑",
@@ -560,6 +570,12 @@ def _render_sidebar():
             st.success("🟢 Agent 在线 — 🧠 LangGraph Plan-and-Execute 流水线")
         else:
             st.error("🔴 Agent 离线 — 请先启动")
+
+        st.divider()
+
+        # 🌟 修复：将雪藏的 KPI 仪表盘渲染在侧边栏！
+        st.subheader("📈 实时态势")
+        _render_kpi_wall(st.session_state.get("kpi_data", {}))
 
         st.divider()
 
@@ -1291,7 +1307,7 @@ def main():
                 content = msg["content"]
                 tool_calls = msg.get("tool_calls", [])
                 msg_id = msg.get("id") or str(hash(content[:50]))
-                if msg_id in st.session_state.get("_rendered_msg_ids", set()):
+                if msg_id in st.session_state.get("_rendered_msg_ids", []):
                     continue
                 with st.chat_message(role):
                     if role == "user":
@@ -1397,6 +1413,13 @@ def _render_workspace_browser():
 
 def _handle_user_message(prompt: str, agent):
     """处理用户消息，执行 Agent 并渲染结果"""
+    if "conversations" not in st.session_state:
+        st.session_state["conversations"] = {}
+    if "agent_contexts" not in st.session_state:
+        st.session_state["agent_contexts"] = {}
+    if "agent_log" not in st.session_state:
+        st.session_state["agent_log"] = []
+
     if not st.session_state.get("active_conv_id"):
         _new_conversation()
 
@@ -1413,7 +1436,7 @@ def _handle_user_message(prompt: str, agent):
         "content": prompt,
         "id": user_msg_id,
     })
-    st.session_state["_rendered_msg_ids"].add(user_msg_id)
+    st.session_state["_rendered_msg_ids"].append(user_msg_id)
 
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -1457,6 +1480,8 @@ def _handle_user_message(prompt: str, agent):
 
         # ── 统一日志追加辅助（所有事件统一写入思考日志）──────────────
         def _log(etype: str, msg: str):
+            if "agent_log" not in st.session_state:
+                st.session_state["agent_log"] = []
             st.session_state["agent_log"].append({
                 "ts": datetime.datetime.now().strftime("%H:%M:%S"),
                 "type": etype,
@@ -1509,8 +1534,27 @@ def _handle_user_message(prompt: str, agent):
                 _log("tool", f"🔧 触发工具: `{tool}`")
             elif et_lower == "tool_call_end":
                 succ = payload.get("success", False)
-                stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 {payload.get('tool','')}"
-                _log("tool", f"{'✅' if succ else '❌'} `{payload.get('tool','')}` {'成功' if succ else '失败'}")
+                tool_name = payload.get("tool", "")
+                stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 {tool_name}"
+                if succ:
+                    _log("tool", f"{'✅' if succ else '❌'} `{tool_name}` {'成功' if succ else '失败'}")
+                else:
+                    _log("error", f"{'✅' if succ else '❌'} `{tool_name}` {'成功' if succ else '失败'}")
+                    # 写入 traceback 日志
+                    error_type = payload.get("error_type")
+                    error_summary = payload.get("error_summary")
+                    stderr_output = payload.get("stderr")
+                    if error_type:
+                        _log("error", f"  错误类型: {error_type}")
+                    if error_summary:
+                        _log("error", f"  错误摘要: {error_summary[:200]}{'...' if len(str(error_summary)) > 200 else ''}")
+                    if stderr_output:
+                        # 截取 traceback 关键部分（前 20 行）
+                        tb_lines = stderr_output.strip().split('\n')
+                        tb_display = '\n'.join(tb_lines[:25])
+                        if len(tb_lines) > 25:
+                            tb_display += f"\n  ... (共 {len(tb_lines)} 行)"
+                        _log("error", f"  Traceback:\n{tb_display}")
             elif et_lower == "review_pass":
                 stream_state["current_node"] = "🔍 Reviewer 审查通过"
                 _log("review", f"✅ 审查通过: 步骤 {payload.get('step_id','')}")
