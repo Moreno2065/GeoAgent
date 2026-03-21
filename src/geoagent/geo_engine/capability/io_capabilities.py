@@ -80,6 +80,7 @@ def io_read_vector(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, 
     """
     try:
         import geopandas as gpd
+        from pyogrio import set_driver_signal_handlers
 
         file = inputs.get("file")
         if not file:
@@ -91,6 +92,10 @@ def io_read_vector(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, 
         if not fpath.exists():
             return _std_result(False, error=f"文件不存在: {fpath}")
 
+        # 启用 GDAL 自动修复缺失的 .shx 文件
+        import os
+        os.environ["SHAPE_RESTORE_SHX"] = "YES"
+        
         gdf = gpd.read_file(fpath, encoding=encoding)
 
         return _std_result(
@@ -199,6 +204,10 @@ def io_write_vector(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str,
         driver = params.get("driver", "ESRI Shapefile")
         encoding = params.get("encoding", "utf-8")
         output_file = params.get("output_file")
+
+        # 启用 GDAL 自动创建缺失的 .shx 文件
+        import os
+        os.environ["SHAPE_RESTORE_SHX"] = "YES"
 
         # 支持传入 GeoDataFrame 或文件路径
         if isinstance(data, str):

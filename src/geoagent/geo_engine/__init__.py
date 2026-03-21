@@ -19,6 +19,22 @@ GeoEngine - 统一地理空间分析执行引擎
     4. 确定性执行，后端代码路由
 """
 
+# =============================================================================
+# 全局 GDAL 配置
+# =============================================================================
+
+import os
+
+# 自动修复缺失的 .shx 文件（Shapefile 索引文件）
+os.environ.setdefault("SHAPE_RESTORE_SHX", "YES")
+
+# 设置 GDAL 超时（避免长时间阻塞）
+os.environ.setdefault("GDAL_HTTP_TIMEOUT", "30")
+
+# =============================================================================
+# 导出
+# =============================================================================
+
 from geoagent.geo_engine.geo_engine import GeoEngine, create_geo_engine, get_geo_engine
 from geoagent.geo_engine.router import (
     route_task, ENGINE_MAP, TASK_EXECUTOR_KEY, route_to_executor

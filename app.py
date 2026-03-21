@@ -731,12 +731,18 @@ def main():
         [data-testid="stSidebar"] .stTextInput label,
         [data-testid="stSidebar"] .stToggle label {
             color: #374151 !important;
-            font-size: 0.95rem !important;
+            font-size: 1rem !important;
             font-weight: 700 !important;
         }
         [data-testid="stSidebar"] .stTextInput > div > div > input {
-            font-size: 0.95rem !important;
+            font-size: 1rem !important;
             padding: 9px 12px !important;
+        }
+        [data-testid="stSidebar"] .stCaption,
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] div {
+            font-size: 1rem !important;
         }
 
         /* ── 5. MACRO COLUMN LAYOUT ───────────────────────── */

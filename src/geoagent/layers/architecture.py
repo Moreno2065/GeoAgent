@@ -62,7 +62,7 @@ from enum import Enum
 
 class Scenario(str, Enum):
     """
-    严格限定的 7 类标准 GIS 场景。
+    标准 GIS 场景枚举。
 
     不暴露 ArcToolbox 全家桶，只提供有限的标准场景。
     """
@@ -71,8 +71,12 @@ class Scenario(str, Enum):
     OVERLAY = "overlay"        # 叠置/裁剪分析
     INTERPOLATION = "interpolation"  # 插值/表面分析
     VIEWSHED = "viewshed"      # 视域/阴影
-    STATISTICS = "statistics"  # 统计/聚合
+    STATISTICS = "statistics"   # 统计/聚合
     RASTER = "raster"          # 栅格分析
+    ACCESSIBILITY = "accessibility"   # 可达性分析
+    SHADOW_ANALYSIS = "shadow_analysis"  # 阴影分析
+    HOTSPOT = "hotspot"        # 热点分析
+    VISUALIZATION = "visualization"  # 可视化
 
     @classmethod
     def values(cls) -> list[str]:

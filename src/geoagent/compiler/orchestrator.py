@@ -177,6 +177,13 @@ class ParameterExtractor:
                     return mode
         return None
 
+    def extract_city(self, query: str) -> str:
+        """提取自然语言中的城市"""
+        match = re.search(r"(?:在)?([\u4e00-\u9fa5]{2,5}市)", query)
+        if match:
+            return match.group(1)
+        return ""
+
     def extract_numeric_param(self, query: str, unit: str = None) -> Optional[float]:
         """从查询中提取数值参数（通用）"""
         patterns = [
@@ -220,24 +227,25 @@ class ParameterExtractor:
         return result
 
     def extract_file_references(self, query: str) -> List[str]:
-        """从查询中提取 GIS 文件引用"""
+        """从查询中提取 GIS 文件引用（修复中文文件名识别）"""
         references = []
         query_lower = query.lower()
 
         for ext in self.GIS_EXTENSIONS:
             if ext.lower() not in query_lower:
                 continue
-            # 匹配文件名：字母开头 + 字母数字下划线连字符 + 扩展名
-            # 这避免了捕获纯中文动词前缀
-            pattern = rf"([a-zA-Z][a-zA-Z0-9_\-\.]*{re.escape(ext)})"
+
+            # 【修复点 🚀】加入中文字符范围 \u4e00-\u9fa5
+            # 允许文件名包含：中文字符、字母、数字、下划线、连字符、点
+            pattern = rf"([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+?{re.escape(ext)})"
+
             matches = re.findall(pattern, query_lower)
             for m in matches:
                 stripped = m.strip()
-                # 跳过太长或太短的误匹配
                 if 3 < len(stripped) < 200:
                     references.append(stripped)
 
-        # 去重并按长度排序（短的优先）
+        # 去重
         seen = set()
         unique = []
         for r in sorted(references, key=len):
@@ -383,28 +391,31 @@ class ParameterExtractor:
         params["coordinates"] = self.extract_coordinates(query)
         params["resolution"] = self.extract_resolution(query)
         params["datetime"] = self.extract_datetime(query)
+        params["city"] = self.extract_city(query)
 
-        # 通用地点（起点/位置）
-        params["start"] = params["locations"]["start"]
-        params["end"] = params["locations"]["end"]
-        params["location"] = params["start"]  # 中心点
+        # 通用地点（起点/位置）【安全访问】
+        locations = params.get("locations") or {}
+        params["start"] = locations.get("start")
+        params["end"] = locations.get("end")
+        params["location"] = params.get("start")  # 中心点
 
         # ── route 场景 ───────────────────────────────────────────────
         if _scenario_str == "route":
-            params["start"] = params["locations"]["start"]
-            params["end"] = params["locations"]["end"]
+            params["start"] = locations.get("start")
+            params["end"] = locations.get("end")
             # mode 已通过通用提取获取
 
         # ── buffer 场景 ─────────────────────────────────────────────
         elif _scenario_str == "buffer":
             # 从文件名引用中提取图层名
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["input_layer"] = files[0]
-            # 距离已通过通用提取获取
-            if params["distance_info"]:
-                params["distance"] = params["distance_info"]["distance"]
-                params["unit"] = params["distance_info"]["unit"]
+            # 距离已通过通用提取获取【安全访问】
+            distance_info = params.get("distance_info")
+            if distance_info:
+                params["distance"] = distance_info.get("distance")
+                params["unit"] = distance_info.get("unit")
             # 尝试从 query 中提取图层名（学校/地铁站/河流等）
             entity = self._extract_entity_name(query)
             if entity and not params.get("input_layer"):
@@ -412,7 +423,7 @@ class ParameterExtractor:
 
         # ── overlay 场景 ─────────────────────────────────────────────
         elif _scenario_str == "overlay":
-            files = params["files"]
+            files = params.get("files", [])
             if len(files) >= 2:
                 params["layer1"] = files[0]
                 params["layer2"] = files[1]
@@ -423,7 +434,7 @@ class ParameterExtractor:
 
         # ── interpolation 场景 ───────────────────────────────────────
         elif _scenario_str == "interpolation":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["input_points"] = files[0]
             # 字段名已通过通用提取获取
@@ -436,13 +447,14 @@ class ParameterExtractor:
 
         # ── accessibility 场景 ───────────────────────────────────────
         elif _scenario_str == "accessibility":
-            params["location"] = params["locations"]["start"]
-            if params["time_info"]:
-                params["time_threshold"] = params["time_info"]["time_threshold"]
+            params["location"] = locations.get("start")
+            time_info = params.get("time_info")
+            if time_info:
+                params["time_threshold"] = time_info.get("time_threshold")
 
         # ── suitability 场景 ────────────────────────────────────────
         elif _scenario_str == "suitability":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["criteria_layers"] = files
             # 从 query 中提取区域/分析范围
@@ -451,22 +463,25 @@ class ParameterExtractor:
 
         # ── viewshed 场景 ────────────────────────────────────────────
         elif _scenario_str == "viewshed":
-            params["location"] = params["locations"]["start"]
-            if not params["location"]:
+            params["location"] = locations.get("start")
+            if not params.get("location"):
                 # 尝试从 query 中提取坐标
                 params["location"] = self.extract_coordinates(query)
             # 观察高度
             params["observer_height"] = self.extract_height(query, "observer")
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["dem_file"] = files[0]
-            # 目标半径
-            if params["distance_info"]:
-                params["max_distance"] = params["distance_info"]["distance"] * 1000 if params["distance_info"]["unit"] == "kilometers" else params["distance_info"]["distance"]
+            # 目标半径【安全访问】
+            distance_info = params.get("distance_info")
+            if distance_info:
+                distance = distance_info.get("distance", 0)
+                unit = distance_info.get("unit", "meters")
+                params["max_distance"] = distance * 1000 if unit == "kilometers" else distance
 
         # ── shadow_analysis 场景 ──────────────────────────────────────
         elif _scenario_str == "shadow_analysis":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["buildings"] = files[0]
             # 时间
@@ -474,32 +489,33 @@ class ParameterExtractor:
 
         # ── ndvi 场景 ───────────────────────────────────────────────
         elif _scenario_str == "ndvi":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["input_file"] = files[0]
             # 传感器类型（默认 auto）
 
         # ── hotspot 场景 ─────────────────────────────────────────────
         elif _scenario_str == "hotspot":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["input_file"] = files[0]
             # 字段名已通过通用提取获取
 
         # ── visualization 场景 ───────────────────────────────────────
         elif _scenario_str == "visualization":
-            files = params["files"]
+            files = params.get("files", [])
             if files:
                 params["input_files"] = files
 
         return params
 
     def _extract_entity_name(self, query: str) -> Optional[str]:
-        """从查询中提取实体名称（学校、地铁站等）"""
+        """从查询中提取实体名称（修复"半径"误判）"""
         patterns = [
             r"(?:在|对|以|给)\s*([^\s,，。、]+?)\s*(?:周边|附近|方圆|做|进行)",
             r"([^\s,，。、]+?)\s*(?:周边|附近|方圆|周围)",
-            r"(?:分析|缓冲|找)\s*([^\s,，。、]+)",
+            # 【修复点 🚀】使用负向零宽断言 (?!...)，排除掉"半径"、"距离"等干扰词
+            r"(?:分析|缓冲|找)\s*(?!半径|距离|范围|大小)([^\s,，。、]+)",
         ]
         for pattern in patterns:
             match = re.search(pattern, query)
@@ -768,6 +784,7 @@ class ScenarioOrchestrator:
             inputs["end"] = params.get("end", "")
             parameters["mode"] = params.get("mode", defaults.get("mode", "walking"))
             parameters["provider"] = "auto"
+            parameters["city"] = params.get("city", "")
 
         elif scenario == "buffer":
             inputs["input_layer"] = params.get("input_layer", params.get("files", [""])[0] if params.get("files") else "")

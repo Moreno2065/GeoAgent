@@ -122,6 +122,9 @@ def normalize_to_gdf(data: Any) -> "geopandas.GeoDataFrame":
     if isinstance(data, str):
         path = resolve_path(data)
         if path.exists():
+            # 启用 GDAL 自动修复缺失的 .shx 文件
+            import os
+            os.environ["SHAPE_RESTORE_SHX"] = "YES"
             return gpd.read_file(path)
         return None
 

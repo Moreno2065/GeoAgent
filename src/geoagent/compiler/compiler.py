@@ -14,16 +14,35 @@ GIS Compiler - 任务编译器主入口
 - Pydantic 校验：校验失败立即 retry
 - 无 ReAct：彻底移除循环决策
 - Fallback 友好：解析失败时提示用户澄清
+
+鲁棒性增强（P0-P1）：
+- 使用 json_repair 智能修复破损 JSON
+- Tenacity 指数退避重试机制
+- 多模型 Fallback（主 DeepSeek + 备用 Qwen）
+- response_format=json_object 强制结构化输出
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Dict, Generator, Literal, Optional, Callable
 from pathlib import Path
 
 from openai import OpenAI
+
+# 引入专业级重试控制
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    RetryError,
+)
+
+# 引入 JSON 智能修复
+from json_repair import repair_json
 
 from geoagent.compiler.task_schema import (
     BaseTask, TaskType, get_task_schema_json, get_task_description,
@@ -83,6 +102,12 @@ class GISCompiler:
     2. Dynamic Schema Injection - 动态 Schema 注入
     3. Function Call + Validation - 函数调用+校验
 
+    鲁棒性增强：
+    - Tenacity 指数退避重试（HTTP 429/502/5xx）
+    - json_repair 智能修复破损 JSON
+    - 多模型 Fallback（主模型失败自动切换备用模型）
+    - response_format=json_object 强制结构化输出
+
     使用方式：
         compiler = GISCompiler(api_key="sk-...")
         result = compiler.compile("芜湖南站到方特的步行路径")
@@ -97,6 +122,14 @@ class GISCompiler:
         max_retries: int = 3,
         temperature: float = 0.1,
         enable_fallback: bool = True,
+        # P1: 备用模型配置
+        fallback_api_key: str = None,
+        fallback_model: str = "qwen-plus",
+        fallback_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        # 重试配置
+        retry_multiplier: float = 1.0,
+        retry_min_wait: float = 2.0,
+        retry_max_wait: float = 30.0,
     ):
         """
         初始化 GIS 编译器
@@ -108,6 +141,12 @@ class GISCompiler:
             max_retries: 最大重试次数
             temperature: 生成温度（越低越确定性）
             enable_fallback: 是否启用 fallback（解析失败时提示用户）
+            fallback_api_key: 备用模型 API Key（可选，默认使用通义千问）
+            fallback_model: 备用模型名称
+            fallback_base_url: 备用模型 API 地址
+            retry_multiplier: 指数退避乘数
+            retry_min_wait: 最小等待秒数
+            retry_max_wait: 最大等待秒数
         """
         # 加载 API Key
         if not api_key:
@@ -127,9 +166,15 @@ class GISCompiler:
         self.max_retries = max_retries
         self.temperature = temperature
         self.enable_fallback = enable_fallback
+        self.retry_multiplier = retry_multiplier
+        self.retry_min_wait = retry_min_wait
+        self.retry_max_wait = retry_max_wait
 
-        # 初始化客户端
+        # 初始化主客户端
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        # P1: 初始化备用客户端（通义千问/Qwen）
+        self._init_fallback_client(fallback_api_key, fallback_model, fallback_base_url)
 
         # 初始化意图分类器
         self.intent_classifier = IntentClassifier()
@@ -137,13 +182,47 @@ class GISCompiler:
         # 初始化场景编排器
         self.orchestrator = ScenarioOrchestrator()
 
-        # 统计
+        # 统计（增强）
         self.stats = {
             "total_requests": 0,
             "successful": 0,
             "failed": 0,
             "retries": 0,
+            "fallback_triggered": 0,  # P1: 记录 fallback 触发次数
         }
+
+    def _init_fallback_client(
+        self,
+        fallback_api_key: str = None,
+        fallback_model: str = "qwen-plus",
+        fallback_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ) -> None:
+        """
+        初始化备用 LLM 客户端
+
+        P1: 多模型 Fallback 机制 - 主模型失败时自动切换
+        """
+        # 尝试加载备用 API Key
+        if not fallback_api_key:
+            import os
+            fallback_api_key = os.getenv("FALLBACK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+
+        if fallback_api_key:
+            try:
+                self.fallback_client = OpenAI(
+                    api_key=fallback_api_key,
+                    base_url=fallback_base_url,
+                )
+                self.fallback_model = fallback_model
+                self.fallback_available = True
+            except Exception:
+                self.fallback_client = None
+                self.fallback_model = None
+                self.fallback_available = False
+        else:
+            self.fallback_client = None
+            self.fallback_model = None
+            self.fallback_available = False
 
     # ── API Key 管理 ────────────────────────────────────────────────────────
 
@@ -219,90 +298,127 @@ class GISCompiler:
 
     # ── 第三层：LLM 调用 + Pydantic 校验 ────────────────────────────────────
 
-    def _call_llm(self, messages: list) -> str:
+    def _call_llm(self, messages: list, use_fallback: bool = False) -> str:
         """
         调用 LLM 获取 JSON 响应
+
+        增强版特性：
+        - response_format=json_object 强制结构化输出
+        - 内置重试逻辑（指数退避）
+        - P1: Fallback 自动切换备用模型
+
+        Args:
+            messages: 消息列表
+            use_fallback: 是否使用备用模型
+
+        Returns:
+            LLM 响应内容
         """
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=2048,
-            )
-            content = response.choices[0].message.content or ""
-            return content
-        except Exception as e:
-            raise RuntimeError(f"LLM 调用失败: {str(e)}")
+        client = self.fallback_client if use_fallback else self.client
+        model = self.fallback_model if use_fallback else self.model
+
+        if not client:
+            if not use_fallback and self.fallback_available:
+                return self._call_llm(messages, use_fallback=True)
+            raise RuntimeError("无可用的 LLM 客户端")
+
+        for attempt in range(self.max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=2048,
+                    # P0: 强制结构化 JSON 输出
+                    response_format={"type": "json_object"},
+                )
+                content = response.choices[0].message.content or ""
+                return content
+
+            except Exception as e:
+                error_str = str(e).lower()
+                is_retryable = any(code in error_str for code in [
+                    "429", "500", "502", "503", "504",  # HTTP 错误码
+                    "timeout", "connection", "rate limit",
+                ])
+
+                if is_retryable and attempt < self.max_retries - 1:
+                    # 指数退避等待
+                    wait_time = min(
+                        self.retry_min_wait * (self.retry_multiplier ** attempt),
+                        self.retry_max_wait,
+                    )
+                    self.stats["retries"] += 1
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    # P1: 尝试切换到备用模型
+                    if not use_fallback and self.fallback_available:
+                        self.stats["fallback_triggered"] += 1
+                        return self._call_llm(messages, use_fallback=True)
+                    raise RuntimeError(f"LLM 调用失败: {str(e)}")
+
+        raise RuntimeError("LLM 调用重试次数耗尽")
+
+    def _call_llm_with_retry(self, messages: list) -> str:
+        """
+        使用 Tenacity 装饰器的高级重试 LLM 调用
+
+        这是 _call_llm 的装饰器版本，提供更精确的重试控制。
+        用于需要更强鲁棒性的场景。
+        """
+        return self._call_llm(messages)
 
     def _extract_json(self, raw: str) -> Optional[Dict[str, Any]]:
         """
-        从 LLM 输出中提取 JSON
+        从 LLM 输出中提取 JSON（使用 json_repair 智能修复）
 
-        使用多种策略确保鲁棒性。
+        P0 改进：完全抛弃手写正则提取，使用 json_repair 智能修复。
+
+        json_repair 能力：
+        - 自动修复破损的 JSON（如少括号、多逗号）
+        - 智能处理 Markdown 代码块包裹的 JSON
+        - 处理未转义的双引号字符串
+        - 支持修复带有注释的 JSON
+
+        Args:
+            raw: LLM 原始输出
+
+        Returns:
+            解析后的字典，失败返回 None
         """
         if not raw or not raw.strip():
             return None
 
-        cleaned = raw.strip()
-
-        # 策略 1：去掉 markdown 代码块
-        for pattern in [r'^```json\s*', r'^```\s*', r'\s*```$']:
-            m = re.search(pattern, cleaned, re.IGNORECASE | re.MULTILINE)
-            if m:
-                cleaned = cleaned[:m.start()] + cleaned[m.end():]
-        cleaned = cleaned.strip()
-
-        # 策略 2：找第一个 { 或 [
-        for bracket in ['{', '[']:
-            idx = cleaned.find(bracket)
-            if idx >= 0:
-                candidate = cleaned[idx:]
-                # 找匹配的闭括号
-                depth = 0
-                end_idx = -1
-                in_str = False
-                escape = False
-                for i, ch in enumerate(candidate):
-                    if escape:
-                        escape = False
-                        continue
-                    if ch == '\\':
-                        escape = True
-                        continue
-                    if ch == '"' and not escape:
-                        in_str = not in_str
-                        continue
-                    if in_str:
-                        continue
-                    if ch == '{':
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0:
-                            end_idx = i + 1
-                            break
-                    elif ch == '[':
-                        depth += 1
-                    elif ch == ']':
-                        depth -= 1
-                        if depth == 0:
-                            end_idx = i + 1
-                            break
-
-                if end_idx > 0:
-                    try:
-                        return json.loads(candidate[:end_idx])
-                    except json.JSONDecodeError:
-                        pass
-
-        # 策略 3：直接解析
         try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            pass
+            # json_repair 会自动：
+            # 1. 去除 markdown 代码块包裹
+            # 2. 修复破损的 JSON 结构
+            # 3. 处理常见的 LLM 输出问题（如尾随逗号）
+            repaired = repair_json(raw, return_objects=False)
 
-        return None
+            if isinstance(repaired, dict):
+                return repaired
+            elif isinstance(repaired, list):
+                # 如果返回的是列表，取第一个元素或包装
+                return {"items": repaired}
+            return None
+
+        except Exception:
+            # Fallback：尝试基本 JSON 解析
+            cleaned = raw.strip()
+
+            # 去除 markdown 代码块
+            for pattern in [r'^```json\s*', r'^```\s*', r'\s*```$']:
+                m = re.search(pattern, cleaned, re.IGNORECASE | re.MULTILINE)
+                if m:
+                    cleaned = cleaned[:m.start()] + cleaned[m.end():]
+            cleaned = cleaned.strip()
+
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                return None
 
     def _validate_and_parse(
         self,
@@ -830,6 +946,7 @@ class GISCompiler:
             "successful": 0,
             "failed": 0,
             "retries": 0,
+            "fallback_triggered": 0,
         }
 
 

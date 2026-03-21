@@ -13,45 +13,6 @@ GeoAgent Pipeline - 六层统一流水线
     pipeline = GeoAgentPipeline()
     result = pipeline.run("芜湖南站到方特的步行路径")
 
-──────────────────────────────────────────────────────────────
-两种运行模式
-──────────────────────────────────────────────────────────────
-
-【MVP 模式 - 推荐，默认】
-  Layer 1: parse_user_input()     — 纯规则解析
-  Layer 2: classify_intent()      — 关键词分类，无 LLM
-  Layer 3: orchestrate()           — regex 参数提取，无 LLM
-  Layer 4: build_dsl()            — 确定性 DSL 构建，无 LLM
-  Layer 5: execute_task()         — 确定性执行
-  Layer 6: render_result()        — 结果渲染
-
-  适用于：简单 NL（"从 A 到 B"、"500m 缓冲区"）
-
-  创建方式：
-      pipeline = GeoAgentPipeline(use_reasoner=False)
-      # 或
-      agent = GeoAgentV2(use_reasoner=False)
-
-【Reasoner 模式 - 复杂 NL 时启用】
-  Layer 1-3: 同 MVP 模式
-  Layer 4: build_dsl(use_reasoner=True)  — DeepSeek Reasoner NL→DSL
-  Layer 5-6: 同 MVP 模式
-
-  适用于：复杂复合 NL，如：
-    - "先做500m缓冲区再找里面的餐厅"
-    - "计算学校到最近医院的可达性并叠加人口密度"
-    - 多步骤 buffer + overlay + filter 链
-
-  创建方式：
-      from geoagent.layers.reasoner import get_reasoner
-      pipeline = GeoAgentPipeline(
-          use_reasoner=True,
-          reasoner_factory=lambda: get_reasoner(),
-      )
-      # 或
-      agent = GeoAgentV2(use_reasoner=True)
-
-──────────────────────────────────────────────────────────────
 MVP 只支持三种场景：
     - route（路径/可达性）
     - buffer（缓冲/邻近）
@@ -76,10 +37,24 @@ from geoagent.layers.layer3_orchestrate import (
     ScenarioOrchestrator,
     OrchestrationResult,
     ClarificationQuestion,
+    _get_enum_value as _get_orch_scenario_value,
 )
 from geoagent.layers.layer4_dsl import GeoDSL, DSLBuilder, SchemaValidationError
 from geoagent.layers.layer5_executor import ExecutorResult, execute_task
 from geoagent.layers.layer6_render import RenderResult, ResultRenderer, render_result
+
+
+# =============================================================================
+# 工具函数
+# =============================================================================
+
+def _get_enum_value(obj) -> str:
+    """安全获取枚举值，处理 str/Enum 混合类型"""
+    if obj is None:
+        return None
+    if hasattr(obj, 'value'):
+        return obj.value
+    return str(obj)
 
 
 # =============================================================================
@@ -213,10 +188,6 @@ class GeoAgentPipeline:
         pipeline = GeoAgentPipeline()
         result = pipeline.run("芜湖南站到方特的步行路径")
         print(result.to_user_text())
-
-    LLM 配置（可选）：
-        pipeline = GeoAgentPipeline(use_reasoner=True)
-        # 使用 DeepSeek Reasoner 做 NL → DSL
     """
 
     def __init__(
@@ -231,7 +202,7 @@ class GeoAgentPipeline:
         Args:
             enable_clarification: 是否启用追问机制
             use_reasoner: 是否使用 Reasoner 模式（NL → GeoDSL）
-            reasoner_factory: Reasoner 实例工厂（用于注入 mock）
+            reasoner_factory: Reasoner 实例工厂（use_reasoner=True 时必须提供）
         """
         self.enable_clarification = enable_clarification
         self.use_reasoner = use_reasoner
@@ -324,11 +295,7 @@ class GeoAgentPipeline:
                 )
 
             # ── 第4层：DSL 构建 ────────────────────────────────────────
-            dsl = self._dsl_builder.build_from_orchestration(
-                orchestration_result,
-                use_reasoner=self.use_reasoner,
-                reasoner_factory=self.reasoner_factory,
-            )
+            dsl = self._dsl_builder.build_from_orchestration(orchestration_result)
             ctx.dsl = dsl
             ctx.status = PipelineStatus.DSL_BUILT
 

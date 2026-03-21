@@ -1,4 +1,4 @@
-﻿"""
+"""
 高德地图 API 插件
 """
 
@@ -135,31 +135,45 @@ def _regeocode_location(lon: float, lat: float,
     return result
 
 
-def _resolve_location_to_coords(location: str) -> Optional[dict]:
+def _resolve_location_to_coords(location: str, city: str = "") -> Optional[dict]:
     location = location.strip()
     if not location:
         return None
+
+    # 尝试 1: 是否已经是经纬度坐标
     coords = _parse_location(location)
     if coords:
         lon, lat = coords
         regeo = _regeocode_location(lon, lat, radius=100)
         return {
-            "lon": lon,
-            "lat": lat,
+            "lon": lon, "lat": lat,
             "address": regeo.get("address", "") if regeo else "",
             "adcode": regeo.get("adcode", "") if regeo else "",
         }
-    gc = _geocode_address(location)
+
+    # 尝试 2: 标准地理编码（适合标准结构化地址）
+    gc = _geocode_address(location, city)
     if gc:
         return {
-            "lon": gc["lon"],
-            "lat": gc["lat"],
+            "lon": gc["lon"], "lat": gc["lat"],
             "address": gc["formatted_address"],
             "adcode": gc.get("adcode", ""),
             "province": gc.get("province", ""),
             "city": gc.get("city", ""),
             "district": gc.get("district", ""),
         }
+
+    # 尝试 3: POI 搜索兜底（专治"方特"、"芜湖南站"这种简写地名！）
+    pois = _search_poi_text(location, city=city, offset=1)
+    if pois and len(pois) > 0:
+        poi = pois[0]
+        if poi["lon"] and poi["lat"]:
+            return {
+                "lon": poi["lon"], "lat": poi["lat"],
+                "address": poi["name"],
+                "adcode": "",
+            }
+
     return None
 
 
@@ -576,12 +590,13 @@ class AmapPlugin(BasePlugin):
     def _do_direction_walking(self, params: Dict) -> str:
         origin = str(params.get("origin", "")).strip()
         destination = str(params.get("destination", "")).strip()
+        city = str(params.get("city", "")).strip()
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
-        origin_info = _resolve_location_to_coords(origin)
-        dest_info = _resolve_location_to_coords(destination)
+        origin_info = _resolve_location_to_coords(origin, city)
+        dest_info = _resolve_location_to_coords(destination, city)
         if not origin_info or not dest_info:
-            return _geo_error("无法解析起点或终点")
+            return _geo_error(f"无法解析起点({origin})或终点({destination})")
         result = _direction_walking(origin_info["lon"], origin_info["lat"],
                                     dest_info["lon"], dest_info["lat"])
         if not result:
@@ -596,13 +611,14 @@ class AmapPlugin(BasePlugin):
     def _do_direction_driving(self, params: Dict) -> str:
         origin = str(params.get("origin", "")).strip()
         destination = str(params.get("destination", "")).strip()
+        city = str(params.get("city", "")).strip()
         strategy = str(params.get("strategy", "0"))
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
-        origin_info = _resolve_location_to_coords(origin)
-        dest_info = _resolve_location_to_coords(destination)
+        origin_info = _resolve_location_to_coords(origin, city)
+        dest_info = _resolve_location_to_coords(destination, city)
         if not origin_info or not dest_info:
-            return _geo_error("无法解析起点或终点")
+            return _geo_error(f"无法解析起点({origin})或终点({destination})")
         result = _direction_driving(origin_info["lon"], origin_info["lat"],
                                     dest_info["lon"], dest_info["lat"], strategy)
         if not result:
@@ -620,10 +636,10 @@ class AmapPlugin(BasePlugin):
         city = str(params.get("city", "")).strip() or "全国"
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
-        origin_info = _resolve_location_to_coords(origin)
-        dest_info = _resolve_location_to_coords(destination)
+        origin_info = _resolve_location_to_coords(origin, city)
+        dest_info = _resolve_location_to_coords(destination, city)
         if not origin_info or not dest_info:
-            return _geo_error("无法解析起点或终点")
+            return _geo_error(f"无法解析起点({origin})或终点({destination})")
         result = _direction_transit(origin_info["lon"], origin_info["lat"],
                                     dest_info["lon"], dest_info["lat"], city)
         if not result:

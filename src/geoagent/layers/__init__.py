@@ -89,6 +89,20 @@ from geoagent.layers.pipeline import (
     SixLayerPipeline,
     get_pipeline,
     run_pipeline,
+    # P2: 状态机模式
+    StateMachinePipeline,
+    StateMachineResult,
+    State,
+    StateContext,
+)
+
+from geoagent.layers.async_pipeline import (
+    AsyncSixLayerPipeline,
+    AsyncPipelineConfig,
+    AsyncPipelineResult,
+    AsyncLLMClient,
+    ConcurrentTaskRunner,
+    create_async_pipeline,
 )
 
 __all__ = [
@@ -159,4 +173,16 @@ __all__ = [
     "SixLayerPipeline",
     "get_pipeline",
     "run_pipeline",
+    # P2: 状态机模式
+    "StateMachinePipeline",
+    "StateMachineResult",
+    "State",
+    "StateContext",
+    # P2: 异步 Pipeline
+    "AsyncSixLayerPipeline",
+    "AsyncPipelineConfig",
+    "AsyncPipelineResult",
+    "AsyncLLMClient",
+    "ConcurrentTaskRunner",
+    "create_async_pipeline",
 ]

@@ -31,6 +31,87 @@ from geoagent.layers.layer5_executor import ExecutorResult, execute_task
 from geoagent.layers.layer5_executor import execute_task as do_execute
 from geoagent.renderer.result_renderer import render_result
 
+# P2: 状态机模式
+from geoagent.layers.state_machine import (
+    State,
+    StateContext,
+    StateMachinePipeline,
+    StateMachineResult,
+)
+
+
+# =============================================================================
+# 安全工具函数（防御性编程）
+# =============================================================================
+
+def _get_enum_value(obj) -> str:
+    """安全获取枚举值，处理 str/Enum 混合类型"""
+    if obj is None:
+        return None
+    if hasattr(obj, 'value'):
+        return obj.value
+    return str(obj)
+
+
+def safe_get_value(obj: Any, default: str = "") -> str:
+    """
+    终极安全取值器：不管是 Enum、str 还是 None，统统安全转换
+    
+    Args:
+        obj: 任意类型的输入对象
+        default: 默认值（默认为空字符串）
+    
+    Returns:
+        安全转换后的字符串
+    """
+    if obj is None:
+        return default
+    if hasattr(obj, "value"):
+        return str(obj.value)
+    return str(obj)
+
+
+def safe_to_scenario(val: Any, fallback: Scenario = Scenario.ROUTE) -> Scenario:
+    """
+    安全转换为 Scenario 枚举，失败则回退到默认值
+    
+    Args:
+        val: 要转换的值（可能是 str、Enum 或其他类型）
+        fallback: 转换失败时的回退值（默认为 Scenario.ROUTE）
+    
+    Returns:
+        安全的 Scenario 枚举值
+    
+    Raises:
+        不会抛出任何异常，失败时返回 fallback
+    """
+    try:
+        if val is None:
+            return fallback
+        if isinstance(val, Scenario):
+            return val
+        val_str = safe_get_value(val)
+        return Scenario(val_str)
+    except (ValueError, AttributeError, TypeError):
+        return fallback
+
+
+def safe_dict_get(data: Dict[str, Any], key: str, default: Any = None) -> Any:
+    """
+    安全地从字典中获取值
+    
+    Args:
+        data: 字典对象
+        key: 键名
+        default: 默认值（默认为 None）
+    
+    Returns:
+        安全的字典取值结果
+    """
+    if not isinstance(data, dict):
+        return default
+    return data.get(key, default)
+
 
 # =============================================================================
 # Pipeline 结果
@@ -79,12 +160,12 @@ class PipelineResult:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
-            "status": self.status.value,
+            "status": _get_enum_value(self.status),
             "layer_reached": self.layer_reached,
             "success": self.success,
             "needs_clarification": self.needs_clarification,
             "scenario": (
-                self.orchestration_result.scenario.value
+                _get_enum_value(self.orchestration_result.scenario)
                 if self.orchestration_result else None
             ),
             "questions": self.questions,
@@ -200,7 +281,7 @@ class SixLayerPipeline:
 
             self._record(1, "layer1_input_received", {
                 "text": text[:100],
-                "source": user_input.source.value,
+                "source": _get_enum_value(user_input.source),
             })
 
             return user_input, result
@@ -225,7 +306,7 @@ class SixLayerPipeline:
             result.status = PipelineStatus.INTENT_CLASSIFIED
 
             self._record(2, "layer2_intent_classified", {
-                "scenario": intent_result.primary.value,
+                "scenario": _get_enum_value(intent_result.primary),
                 "confidence": intent_result.confidence,
                 "matched_keywords": intent_result.matched_keywords,
             })
@@ -280,7 +361,7 @@ class SixLayerPipeline:
             result.status = PipelineStatus.ORCHESTRATED
 
             self._record(3, "layer3_orchestrated", {
-                "scenario": orchestration_result.scenario.value,
+                "scenario": _get_enum_value(orchestration_result.scenario),
                 "params": orchestration_result.extracted_params,
             })
 
@@ -319,7 +400,7 @@ class SixLayerPipeline:
             result.status = PipelineStatus.DSL_BUILT
 
             self._record(4, "layer4_dsl_built", {
-                "scenario": dsl.scenario.value if hasattr(dsl.scenario, 'value') else str(dsl.scenario),
+                "scenario": _get_enum_value(dsl.scenario),
                 "task": dsl.task,
                 "inputs": dsl.inputs,
                 "parameters": dsl.parameters,
@@ -359,7 +440,8 @@ class SixLayerPipeline:
         result.dsl = dsl
 
         try:
-            scenario = dsl.scenario if isinstance(dsl.scenario, Scenario) else Scenario(dsl.scenario)
+            # 安全转换 Scenario，永远不会崩溃
+            scenario = safe_to_scenario(dsl.scenario)
             task_dict = {**dsl.inputs, **dsl.parameters, "task": dsl.task}
 
             executor_result = do_execute(scenario, task_dict)
@@ -369,7 +451,7 @@ class SixLayerPipeline:
             if executor_result.success:
                 result.status = PipelineStatus.EXECUTING
                 self._record(5, "layer5_executing", {
-                    "scenario": scenario.value,
+                    "scenario": _get_enum_value(scenario),
                     "engine": executor_result.engine,
                 })
             else:
@@ -442,36 +524,76 @@ class SixLayerPipeline:
         Returns:
             PipelineResult: 统一的处理结果
         """
-        # Layer 1
-        user_input, result = self._run_layer1(text)
-        if result.status == PipelineStatus.FAILED:
+        try:
+            # Layer 1
+            user_input, result = self._run_layer1(text)
+            if result.status == PipelineStatus.FAILED:
+                return self._add_rendered_result(result)
+
+            # Layer 2
+            intent_result, result = self._run_layer2(user_input)
+            if result.status == PipelineStatus.FAILED:
+                return self._add_rendered_result(result)
+
+            # Layer 3
+            orchestration_result, result = self._run_layer3(user_input, intent_result)
+            if result.status == PipelineStatus.FAILED:
+                return self._add_rendered_result(result)
+            if result.needs_clarification:
+                return self._add_rendered_result(result)
+
+            # Layer 4
+            dsl, result = self._run_layer4(orchestration_result)
+            if result.status == PipelineStatus.FAILED:
+                return self._add_rendered_result(result)
+
+            # Layer 5
+            executor_result, result = self._run_layer5(dsl, orchestration_result)
+            if result.status == PipelineStatus.FAILED:
+                return self._add_rendered_result(result)
+
+            # Layer 6
+            rendered, result = self._run_layer6(executor_result, dsl)
+
             return result
 
-        # Layer 2
-        intent_result, result = self._run_layer2(user_input)
-        if result.status == PipelineStatus.FAILED:
-            return result
+        except Exception as e:
+            # 【终极兜底防线】防止任何逃逸的系统级异常导致服务挂掉
+            emergency_result = PipelineResult(
+                status=PipelineStatus.FAILED,
+                error=f"系统发生意外错误: {str(e)}",
+                error_detail=traceback.format_exc()
+            )
+            # 确保有一个能让前端不白屏的渲染结果
+            emergency_result.rendered_result = {
+                "success": False,
+                "error": emergency_result.error,
+                "summary": "抱歉，系统在执行任务时遇到了意外错误，请稍后重试 喵~ 🐾",
+                "scenario": safe_get_value(Scenario.ROUTE),
+            }
+            return emergency_result
 
-        # Layer 3
-        orchestration_result, result = self._run_layer3(user_input, intent_result)
-        if result.status == PipelineStatus.FAILED:
-            return result
-        if result.needs_clarification:
-            return result
+    def _add_rendered_result(self, result: PipelineResult) -> PipelineResult:
+        """
+        为失败的 PipelineResult 添加前端友好的渲染结果
 
-        # Layer 4
-        dsl, result = self._run_layer4(orchestration_result)
-        if result.status == PipelineStatus.FAILED:
-            return result
+        Args:
+            result: PipelineResult 对象
 
-        # Layer 5
-        executor_result, result = self._run_layer5(dsl, orchestration_result)
-        if result.status == PipelineStatus.FAILED:
-            return result
-
-        # Layer 6
-        rendered, result = self._run_layer6(executor_result, dsl)
-
+        Returns:
+            添加了 rendered_result 的 PipelineResult
+        """
+        if result.rendered_result is None:
+            result.rendered_result = {
+                "success": False,
+                "error": result.error or "未知错误",
+                "summary": f"任务在第 {result.layer_reached} 层失败",
+                "layer_reached": result.layer_reached,
+                "scenario": (
+                    safe_get_value(result.orchestration_result.scenario)
+                    if result.orchestration_result else None
+                ),
+            }
         return result
 
     def run_stream(self, text: str) -> Generator[Dict[str, Any], None, None]:
@@ -486,7 +608,7 @@ class SixLayerPipeline:
         """
         # Layer 1
         user_input, result = self._run_layer1(text)
-        yield {"event": "layer1_input", "status": result.status.value}
+        yield {"event": "layer1_input", "status": _get_enum_value(result.status)}
         if result.status == PipelineStatus.FAILED:
             yield result.to_dict()
             return
@@ -495,8 +617,8 @@ class SixLayerPipeline:
         intent_result, result = self._run_layer2(user_input)
         yield {
             "event": "layer2_intent",
-            "status": result.status.value,
-            "scenario": intent_result.primary.value,
+            "status": _get_enum_value(result.status),
+            "scenario": _get_enum_value(intent_result.primary),
             "confidence": intent_result.confidence,
         }
         if result.status == PipelineStatus.FAILED:
@@ -507,8 +629,8 @@ class SixLayerPipeline:
         orchestration_result, result = self._run_layer3(user_input, intent_result)
         yield {
             "event": "layer3_orchestration",
-            "status": result.status.value,
-            "scenario": orchestration_result.scenario.value,
+            "status": _get_enum_value(result.status),
+            "scenario": _get_enum_value(orchestration_result.scenario),
         }
         if result.needs_clarification:
             yield result.to_dict()
@@ -521,8 +643,8 @@ class SixLayerPipeline:
         dsl, result = self._run_layer4(orchestration_result)
         yield {
             "event": "layer4_dsl",
-            "status": result.status.value,
-            "scenario": dsl.scenario.value if hasattr(dsl.scenario, 'value') else str(dsl.scenario),
+            "status": _get_enum_value(result.status),
+            "scenario": _get_enum_value(dsl.scenario),
         }
         if result.status == PipelineStatus.FAILED:
             yield result.to_dict()
@@ -532,7 +654,7 @@ class SixLayerPipeline:
         executor_result, result = self._run_layer5(dsl, orchestration_result)
         yield {
             "event": "layer5_execution",
-            "status": result.status.value,
+            "status": _get_enum_value(result.status),
             "success": executor_result.success,
             "engine": executor_result.engine,
         }
@@ -544,7 +666,7 @@ class SixLayerPipeline:
         rendered, result = self._run_layer6(executor_result, dsl)
         yield {
             "event": "layer6_completed",
-            "status": result.status.value,
+            "status": _get_enum_value(result.status),
             "result": rendered,
         }
 
@@ -591,4 +713,9 @@ __all__ = [
     "SixLayerPipeline",
     "get_pipeline",
     "run_pipeline",
+    # P2: 状态机模式
+    "StateMachinePipeline",
+    "StateMachineResult",
+    "State",
+    "StateContext",
 ]
