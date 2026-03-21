@@ -196,6 +196,9 @@ class GeoAgentPipeline:
         enable_clarification: bool = True,
         use_reasoner: bool = False,
         reasoner_factory: Optional[Callable[[], Any]] = None,
+        llm_client: Optional[Any] = None,
+        llm_model: Optional[str] = None,
+        llm_base_url: Optional[str] = None,
     ):
         """
         初始化 Pipeline
@@ -204,6 +207,9 @@ class GeoAgentPipeline:
             enable_clarification: 是否启用追问机制
             use_reasoner: 是否使用 Reasoner 模式（NL → GeoDSL）
             reasoner_factory: Reasoner 实例工厂（use_reasoner=True 时必须提供）
+            llm_client: 可选的 LLM 客户端（用于生成自然语言回复）
+            llm_model: LLM 模型名称
+            llm_base_url: LLM API base URL
         """
         self.enable_clarification = enable_clarification
         self.use_reasoner = use_reasoner
@@ -213,6 +219,88 @@ class GeoAgentPipeline:
         self._orchestrator = ScenarioOrchestrator()
         self._dsl_builder = DSLBuilder()
         self._renderer = ResultRenderer()
+        # LLM 配置（用于生成自然语言回复）
+        self._llm_client = llm_client
+        self._llm_model = llm_model
+        self._llm_base_url = llm_base_url
+
+    def _generate_llm_response(
+        self,
+        user_input: str,
+        scenario: str,
+        extracted_params: Dict[str, Any],
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> str:
+        """
+        调用 LLM 生成自然语言回复（流式）
+
+        Returns:
+            完整的回复文本
+        """
+        if self._llm_client is None:
+            return ""
+
+        # 构建系统提示词
+        system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
+
+回复要求：
+1. 使用中文
+2. 简洁明了，不超过200字
+3. 包含关键数据和结论
+4. 如有必要，给出下一步建议
+
+示例回复格式：
+"已为您完成[任务类型]分析。结果如下：[关键数据]。如需进一步分析，请告诉我。" """
+
+        # 构建用户消息
+        params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if k != "user_input" and v])
+        user_message = f"""用户请求：{user_input}
+
+任务类型：{scenario}
+提取的参数：
+{params_str}
+
+请生成简洁的回复："""
+
+        full_text = ""
+
+        try:
+            # 根据提供商选择正确的模型参数
+            model = self._llm_model or "deepseek-chat"
+
+            # 使用流式调用
+            stream = self._llm_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0.7,
+                max_tokens=500,
+                stream=True,
+            )
+
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_text += content
+
+                    # 发送流式事件
+                    if event_callback:
+                        event_callback("llm_thinking", {
+                            "full_text": full_text,
+                            "delta": content,
+                        })
+
+        except Exception as e:
+            full_text = f"生成回复时出错：{str(e)}"
+            if event_callback:
+                event_callback("llm_thinking", {
+                    "full_text": full_text,
+                    "delta": "",
+                })
+
+        return full_text
 
     def run(
         self,

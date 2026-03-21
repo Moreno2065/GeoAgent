@@ -28,6 +28,191 @@ from geoagent.layers.architecture import Scenario, PipelineStatus
 
 
 # =============================================================================
+# Workspace 自动扫描工具
+# =============================================================================
+
+def _scan_workspace_files() -> List[Dict[str, Any]]:
+    """
+    扫描 workspace 目录，自动获取所有 GIS 文件的元数据
+
+    Returns:
+        文件信息列表，每个文件包含：
+        - file_name: 文件名
+        - file_type: vector 或 raster
+        - geometry_type: 几何类型（点/线/面）
+        - columns: 字段列表
+        - numeric_columns: 数值字段列表
+    """
+    try:
+        from geoagent.gis_tools.fixed_tools import list_workspace_files, get_data_info
+    except ImportError:
+        return []
+
+    files = list_workspace_files()
+    if not files:
+        return []
+
+    import json
+    result = []
+    for fname in files:
+        try:
+            info_json = get_data_info(fname)
+            info = json.loads(info_json) if isinstance(info_json, str) else {}
+            if info.get("success") is not False:
+                columns = info.get("columns", [])
+                # 提取数值字段
+                dtypes = info.get("dtypes", {})
+                numeric_cols = [c for c in columns if dtypes.get(c) in ("int64", "float64", "int32", "float32")]
+                result.append({
+                    "file_name": fname,
+                    "file_type": info.get("file_type", "vector"),
+                    "geometry_type": _detect_geometry_type(info),
+                    "columns": columns,
+                    "numeric_columns": numeric_cols,
+                    "feature_count": info.get("feature_count", 0),
+                })
+        except Exception:
+            continue
+
+    return result
+
+
+def _detect_geometry_type(info: Dict[str, Any]) -> List[str]:
+    """从文件信息中检测几何类型"""
+    geom_type = info.get("geometry_type", {})
+    if isinstance(geom_type, dict):
+        return list(geom_type.keys())
+    elif isinstance(geom_type, str):
+        return [geom_type]
+    return []
+
+
+def _auto_select_workspace_file(scenario: Scenario, workspace_files: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    根据场景类型自动选择最合适的 workspace 文件
+
+    Args:
+        scenario: 场景类型
+        workspace_files: workspace 文件列表
+
+    Returns:
+        选中的文件信息，如果没有合适的选择则返回 None
+    """
+    if not workspace_files:
+        return None
+
+    scenario_str = scenario.value if hasattr(scenario, "value") else str(scenario)
+
+    # 根据场景类型筛选文件
+    candidates = []
+
+    for f in workspace_files:
+        fname = f.get("file_name", "").lower()
+        file_type = f.get("file_type", "")
+        geom_types = f.get("geometry_type", [])
+        score = 0
+
+        # 基础分：矢量文件优先（大多数分析基于矢量）
+        if file_type == "vector":
+            score += 10
+        elif file_type == "raster":
+            # 栅格文件只适合特定场景
+            if scenario_str in ("ndvi", "raster", "interpolation", "viewshed"):
+                score += 10
+            else:
+                continue  # 其他场景跳过栅格
+
+        # 几何类型匹配
+        if scenario_str == "buffer":
+            # 缓冲分析：点、线、面都可以
+            score += 5
+        elif scenario_str == "overlay":
+            # 叠加分析：优先面
+            if any("polygon" in g.lower() or "poly" in g.lower() or "面" in g for g in geom_types):
+                score += 10
+            else:
+                score += 3
+        elif scenario_str == "route":
+            # 路径分析：优先线
+            if any("line" in g.lower() or "线" in g for g in geom_types):
+                score += 10
+            elif any("polygon" in g.lower() or "poly" in g.lower() or "面" in g for g in geom_types):
+                score += 5
+        elif scenario_str in ("statistics", "hotspot", "interpolation"):
+            # 统计/热点/插值分析：优先有数值字段的面
+            if f.get("numeric_columns"):
+                if any("polygon" in g.lower() or "poly" in g.lower() or "面" in g for g in geom_types):
+                    score += 10
+                elif any("point" in g.lower() or "点" in g for g in geom_types):
+                    score += 8  # 点数据适合插值
+
+        # 文件名匹配（额外加分）
+        name_mappings = {
+            "route": ["道路", "road", "街道", "街", "路"],
+            "buffer": ["河流", "river", "道路", "road", "建筑", "building", "小区", "学校", "医院"],
+            "overlay": ["土地利用", "landuse", "行政区", "区域", "zone", "保护区"],
+            "statistics": ["土地利用", "landuse", "统计", "小区", "建筑"],
+            "hotspot": ["土地利用", "landuse", "小区", "建筑", "统计"],
+            "river": ["河流", "river", "水系", "water"],
+            "building": ["建筑", "building", "大厦", "楼", "房屋"],
+        }
+
+        keywords = name_mappings.get(scenario_str, [])
+        if any(kw in fname for kw in keywords):
+            score += 20  # 文件名匹配高分
+
+        candidates.append((score, f))
+
+    if not candidates:
+        # 如果没有匹配，返回第一个矢量文件作为兜底
+        for f in workspace_files:
+            if f.get("file_type") == "vector":
+                return f
+        return workspace_files[0] if workspace_files else None
+
+    # 按分数排序，返回最高的
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+# 缓存 workspace 扫描结果（避免重复扫描）
+_workspace_cache: Optional[List[Dict[str, Any]]] = None
+_workspace_cache_time: float = 0
+_WORKSPACE_CACHE_TTL: float = 30.0  # 缓存 30 秒
+
+
+def get_workspace_candidates(scenario: Scenario) -> Dict[str, Any]:
+    """
+    获取适合当前场景的 workspace 文件信息
+
+    Args:
+        scenario: 场景类型
+
+    Returns:
+        字典，包含：
+        - candidates: 所有候选文件列表
+        - selected: 自动选中的文件（如果有）
+        - auto_selected: 是否为自动选择
+    """
+    global _workspace_cache, _workspace_cache_time
+    import time
+
+    # 检查缓存
+    if _workspace_cache is None or (time.time() - _workspace_cache_time) > _WORKSPACE_CACHE_TTL:
+        _workspace_cache = _scan_workspace_files()
+        _workspace_cache_time = time.time()
+
+    candidates = _workspace_cache
+    selected = _auto_select_workspace_file(scenario, candidates)
+
+    return {
+        "candidates": candidates,
+        "selected": selected,
+        "auto_selected": selected is not None,
+    }
+
+
+# =============================================================================
 # 安全工具函数
 # =============================================================================
 
@@ -49,6 +234,19 @@ def _safe_dict_get(data: Dict[str, Any], key: str, default: Any = None) -> Any:
     if not isinstance(data, dict):
         return default
     return data.get(key, default)
+
+
+# 文件字段名称列表（用于判断是否为文件选择场景）
+_FILE_FIELD_NAMES = {
+    "input_file", "input_layer", "layer1", "layer2",
+    "input_points", "dem_file", "study_area",
+    "constraint_layers", "visualization_files",
+}
+
+
+def _is_file_field(field_name: str) -> bool:
+    """判断是否为文件选择字段"""
+    return field_name in _FILE_FIELD_NAMES
 
 
 # =============================================================================
@@ -98,6 +296,142 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
         "mode": {"question": "请问用什么交通方式？", "options": ["步行", "驾车", "骑行"], "required": False, "default": "walking"},
         "time_threshold": {"question": "请问分析多长时间的可达范围？", "options": ["5分钟", "10分钟", "15分钟", "30分钟"], "required": True, "examples": ["5", "10", "15"]},
     },
+    # 统计分析/聚合 ──────────────────────────────────────────────
+    "statistics": {
+        "input_file": {
+            "question": "请提供参与统计分析的数据文件路径：",
+            "options": None,
+            "required": True,
+            "examples": ["土地利用.shp", "河流.shp", "市区道路.shp", "大厦小区.shp"],
+            "step": 1,
+        },
+        "value_field": {
+            "question": "请指定用于统计分析的数值字段（可选，不指定则统计所有数值字段）：",
+            "options": None,
+            "required": False,
+            "examples": ["area", "length", "population", "distance"],
+            "step": 2,
+        },
+        "analysis_type": {
+            "question": "请选择统计分析类型：",
+            "options": ["分区统计", "空间聚集", "莫兰指数", "基础统计"],
+            "required": False,
+            "default": "基础统计",
+            "step": 3,
+        },
+    },
+    # 热点分析 ─────────────────────────────────────────────────
+    "hotspot": {
+        "input_file": {
+            "question": "请提供参与热点分析的数据文件路径：",
+            "options": None,
+            "required": True,
+            "examples": ["土地利用.shp", "河流.shp", "市区道路.shp"],
+            "step": 1,
+        },
+        "value_field": {
+            "question": "请指定用于热点分析的数值字段：",
+            "options": None,
+            "required": True,
+            "examples": ["population", "density", "count", "value"],
+            "step": 2,
+        },
+        "analysis_type": {
+            "question": "请选择热点分析类型：",
+            "options": ["冷热点分析(Getis-Ord Gi*)", "莫兰指数(LISA)", "空间自相关"],
+            "required": False,
+            "default": "冷热点分析(Getis-Ord Gi*)",
+            "step": 3,
+        },
+    },
+    # 适宜性分析/选址 (MCDA) - 多准则决策分析
+    "suitability": {
+        # === 第一步：确定设施类型 ===
+        "facility_type": {
+            "question": "请问这是什么类型的设施选址？",
+            "options": [
+                "垃圾场选址",
+                "学校选址",
+                "医院选址",
+                "工厂选址",
+                "仓库选址",
+                "公园选址",
+                "其他设施选址",
+            ],
+            "required": False,
+            "default": "general",
+            "step": 1,
+        },
+        "facility_name": {
+            "question": "请问设施名称是什么？（用于结果描述，如：垃圾场、学校）",
+            "options": None,
+            "required": False,
+            "examples": ["垃圾场", "学校", "医院", "工厂"],
+            "step": 1,
+        },
+        # === 第二步：提供数据图层 ===
+        "constraint_layers": {
+            "question": "请提供参与选址分析的数据图层文件路径（用;分隔多个）：\n例如：土地利用.shp;道路.shp;河流.shp;住宅小区.shp",
+            "options": None,
+            "required": True,
+            "examples": ["土地利用.shp;道路.shp;河流.shp;住宅小区.shp"],
+            "step": 2,
+        },
+        "study_area": {
+            "question": "请指定研究区范围图层（可选，如不指定则自动根据提供的数据范围确定）：",
+            "options": None,
+            "required": False,
+            "examples": ["研究区.shp", "市区范围.shp", "行政边界.shp"],
+            "step": 2,
+        },
+        # === 第三步：定义约束条件 ===
+        "constraint_conditions": {
+            "question": "请定义选址的约束条件：\n【道路】距离≤100m 表示在道路100米内\n【河流】距离≥150m 表示在河流150米外\n【住宅小区】距离≥800m 表示在小区800米外\n【土地利用】landuse=unallocated 表示未分配用地\n格式示例：道路:distance<=100;河流:distance>=150;住宅小区:distance>=800;土地利用:landuse=unallocated",
+            "options": None,
+            "required": True,
+            "examples": [
+                "道路:distance<=100;河流:distance>=150;住宅小区:distance>=800;土地利用:landuse=unallocated",
+                "道路:distance<=200;住宅小区:distance>=500",
+            ],
+            "step": 3,
+        },
+        # === 第四步：分析选项 ===
+        "impact_radius": {
+            "question": "请设置影响范围半径（米），用于统计受影响对象数量：",
+            "options": ["1000", "1500", "2000", "3000", "5000"],
+            "required": False,
+            "default": 2000,
+            "examples": ["2000", "3000"],
+            "step": 4,
+        },
+        "output_count": {
+            "question": "请设置输出的最优选址数量：",
+            "options": ["1", "2", "3", "5", "10"],
+            "required": False,
+            "default": 2,
+            "step": 4,
+        },
+        # === 其他参数 ===
+        "target_crs": {
+            "question": "请指定数据坐标系（用于投影转换）：",
+            "options": [
+                "EPSG:4548 (Beijing 1954 / 3-degree GK CM 120E)",
+                "EPSG:4490 (CGCS2000)",
+                "EPSG:4326 (WGS84 经纬度)",
+                "EPSG:3857 (Web Mercator)",
+            ],
+            "required": False,
+            "default": "EPSG:4548",
+            "step": 5,
+        },
+        "visualize": {
+            "question": "是否生成可视化地图？",
+            "options": ["是", "否"],
+            "required": False,
+            "default": True,
+            "step": 5,
+        },
+    },
 }
 
 
@@ -114,27 +448,151 @@ class ClarificationEngine:
     def check_params(self, scenario: Scenario, extracted_params: Dict[str, Any]) -> ClarificationResult:
         """
         检查参数是否完整，生成追问问题
+
+        三重策略：
+        1. 优先查找硬编码的澄清模板（CLARIFICATION_TEMPLATES）
+        2. 如果没有模板，则基于 SCHEMA_REQUIRED_PARAMS 自动生成追问
+        3. 自动扫描 workspace，智能选择最合适的文件
         """
         scenario_str = scenario.value if hasattr(scenario, "value") else str(scenario)
         template = self.templates.get(scenario_str, {})
-        if not template:
-            return ClarificationResult(needs_clarification=False)
 
         questions = []
         auto_filled = {}
 
-        for field_name, spec in template.items():
-            if field_name not in extracted_params or not extracted_params[field_name]:
-                if spec.get("required", True):
-                    questions.append(ClarificationQuestion(
-                        field=field_name,
-                        question=spec["question"],
-                        options=spec.get("options"),
-                        required=True,
-                    ))
+        # ── 自动扫描 workspace ───────────────────────────────────────────
+        workspace_info = get_workspace_candidates(scenario)
+        workspace_files = workspace_info.get("candidates", [])
+        selected_file = workspace_info.get("selected")
+        # 从 query 中提取的文件引用
+        query_files = extracted_params.get("files", [])
+
+        if template:
+            # ── 策略1：有硬编码模板 ───────────────────────────────────────
+            for field_name, spec in template.items():
+                if field_name not in extracted_params or not extracted_params[field_name]:
+                    if spec.get("required", True):
+                        # 尝试从 workspace 自动选择文件
+                        if _is_file_field(field_name) and selected_file and not query_files:
+                            auto_filled[field_name] = selected_file["file_name"]
+                            continue
+
+                        questions.append(ClarificationQuestion(
+                            field=field_name,
+                            question=spec["question"],
+                            options=spec.get("options"),
+                            required=True,
+                        ))
+                    else:
+                        default = spec.get("default")
+                        if default:
+                            auto_filled[field_name] = default
+        else:
+            # ── 策略2：基于 SCHEMA_REQUIRED_PARAMS 自动生成追问 ─────────────
+            from geoagent.layers.layer4_dsl import SCHEMA_REQUIRED_PARAMS
+            schema = SCHEMA_REQUIRED_PARAMS.get(scenario, {})
+
+            # ── 从 extracted_params 中提取的文件引用 ───────────────────
+            value_field = extracted_params.get("value_field")
+
+            for field_name, spec in schema.items():
+                # 检查字段是否已提取
+                current_value = extracted_params.get(field_name)
+
+                # 特殊处理：input_file 可以从 files 列表中获取
+                if field_name == "input_file":
+                    if query_files and not current_value:
+                        # 优先使用 query 中提取的文件
+                        auto_filled[field_name] = query_files[0]
+                        continue
+                    elif selected_file and not current_value:
+                        # 自动从 workspace 选择最合适的文件
+                        auto_filled[field_name] = selected_file["file_name"]
+                        continue
+
+                # 特殊处理：value_field 可以从已提取的参数中获取
+                if field_name == "value_field" and value_field and not current_value:
+                    auto_filled[field_name] = value_field
+                    continue
+
+                # 检查是否缺失必填参数
+                if spec.get("required", False):
+                    if not current_value:
+                        # 生成追问问题
+                        field_desc = spec.get("description", field_name)
+                        examples = spec.get("examples", [])
+
+                        # 根据字段类型生成不同的问题
+                        if field_name == "input_file":
+                            # 检查 workspace 是否有候选文件
+                            if workspace_files:
+                                # 有文件时，显示文件选择选项
+                                file_options = [f["file_name"] for f in workspace_files[:5]]
+                                question_text = f"已检测到 {len(workspace_files)} 个数据文件，请选择或输入其他文件："
+                                options = file_options
+                            else:
+                                question_text = "请提供参与分析的数据文件路径（.shp, .geojson, .tiff 等格式）"
+                                options = None
+                        elif field_name == "value_field":
+                            # 检查 selected file 是否有数值字段
+                            if selected_file and selected_file.get("numeric_columns"):
+                                options = selected_file["numeric_columns"]
+                                question_text = "请选择用于分析的数值字段（已检测到可用字段）："
+                            else:
+                                question_text = "请指定用于分析的数值字段名（用于统计/插值）"
+                                options = None
+                        elif field_name == "input_layer":
+                            question_text = "请指定输入的矢量图层文件名"
+                            options = None
+                        elif field_name == "layer1":
+                            question_text = "请指定第一个叠加图层"
+                            options = None
+                        elif field_name == "layer2":
+                            question_text = "请指定第二个叠加图层"
+                            options = None
+                        elif field_name == "input_points":
+                            question_text = "请提供离散点数据文件（用于空间插值）"
+                            options = None
+                        elif field_name == "dem_file":
+                            question_text = "请提供数字高程模型文件（DEM/TIFF）"
+                            options = None
+                        elif field_name == "location":
+                            question_text = "请指定分析的中心位置（地址或坐标）"
+                            options = None
+                        elif field_name == "start":
+                            question_text = "请指定路径起点"
+                            options = None
+                        elif field_name == "end":
+                            question_text = "请指定路径终点"
+                            options = None
+                        elif field_name == "constraint_layers":
+                            question_text = "请提供参与选址分析的约束/影响因素图层（用;分隔多个）"
+                            options = None
+                        elif field_name == "constraint_conditions":
+                            question_text = "请定义选址的约束条件\n格式示例：道路:distance<=100;河流:distance>=150"
+                            options = None
+                        elif field_name == "study_area":
+                            question_text = "请指定研究区范围（图层文件名）"
+                            options = None
+                        else:
+                            # 通用问题模板
+                            if examples:
+                                example_str = " | ".join([str(e) for e in examples[:3]])
+                                question_text = f"请提供 {field_desc}（示例：{example_str}）"
+                            else:
+                                question_text = f"请提供 {field_desc}"
+                            options = spec.get("options")
+                        
+                        questions.append(ClarificationQuestion(
+                            field=field_name,
+                            question=question_text,
+                            options=options,
+                            required=True,
+                        ))
                 else:
+                    # 非必填参数，检查是否有默认值
                     default = spec.get("default")
-                    if default:
+                    if default is not None and not current_value:
                         auto_filled[field_name] = default
 
         return ClarificationResult(
@@ -577,8 +1035,20 @@ class ParameterExtractor:
         elif _scenario_str == "suitability":
             files = params.get("files", [])
             if files:
-                params["criteria_layers"] = files
+                # 尝试从文件名推断图层类型
+                layer_names = ";".join(files)
+                params["constraint_layers"] = layer_names
             params["area"] = self._extract_area(query)
+            # 提取设施类型
+            params["facility_type"] = self._extract_facility_type(query)
+            # 提取距离约束条件
+            distance_constraints = self._extract_suitability_constraints(query)
+            if distance_constraints:
+                params["constraint_conditions"] = distance_constraints
+            # 提取设施名称
+            facility_name = self._extract_facility_name(query)
+            if facility_name:
+                params["facility_name"] = facility_name
 
         # ── viewshed 场景 ────────────────────────────────────────────
         elif _scenario_str == "viewshed":
@@ -613,6 +1083,12 @@ class ParameterExtractor:
             if files:
                 params["input_file"] = files[0]
 
+        # ── statistics 场景 ────────────────────────────────────────
+        elif _scenario_str == "statistics":
+            files = params.get("files", [])
+            if files:
+                params["input_file"] = files[0]
+
         # ── visualization 场景 ───────────────────────────────────────
         elif _scenario_str == "visualization":
             files = params.get("files", [])
@@ -620,6 +1096,152 @@ class ParameterExtractor:
                 params["input_files"] = files
 
         return params
+
+    def _extract_facility_type(self, query: str) -> str:
+        """从查询中提取设施类型"""
+        # 设施类型映射
+        facility_patterns = {
+            "garbage": ["垃圾场", "垃圾处理", "垃圾站", "废弃物", "填埋场"],
+            "school": ["学校", "小学", "中学", "大学", "幼儿园"],
+            "hospital": ["医院", "诊所", "医疗", "卫生站"],
+            "factory": ["工厂", "工业区", "车间", "制造厂"],
+            "warehouse": ["仓库", "物流", "配送中心", "仓储"],
+        }
+        query_lower = query.lower()
+        for facility_type, keywords in facility_patterns.items():
+            for kw in keywords:
+                if kw in query:
+                    return facility_type
+        return "general"
+
+    def _extract_facility_name(self, query: str) -> Optional[str]:
+        """从查询中提取设施名称"""
+        patterns = [
+            r"新建(.*?)的",  # 新建垃圾场 -> 垃圾场
+            r"(.*?)选址",    # XX选址 -> XX
+            r"在.*?建(.*?)的",  # 在市区建XX -> XX
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def _extract_suitability_constraints(self, query: str) -> Dict[str, str]:
+        """从查询中提取适宜性分析的约束条件（MCDA）"""
+        constraints = {}
+
+        # 中文数字转换
+        def chinese_to_number(text: str) -> Optional[int]:
+            """将中文数字转换为阿拉伯数字"""
+            cn_map = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                      "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+                      "百": 100, "千": 1000, "万": 10000}
+            if text.isdigit():
+                return int(text)
+            total = 0
+            temp = 0
+            for char in text:
+                if char in cn_map:
+                    val = cn_map[char]
+                    if val >= 10:
+                        temp = temp * val if temp > 0 else val
+                    else:
+                        temp += val
+            return total + temp
+
+        def extract_distance(text: str) -> Optional[int]:
+            """从文本中提取距离值"""
+            # 匹配各种格式：100m、100米、100米以内、100m以内
+            patterns = [
+                r"([0-9零一二三四五六七八九十百千万]+)\s*m\s*以[内外]?",
+                r"([0-9零一二三四五六七八九十百千万]+)\s*米\s*以[内外]?",
+                r"([0-9零一二三四五六七八九十百千万]+)\s*范围",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    num_str = match.group(1)
+                    # 如果是中文数字，转换
+                    if any(c in num_str for c in "零一二三四五六七八九十"):
+                        return chinese_to_number(num_str)
+                    return int(num_str)
+            return None
+
+        def extract_layer_name(text: str) -> Optional[str]:
+            """提取图层/要素名称"""
+            layers = {
+                "道路": ["道路", "路", "road", "街道"],
+                "河流": ["河流", "河", "water", "水域"],
+                "住宅小区": ["住宅小区", "小区", "居民", "residential", "住宅"],
+                "土地利用": ["土地", "用地", "landuse", "土地利用"],
+                "大厦小区": ["大厦", "商业", "商业大厦"],
+            }
+            for layer, keywords in layers.items():
+                for kw in keywords:
+                    if kw in text:
+                        return layer
+            return None
+
+        # 分析查询中的每一行或句子
+        sentences = re.split(r'[。；\n]', query)
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # 检查是否包含距离约束
+            if any(kw in sent for kw in ["距离", "米以", "m以", "范围"]):
+                distance = extract_distance(sent)
+                if distance is not None:
+                    layer = extract_layer_name(sent)
+                    if layer:
+                        # 判断是"以内"（包含）还是"以外"（排除）
+                        if "以内" in sent or "范围内" in sent:
+                            constraints[layer] = f"distance<={distance}"
+                        elif "以外" in sent or "范围外" in sent:
+                            constraints[layer] = f"distance>={distance}"
+                        else:
+                            # 根据上下文推断
+                            if layer in ["道路"]:
+                                constraints[layer] = f"distance<={distance}"
+                            else:
+                                constraints[layer] = f"distance>={distance}"
+
+            # 检查是否包含土地利用约束
+            landuse_match = re.search(r"(?:在|必须|只能|必须建在)(.+?)用地上", sent)
+            if landuse_match:
+                landuse_type = landuse_match.group(1).strip()
+                # 常见土地类型的标准化
+                landuse_map = {
+                    "未分配": "unallocated",
+                    "空闲": "vacant",
+                    "未开发": "undeveloped",
+                    "荒地": "wasteland",
+                    "工业": "industrial",
+                }
+                standardized = landuse_map.get(landuse_type, landuse_type)
+                constraints["土地利用"] = f"landuse={standardized}"
+
+            # 检查"未分配用地"的直接提及
+            if "未分配用地" in sent:
+                constraints["土地利用"] = "landuse=unallocated"
+
+        # 智能推断：根据设施类型添加默认约束
+        facility_type = task.get("facility_type", "general") if 'task' in dir() else self._extract_facility_type(query)
+        if facility_type == "garbage":
+            # 垃圾场典型约束
+            if "道路" not in constraints:
+                constraints.setdefault("道路", "distance<=100")  # 便于运输
+            if "河流" not in constraints:
+                constraints.setdefault("河流", "distance>=150")  # 避免污染
+            if "住宅小区" not in constraints:
+                constraints.setdefault("住宅小区", "distance>=800")  # 减少扰民
+            if "土地利用" not in constraints:
+                constraints.setdefault("土地利用", "landuse=unallocated")  # 未分配用地
+
+        return constraints
 
     def _extract_area(self, query: str) -> str:
         """从查询中提取分析区域"""
@@ -739,6 +1361,12 @@ class ScenarioOrchestrator:
             Scenario.VISUALIZATION: {
                 "viz_type": "interactive_map",
                 "outputs": {"map": True, "summary": False},
+            },
+            # 适宜性分析/选址 (MCDA)
+            Scenario.SUITABILITY: {
+                "facility_type": "general",
+                "visualize": True,
+                "outputs": {"map": True, "summary": True},
             },
         }
 

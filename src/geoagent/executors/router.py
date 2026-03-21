@@ -68,8 +68,8 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
                               "geoagent.executors.route_executor",
                               fromlist=["RouteExecutor"]).RouteExecutor,
         "suitability":   lambda: __import__(
-                              "geoagent.executors.general_executor",
-                              fromlist=["GeneralExecutor"]).GeneralExecutor,
+                              "geoagent.executors.suitability_executor",
+                              fromlist=["SuitabilityExecutor"]).SuitabilityExecutor,
         "postgis":       lambda: __import__(
                               "geoagent.executors.postgis_executor",
                               fromlist=["PostGISExecutor"]).PostGISExecutor,
@@ -110,7 +110,7 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "hotspot":         "hotspot",
     "visualization":    "visualization",
     "accessibility":    "route",              # accessibility 路由到 route executor
-    "suitability":     "general",             # suitability 暂用 general executor
+    "suitability":     "suitability",          # 适宜性选址（MCDA）
     "general":         "general",
     # GDAL 工具（raster_clip, raster_reproject, vector_buffer 等）
     "gdal":            "gdal",
@@ -308,7 +308,29 @@ def execute_task(task: Dict[str, Any]) -> ExecutorResult:
 
     Returns:
         ExecutorResult 统一结果
+
+    工作流模式：
+        task = {
+            "is_workflow": True,
+            "steps": [
+                {"step_id": "step_1", "task": "buffer", "inputs": {...}, "output_id": "tmp_1"},
+                {"step_id": "step_2", "task": "overlay", "inputs": {"layer1": "tmp_1", "layer2": "河流"}, "output_id": "final"},
+            ],
+        }
     """
+    # ── 工作流模式 ───────────────────────────────────────────────────────────
+    if task.get("is_workflow") or task.get("steps"):
+        from geoagent.executors.workflow_engine import execute_workflow_from_dict
+        from geoagent.layers.layer4_dsl import WorkflowStep
+
+        steps_data = task.get("steps", [])
+        steps = [WorkflowStep(**s) for s in steps_data]
+
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        workspace = get_workspace_dir()
+
+        return execute_workflow_from_dict(task, workspace=workspace)
+
     return get_router().route(task)
 
 

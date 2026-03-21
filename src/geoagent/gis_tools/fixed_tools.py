@@ -4,6 +4,7 @@
 
 from pathlib import Path
 import json
+import threading
 
 # 直接导入第三方库
 try:
@@ -21,9 +22,36 @@ except ImportError:
     HAS_RASTERIO = False
 
 
+# 全局工作目录配置（支持按对话设置独立的 workspace）
+_workspace_lock = threading.Lock()
+_current_workspace_dir: Path | None = None
+
+
 def get_workspace_dir() -> Path:
     """获取 workspace 目录路径"""
+    global _current_workspace_dir
+    with _workspace_lock:
+        if _current_workspace_dir is not None:
+            return _current_workspace_dir
     return Path(__file__).resolve().parents[3] / "workspace"
+
+
+def set_conversation_workspace(conv_id: str | None) -> None:
+    """
+    设置当前对话的工作目录
+
+    Args:
+        conv_id: 对话 ID，如果为 None 则使用默认的 workspace 目录
+    """
+    global _current_workspace_dir
+    with _workspace_lock:
+        if conv_id is None:
+            _current_workspace_dir = None
+        else:
+            base_workspace = Path(__file__).resolve().parents[3] / "workspace"
+            conv_dir = base_workspace / "conversation_files" / conv_id
+            conv_dir.mkdir(parents=True, exist_ok=True)
+            _current_workspace_dir = conv_dir
 
 
 def get_data_info(file_name: str) -> str:

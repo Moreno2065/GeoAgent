@@ -35,7 +35,7 @@ from geoagent.core import (
     create_agent,
 )
 from geoagent.geoagent_v2 import GeoAgentV2, create_agent_v2
-from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files
+from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files, set_conversation_workspace
 
 # =============================================================================
 # 常量配置
@@ -48,21 +48,15 @@ _WORKSPACE_DIR.mkdir(exist_ok=True)
 _OUTPUTS_DIR = _WORKSPACE_DIR / "outputs"
 _OUTPUTS_DIR.mkdir(exist_ok=True)
 
-# DeepSeek 模型选项（只保留 deepseek-v3）
-DEEPSEEK_MODEL_OPTIONS = {
-    "deepseek-v3": {
-        "model": "deepseek-v3",
-        "label": "DeepSeek V3",
-        "description": "最新模型，能力更强",
+# LLM 模型选项（简化版：仅提供商选择）
+LLM_PROVIDER_OPTIONS = {
+    "deepseek": {
+        "model": "deepseek-chat",
+        "label": "DeepSeek",
     },
-}
-
-# GLM 模型选项（只保留 glm-4-plus）
-GLM_MODEL_OPTIONS = {
-    "glm-4-plus": {
-        "model": "glm-4-plus",
-        "label": "GLM-4 Plus",
-        "description": "增强版，能力更强",
+    "glm": {
+        "model": "glm-4v",
+        "label": "GLM",
     },
 }
 
@@ -250,6 +244,21 @@ def _render_charts_tab():
                     })
             except Exception as e:
                 st.warning(f"栅格预览失败: {e}")
+
+
+def _get_conv_files(cid: str) -> list[Path]:
+    """
+    获取指定对话目录下的所有 GIS 文件
+    """
+    base = _WORKSPACE_DIR / "conversation_files" / cid
+    if not base.exists():
+        return []
+    gis_exts = {".shp", ".json", ".geojson", ".gpkg", ".gjson",
+                ".tif", ".tiff", ".img", ".asc", ".rst", ".nc"}
+    return sorted(
+        f for f in base.iterdir()
+        if f.is_file() and f.suffix.lower() in gis_exts
+    )
 
 
 def _render_agent_generated_maps() -> str | None:
@@ -533,11 +542,11 @@ def _render_sidebar():
         # ── LLM 模型选择 ────────────────────────────────────────────
         st.subheader("🤖 LLM 配置")
 
-        # 主模型选择
+        # 主模型选择（仅提供商级别）
         provider_options = ["deepseek", "glm"]
         provider_labels = {
-            "deepseek": "🔵 DeepSeek（主模型）",
-            "glm": "🟢 GLM（备用模型）",
+            "deepseek": "🔵 DeepSeek",
+            "glm": "🟢 GLM",
         }
 
         selected_provider = st.selectbox(
@@ -548,26 +557,8 @@ def _render_sidebar():
             key="provider_select",
         )
 
-        # DeepSeek 配置
-        if selected_provider == "deepseek":
-            deepseek_model_options = list(DEEPSEEK_MODEL_OPTIONS.keys())
-            selected_ds_model = st.selectbox(
-                "DeepSeek 模型",
-                options=deepseek_model_options,
-                format_func=lambda x: DEEPSEEK_MODEL_OPTIONS[x]["label"],
-                index=0,
-                key="deepseek_model_select",
-            )
-        else:
-            # GLM 作为主模型
-            glm_model_options = list(GLM_MODEL_OPTIONS.keys())
-            selected_ds_model = st.selectbox(
-                "GLM 模型",
-                options=glm_model_options,
-                format_func=lambda x: GLM_MODEL_OPTIONS[x]["label"],
-                index=0,
-                key="glm_model_select",
-            )
+        # 根据选择的提供商获取对应模型
+        primary_model = LLM_PROVIDER_OPTIONS[selected_provider]["model"]
 
         # ── API Key 配置 ────────────────────────────────────────
         st.caption("API Key 配置")
@@ -618,7 +609,7 @@ def _render_sidebar():
                 st.session_state["glm_key"] = gk
 
                 # 确定主模型
-                primary_model = DEEPSEEK_MODEL_OPTIONS[selected_ds_model]["model"] if selected_provider == "deepseek" else GLM_MODEL_OPTIONS[selected_ds_model]["model"]
+                primary_model = LLM_PROVIDER_OPTIONS[selected_provider]["model"]
 
                 try:
                     # 创建 Agent（支持双模型）
@@ -626,7 +617,7 @@ def _render_sidebar():
                         primary_api_key=dk,
                         primary_model=primary_model,
                         fallback_api_key=gk.strip() if gk else None,
-                        fallback_model="glm-4" if gk else None,
+                        fallback_model="glm-4v" if gk else None,
                     )
                     st.session_state["agent"] = None
 
@@ -659,45 +650,64 @@ def _render_sidebar():
 
         st.divider()
 
-        # 🌟 修复：将雪藏的 KPI 仪表盘渲染在侧边栏！
-        st.subheader("📈 实时态势")
-        _render_kpi_wall(st.session_state.get("kpi_data", {}))
+        # ── 对话内文件管理 ──────────────────────────────────────────────
+        st.subheader("📁 当前对话文件")
+        cid = st.session_state.get("active_conv_id")
 
-        st.divider()
-
-        st.subheader("📁 工作区状态")
-        ws_files = list_workspace_files()
-        st.caption(f"共 {len(ws_files)} 个文件")
-        if ws_files:
-            for f in ws_files[:5]:
-                ext = Path(f).suffix.upper()
-                icon = (
-                    "🗺️"
-                    if ext in [".SHP", ".GEOJSON", ".JSON", ".GPKG"]
-                    else "🛰️" if ext in [".TIF", ".TIFF"] else "📄"
-                )
-                st.caption(f"{icon} {f}")
+        if not cid:
+            st.caption("请新建对话后上传文件")
         else:
-            st.caption("暂无文件")
+            conv_files = _get_conv_files(cid)
 
-        uploaded = st.file_uploader(
-            "📁 上传 GIS 数据",
-            type=["shp", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
-            accept_multiple_files=True,
-        )
-        if uploaded:
-            new_uploads = 0
-            for f in uploaded:
-                file_path = _WORKSPACE_DIR / f.name
-                if not file_path.exists() or file_path.stat().st_size != f.size:
+            # 显示当前对话的文件列表
+            if conv_files:
+                st.caption(f"共 {len(conv_files)} 个文件")
+
+                for f in conv_files:
+                    col1, col2 = st.columns([4, 1])
+                    size = f.stat().st_size
+                    size_str = f"{size/1024:.1f} KB" if size < 1048576 else f"{size/1048576:.1f} MB"
+                    ext = f.suffix.upper()
+                    icon = (
+                        "🗺️"
+                        if ext in [".SHP", ".GEOJSON", ".JSON", ".GPKG"]
+                        else "🛰️" if ext in [".TIF", ".TIFF", ".COG"]
+                        else "📊" if ext == ".CSV"
+                        else "🌐" if ext == ".HTML"
+                        else "📄"
+                    )
+                    with col1:
+                        st.caption(f"{icon} {f.name} ({size_str})")
+                    with col2:
+                        if st.button("🗑️", key=f"del_file_{f.name}", help=f"删除 {f.name}"):
+                            if _delete_conv_file(cid, f.name):
+                                st.success(f"已删除 {f.name}")
+                                st.rerun()
+            else:
+                st.caption("暂无文件")
+
+            # 对话内文件上传
+            st.caption("上传文件到当前对话")
+            uploaded = st.file_uploader(
+                "📤 上传 GIS 数据",
+                type=["shp", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
+                key=f"conv_file_uploader_{cid}_{st.session_state.get('_file_upload_key', 0)}",
+                help="上传的文件仅供当前对话使用",
+            )
+            if uploaded:
+                new_uploads = 0
+                conv_dir = _get_conv_workspace_dir(cid)
+                for f in uploaded:
+                    file_path = conv_dir / f.name
                     file_path.write_bytes(f.getbuffer())
                     new_uploads += 1
-            if new_uploads > 0:
-                st.success(f"✅ {new_uploads} 个文件已写入工作区！")
-                st.cache_data.clear()
-                st.rerun()  # 🌟 新增：强制刷新，让页面立刻重新执行一遍获取最新状态！
-            else:
-                st.info(f"ℹ️ {len(uploaded)} 个文件已在工作区就绪。")
+                if new_uploads > 0:
+                    st.success(f"✅ {new_uploads} 个文件已上传到当前对话！")
+                    st.rerun()
+                else:
+                    st.info(f"ℹ️ {len(uploaded)} 个文件已在当前对话就绪。")
+
+        st.divider()
 
 
 # =============================================================================
@@ -1473,26 +1483,22 @@ def main():
 
 
 def _render_workspace_browser():
-    """工作区文件浏览器（右侧第四个 Tab）"""
-    ws = _WORKSPACE_DIR
-    if not ws.exists():
-        st.info("📂 工作区不存在")
+    """工作区文件浏览器（右侧第四个 Tab）- 显示当前对话的文件"""
+    cid = st.session_state.get("active_conv_id")
+
+    if not cid:
+        st.info("📂 请先新建对话并上传文件")
         return
 
-    all_files = []
-    for ext in [
-        "*.shp", "*.geojson", "*.json", "*.gpkg", "*.parquet",
-        "*.tif", "*.tiff", "*.cog", "*.las", "*.laz", "*.html", "*.csv",
-    ]:
-        all_files.extend(ws.glob(ext))
+    conv_files = _get_conv_files(cid)
 
-    if not all_files:
-        st.info("📂 工作区为空，请上传数据文件")
+    if not conv_files:
+        st.info("📂 当前对话暂无文件，请在侧边栏上传数据文件")
         return
 
-    st.caption(f"共 {len(all_files)} 个文件")
+    st.caption(f"共 {len(conv_files)} 个文件")
 
-    for f in sorted(all_files, key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+    for f in conv_files:
         size = f.stat().st_size
         size_str = (
             f"{size/1024:.1f} KB" if size < 1048576 else f"{size/1048576:.1f} MB"
@@ -1507,8 +1513,29 @@ def _render_workspace_browser():
             else "📄"
         )
         age = datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%m-%d %H:%M")
+
         with st.expander(f"{icon} `{f.name}` ({size_str}) · {age}"):
-            st.code(f"路径: {f.relative_to(_ROOT)}", language="text")
+            # 文件预览
+            if ext in [".GEOJSON", ".JSON", ".CSV"]:
+                try:
+                    import pandas as pd
+                    if ext == ".CSV":
+                        df = pd.read_csv(f)
+                    else:
+                        import geopandas as gpd
+                        gdf = gpd.read_file(f)
+                        df = gdf
+                    st.dataframe(df.head(20), use_container_width=True, hide_index=False)
+                except Exception as e:
+                    st.warning(f"预览失败: {e}")
+
+            # 删除按钮
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("🗑️ 删除", key=f"ws_del_{f.name}"):
+                    if _delete_conv_file(cid, f.name):
+                        st.success(f"已删除 {f.name}")
+                        st.rerun()
 
 
 def _handle_user_message(prompt: str, agent):
@@ -1524,6 +1551,9 @@ def _handle_user_message(prompt: str, agent):
         _new_conversation()
 
     cid = st.session_state["active_conv_id"]
+
+    # 设置当前对话的 workspace 目录
+    set_conversation_workspace(cid)
 
     # ── 追问 UI：检查是否有待回答的追问 ─────────────────────────────
     clarification_key = "pending_clarification"
@@ -1808,37 +1838,73 @@ def _handle_user_message(prompt: str, agent):
 
             result = agent_v2.run(prompt, event_callback=v2_event_callback)
 
-            final_content = ""
-            if result.clarification_needed:
-                qs = result.clarification_questions or []
-                if qs:
-                    clarification_text = "为了完成分析，我需要确认以下几点：\n"
-                    for i, q in enumerate(qs, 1):
-                        clarification_text += f"\n**{i}. {q.get('question', q.get('field', '未知问题'))}**"
-                        opts = q.get("options", [])
-                        if opts:
-                            clarification_text += f"\n   可选：{' / '.join(opts)}"
-                    final_content = f"**⚠️ 需要更多信息**\n\n{clarification_text}"
-                    st.session_state["pending_clarification"] = {
-                        "original_input": prompt,
-                        "questions": qs,
-                        "answers": {},
-                    }
-                else:
-                    final_content = "**⚠️ 参数不完整，请补充更多信息**"
-                stream_state["has_error"] = True
-                stream_state["error_msg"] = "参数不完整"
+            # ── LLM 流式生成回复 ─────────────────────────────────────────────
+            # 从 result 中收集必要信息
+            extracted_params = {
+                "user_input": prompt,
+                "scenario": result.scenario or "unknown",
+            }
+            if result.metrics:
+                extracted_params.update(result.metrics)
 
-            elif result.success:
-                lines = [f"**✅ {result.scenario.upper() if result.scenario else '分析'} 执行成功**\n"]
-                if result.summary:
-                    lines.append(f"\n📋 **摘要**: {result.summary}")
+            # 使用 agent_v2 的客户端生成流式回复
+            llm_client = getattr(agent_v2, "_client", None)
+            llm_model = getattr(agent_v2, "model", None)
 
-                # 显示 metrics（路径规划的距离、时长等）
+            if llm_client and llm_model and not stream_state.get("has_error"):
+                # 系统提示词
+                system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
+
+回复要求：
+1. 使用中文
+2. 简洁明了，不超过200字
+3. 包含关键数据和结论
+4. 如有必要，给出下一步建议"""
+
+                # 根据提供商选择正确的模型参数
+                params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
+                user_message = f"""用户请求：{prompt}
+
+任务类型：{result.scenario or "unknown"}
+分析结果摘要：{result.summary or ""}
+
+关键指标："""
+
                 if result.metrics:
-                    lines.append("\n📈 **关键指标**:")
-                    for k, v in list(result.metrics.items())[:10]:
-                        # 格式化显示
+                    for k, v in list(result.metrics.items())[:5]:
+                        user_message += f"\n- {k}: {v}"
+
+                user_message += "\n\n请生成简洁的回复："
+
+                try:
+                    stream_state["text"] = ""
+                    full_text = ""
+
+                    # 更新状态为正在输出
+                    st.session_state["llm_status"] = "speaking"
+                    st.session_state["llm_current_node"] = "LLM 输出中"
+
+                    stream = llm_client.chat.completions.create(
+                        model=llm_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message},
+                        ],
+                        temperature=0.7,
+                        max_tokens=500,
+                        stream=True,
+                    )
+
+                    for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            content = chunk.choices[0].delta.content
+                            full_text += content
+                            stream_state["text"] = full_text
+                            _update_stream(full_text)
+
+                    # 追加指标信息到流式回复后面
+                    if result.metrics:
+                        metrics_lines = ["\n\n📈 **关键指标**:"]
                         label_map = {
                             "distance_m": "距离(米)",
                             "distance_km": "距离(公里)",
@@ -1849,25 +1915,81 @@ def _handle_user_message(prompt: str, agent):
                             "start": "起点",
                             "end": "终点",
                         }
-                        label = label_map.get(k, k)
-                        lines.append(f"  - **{label}**: `{v}`")
+                        for k, v in list(result.metrics.items())[:10]:
+                            label = label_map.get(k, k)
+                            metrics_lines.append(f"  - **{label}**: `{v}`")
+                        full_text += "\n".join(metrics_lines)
+                        _update_stream(full_text)
 
-                # 显示 conclusion
-                if result.conclusion:
-                    conclusion = result.conclusion
-                    if isinstance(conclusion, dict):
-                        findings = conclusion.get("key_findings", [])
-                        if findings:
-                            lines.append("\n🔍 **分析结果**:")
-                            for f in findings[:5]:
-                                lines.append(f"  - {f}")
+                    final_content = full_text
 
-                final_content = "\n".join(lines)
+                except Exception as e:
+                    _log("error", f"LLM 流式输出失败: {str(e)}")
+                    final_content = None
             else:
-                error = result.error or "执行失败"
-                final_content = f"**❌ 执行失败**: {error}"
-                stream_state["has_error"] = True
-                stream_state["error_msg"] = error
+                final_content = None
+
+            # 如果流式输出没有生成 final_content，使用默认格式
+            if final_content is None:
+                if result.clarification_needed:
+                    qs = result.clarification_questions or []
+                    if qs:
+                        clarification_text = "为了完成分析，我需要确认以下几点：\n"
+                        for i, q in enumerate(qs, 1):
+                            clarification_text += f"\n**{i}. {q.get('question', q.get('field', '未知问题'))}**"
+                            opts = q.get("options", [])
+                            if opts:
+                                clarification_text += f"\n   可选：{' / '.join(opts)}"
+                        final_content = f"**⚠️ 需要更多信息**\n\n{clarification_text}"
+                        st.session_state["pending_clarification"] = {
+                            "original_input": prompt,
+                            "questions": qs,
+                            "answers": {},
+                        }
+                    else:
+                        final_content = "**⚠️ 参数不完整，请补充更多信息**"
+                    stream_state["has_error"] = True
+                    stream_state["error_msg"] = "参数不完整"
+
+                elif result.success:
+                    lines = [f"**✅ {result.scenario.upper() if result.scenario else '分析'} 执行成功**\n"]
+                    if result.summary:
+                        lines.append(f"\n📋 **摘要**: {result.summary}")
+
+                    # 显示 metrics（路径规划的距离、时长等）
+                    if result.metrics:
+                        lines.append("\n📈 **关键指标**:")
+                        for k, v in list(result.metrics.items())[:10]:
+                            # 格式化显示
+                            label_map = {
+                                "distance_m": "距离(米)",
+                                "distance_km": "距离(公里)",
+                                "duration_min": "时长(分钟)",
+                                "duration_s": "时长(秒)",
+                                "mode": "出行方式",
+                                "engine": "引擎",
+                                "start": "起点",
+                                "end": "终点",
+                            }
+                            label = label_map.get(k, k)
+                            lines.append(f"  - **{label}**: `{v}`")
+
+                    # 显示 conclusion
+                    if result.conclusion:
+                        conclusion = result.conclusion
+                        if isinstance(conclusion, dict):
+                            findings = conclusion.get("key_findings", [])
+                            if findings:
+                                lines.append("\n🔍 **分析结果**:")
+                                for f in findings[:5]:
+                                    lines.append(f"  - {f}")
+
+                    final_content = "\n".join(lines)
+                else:
+                    error = result.error or "执行失败"
+                    final_content = f"**❌ 执行失败**: {error}"
+                    stream_state["has_error"] = True
+                    stream_state["error_msg"] = error
 
         except Exception as e:
             final_content = f"**❌ V2 Pipeline 异常**: {str(e)}"

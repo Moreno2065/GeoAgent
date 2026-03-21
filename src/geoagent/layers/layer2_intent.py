@@ -102,6 +102,22 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "statistics", "aggregation", "zonal",
     ],
 
+    # ── 适宜性分析/选址 (MCDA) ─────────────────────────────────────────
+    Scenario.SUITABILITY: [
+        # 中文
+        "适宜性", "适宜性分析", "适宜区", "suitability",
+        "选址", "选址分析", "工厂选址", "仓库选址", "垃圾场选址",
+        "垃圾场", "新建", "多准则", "mcda", "多目标",
+        "加权叠加", "权重分析", "因素叠加",
+        "新建垃圾场", "最佳位置", "最优位置", "合适位置",
+        "条件选址", "约束选址", "避开", "远离",
+        # 英文
+        "suitability analysis", "site selection", "suitability analysis",
+        "mcda", "multi-criteria decision", "weighted overlay",
+        "optimal location", "best location", "land suitability",
+        "garbage site", "waste facility", "landfill site",
+    ],
+
     # ── 栅格分析 ───────────────────────────────────────────────────
     Scenario.RASTER: [
         # 中文

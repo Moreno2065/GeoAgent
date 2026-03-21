@@ -41,6 +41,59 @@ class OutputSpec(BaseModel):
     explanation: Optional[str] = Field(default=None, description="解释卡片文本")
 
 
+class WorkflowStep(BaseModel):
+    """
+    工作流中的单一步骤
+
+    用于描述多步骤链式任务中的一个步骤，支持：
+    - 中间变量引用（引用前序步骤的输出）
+    - 显式依赖声明
+    - 任务参数传递
+
+    示例：
+        {
+            "step_id": "step_1",
+            "task": "buffer",
+            "description": "对道路图层做100米缓冲",
+            "inputs": {"layer": "道路.shp", "distance": 100, "unit": "meters"},
+            "output_id": "tmp_buffer_1",
+            "depends_on": [],
+        }
+        {
+            "step_id": "step_2",
+            "task": "overlay",
+            "description": "用河流缓冲擦除道路缓冲，得到适宜区域",
+            "inputs": {"layer1": "tmp_buffer_1", "layer2": "tmp_river_buf", "operation": "erase"},
+            "output_id": "tmp_suitable",
+            "depends_on": ["step_1", "step_3"],
+        }
+    """
+    step_id: str = Field(description="唯一步骤ID，如 'step_1', 'buffer_step'")
+    task: str = Field(description="任务类型：buffer/overlay/select/io_proj/stats/proximity")
+    description: str = Field(default="", description="步骤的自然语言描述（用于日志）")
+    inputs: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="输入参数，支持两种来源：文件路径 或 引用其他步骤的输出（tmp_xxx）"
+    )
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="分析参数（如 distance, operation, unit 等）"
+    )
+    output_id: str = Field(
+        description="本步骤输出的中间变量名，如 'tmp_buffer_1'。后续步骤通过此名称引用。"
+    )
+    depends_on: List[str] = Field(
+        default_factory=list,
+        description="依赖的步骤ID列表，用于拓扑排序"
+    )
+    output_file: Optional[str] = Field(
+        default=None,
+        description="输出文件路径（如果需要持久化到磁盘）"
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
 class GeoDSL(BaseModel):
     """
     GeoDSL 统一任务描述语言
@@ -51,10 +104,10 @@ class GeoDSL(BaseModel):
     3. Router 根据 scenario 分发到对应 Executor
     4. Executor 返回标准化结果
 
-    示例：
+    示例（单步模式）：
         NL: "芜湖南站到方特欢乐世界的步行路径"
         GeoDSL:
-            version: "1.0"
+            version: "1.1"
             scenario: "route"
             task: "walking_route"
             inputs:
@@ -65,13 +118,36 @@ class GeoDSL(BaseModel):
             outputs:
                 map: true
                 summary: true
+
+    示例（工作流模式）：
+        NL: "选出距离道路100m内且避开河流50m的区域"
+        GeoDSL:
+            version: "2.0"
+            scenario: "overlay"
+            task: "workflow"
+            is_workflow: true
+            steps:
+                - step_id: "step_1"
+                  task: "buffer"
+                  inputs: {"layer": "道路.shp", "distance": 100, "unit": "meters"}
+                  output_id: "tmp_road_buf"
+                - step_id: "step_2"
+                  task: "buffer"
+                  inputs: {"layer": "河流.shp", "distance": 50, "unit": "meters"}
+                  output_id: "tmp_river_buf"
+                - step_id: "step_3"
+                  task: "overlay"
+                  inputs: {"layer1": "tmp_road_buf", "layer2": "tmp_river_buf", "operation": "erase"}
+                  output_id: "final_result"
+                  depends_on: ["step_1", "step_2"]
+            final_output: "final_result"
     """
-    version: str = Field(default="1.0", description="DSL 协议版本")
+    version: str = Field(default="1.0", description="DSL 协议版本（2.0=支持工作流）")
     scenario: Scenario = Field(description="场景类型")
-    task: str = Field(description="具体任务类型（与 scenario 一致或更细化）")
+    task: str = Field(description="具体任务类型（与 scenario 一致或更细化），工作流模式下为 'workflow'")
     inputs: Dict[str, Any] = Field(
         default_factory=dict,
-        description="输入参数（数据源、位置等）"
+        description="输入参数（数据源、位置等），工作流模式下可为字面量或 tmp_xxx 引用"
     )
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
@@ -88,6 +164,19 @@ class GeoDSL(BaseModel):
     clarification_answers: Optional[Dict[str, Any]] = Field(
         default=None,
         description="追问的答案"
+    )
+    # ── 工作流扩展（v2.0）─────────────────────────────────────────────
+    is_workflow: bool = Field(
+        default=False,
+        description="是否为工作流模式（多步骤链式任务）"
+    )
+    steps: List[WorkflowStep] = Field(
+        default_factory=list,
+        description="工作流步骤列表，仅 is_workflow=True 时有效"
+    )
+    final_output: str = Field(
+        default="final_result",
+        description="最终输出变量名"
     )
 
     model_config = ConfigDict(use_enum_values=True)
@@ -131,6 +220,93 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
     Scenario.RASTER: {
         "input_file": {"type": "string", "required": True},
         "index_type": {"type": "string", "default": "ndvi", "options": ["ndvi", "ndwi", "evi"]},
+    },
+    # 适宜性分析/选址 (MCDA) - 多准则决策分析
+    Scenario.SUITABILITY: {
+        # === 分析区域 ===
+        "study_area": {
+            "type": "string",
+            "required": True,
+            "description": "研究区范围（图层文件名或区域名）",
+            "examples": ["土地利用.shp", "研究区.shp", "市区范围.shp"],
+        },
+
+        # === 约束条件图层列表 ===
+        # 支持多种格式：字符串(用;分隔) 或 列表
+        "constraint_layers": {
+            "type": "list",
+            "required": True,
+            "description": "参与选址分析的约束/影响因素图层",
+            "examples": ["土地利用.shp;道路.shp;河流.shp;住宅小区.shp"],
+        },
+
+        # === 约束条件定义 ===
+        # 支持多种条件类型：
+        # - 土地利用过滤：landuse=value（如 landuse=unallocated）
+        # - 距离缓冲：distance<=X 或 distance>=X
+        # - 属性过滤：field=value
+        "constraint_conditions": {
+            "type": "dict",
+            "required": True,
+            "description": "约束条件字典，格式：图层名:条件",
+            "examples": {
+                "土地利用": "landuse=unallocated",
+                "道路": "distance<=100",
+                "河流": "distance>=150",
+                "住宅小区": "distance>=800",
+            },
+        },
+
+        # === 权重设置（可选，用于加权叠加）===
+        "factor_weights": {
+            "type": "dict",
+            "required": False,
+            "description": "各图层权重（用于加权叠加分析）",
+            "default": {},
+        },
+
+        # === 设施类型 ===
+        "facility_type": {
+            "type": "string",
+            "required": False,
+            "default": "general",
+            "options": ["general", "garbage", "school", "hospital", "factory", "warehouse", "park", "parking"],
+            "description": "设施类型，影响默认距离阈值",
+        },
+
+        # === 设施名称 ===
+        "facility_name": {
+            "type": "string",
+            "required": False,
+            "description": "设施名称（用于结果描述和影响范围统计）",
+            "examples": ["垃圾场", "学校", "医院"],
+        },
+
+        # === 影响范围统计 ===
+        "impact_radius": {
+            "type": "number",
+            "required": False,
+            "default": 2000,
+            "description": "影响半径（米），用于统计受影响对象数量",
+        },
+
+        # === 输出选项 ===
+        "output_file": {"type": "string", "required": False},
+        "output_count": {
+            "type": "integer",
+            "required": False,
+            "default": 2,
+            "description": "输出选址结果数量（TOP N）",
+        },
+        "visualize": {"type": "bool", "default": True},
+
+        # === 坐标系 ===
+        "target_crs": {
+            "type": "string",
+            "required": False,
+            "default": "EPSG:4548",  # Beijing 1954 / 3-degree GK CM 120E
+            "description": "目标坐标系",
+        },
     },
 }
 
@@ -310,6 +486,7 @@ class DSLBuilder:
             Scenario.VIEWSHED: ["location", "dem_file"],
             Scenario.STATISTICS: ["input_file"],
             Scenario.RASTER: ["input_file"],
+            Scenario.SUITABILITY: ["study_area"],
         }
 
         keys = inputs_keys.get(scenario, [])
@@ -411,8 +588,28 @@ def build_dsl(
                 "请传入 lambda: lambda: get_reasoner()"
             )
         user_input = extracted_params.get("user_input", "")
-        raw_dsl = reasoner.translate(user_input, scenario=scenario)
-        return _build_from_reasoner_output(raw_dsl, scenario, extracted_params)
+
+        # 判断是否为复杂多步骤任务
+        # 如果包含 "先...再..."、"然后"、"接着"、"并且" 等多步骤关键词，使用工作流翻译
+        multi_step_keywords = ["先", "再", "然后", "接着", "并且", "而且", "此外", "缓冲", "擦除", "叠加", "intersect", "erase", "overlay"]
+        is_complex = any(kw in user_input for kw in multi_step_keywords)
+
+        if is_complex:
+            # 工作流翻译模式（多步骤）
+            raw_workflow = reasoner.translate_workflow(user_input, scenario=scenario)
+
+            # 构建工作流 GeoDSL
+            steps_data = raw_workflow.get("steps", [])
+            return build_workflow_dsl(
+                steps_data=steps_data,
+                scenario=scenario,
+                user_input=user_input,
+                final_output=raw_workflow.get("final_output", "final_result"),
+            )
+        else:
+            # 简单翻译模式（向后兼容）
+            raw_dsl = reasoner.translate(user_input, scenario=scenario)
+            return _build_from_reasoner_output(raw_dsl, scenario, extracted_params)
 
     # ── 默认：确定性 DSL 构建 ───────────────────────────────────────────────
     builder = get_builder()
@@ -525,8 +722,85 @@ def build_dsl_with_reasoner(
     return _build_from_reasoner_output(raw_dsl, scenario, extracted_params)
 
 
+def build_workflow_dsl(
+    steps_data: List[Dict[str, Any]],
+    scenario: Scenario,
+    user_input: str = "",
+    final_output: str = "final_result",
+) -> GeoDSL:
+    """
+    从工作流步骤数据构建 GeoDSL（工作流模式便捷函数）。
+
+    Args:
+        steps_data: 工作流步骤列表，每项为字典
+        scenario: 场景类型
+        user_input: 原始用户输入
+        final_output: 最终输出变量名
+
+    Returns:
+        is_workflow=True 的 GeoDSL 对象
+
+    示例：
+        steps = [
+            {"step_id": "step_1", "task": "buffer", "inputs": {...}, "output_id": "tmp_1"},
+            {"step_id": "step_2", "task": "overlay", "inputs": {...}, "output_id": "final"},
+        ]
+        dsl = build_workflow_dsl(steps, Scenario.OVERLAY, "选址分析")
+    """
+    steps = [WorkflowStep(**s) for s in steps_data]
+    return GeoDSL(
+        version="2.0",
+        scenario=scenario,
+        task="workflow",
+        inputs={"user_input": user_input},
+        is_workflow=True,
+        steps=steps,
+        final_output=final_output,
+        outputs=OutputSpec(map=True, summary=True),
+    )
+
+
+def validate_workflow_steps(steps: List[WorkflowStep]) -> List[str]:
+    """
+    校验工作流步骤的合法性。
+
+    Args:
+        steps: 工作流步骤列表
+
+    Returns:
+        错误信息列表（空列表表示校验通过）
+    """
+    errors: List[str] = []
+    output_ids: set = set()
+
+    for i, step in enumerate(steps):
+        # 检查 step_id 唯一性
+        if step.output_id in output_ids:
+            errors.append(f"步骤 '{step.step_id}' 的 output_id '{step.output_id}' 与其他步骤重复")
+        output_ids.add(step.output_id)
+
+        # 检查 depends_on 引用有效性
+        step_ids = {s.step_id for s in steps}
+        for dep in step.depends_on:
+            if dep not in step_ids:
+                errors.append(f"步骤 '{step.step_id}' 依赖的 '{dep}' 不存在")
+
+        # 检查自身循环依赖
+        if step.step_id in step.depends_on:
+            errors.append(f"步骤 '{step.step_id}' 存在自身循环依赖")
+
+        # 检查输入引用有效性
+        for key, value in step.inputs.items():
+            if isinstance(value, str) and value.startswith("tmp_"):
+                if value not in output_ids:
+                    errors.append(f"步骤 '{step.step_id}' 引用了尚未生成的中间变量 '{value}'")
+
+    return errors
+
+
 __all__ = [
     "OutputSpec",
+    "WorkflowStep",
     "GeoDSL",
     "SCHEMA_REQUIRED_PARAMS",
     "SchemaValidationError",
@@ -537,5 +811,7 @@ __all__ = [
     "validate_dsl",
     "build_dsl",
     "build_dsl_with_reasoner",
+    "build_workflow_dsl",
+    "validate_workflow_steps",
     "_build_from_reasoner_output",
 ]

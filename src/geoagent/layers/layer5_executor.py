@@ -52,6 +52,7 @@ SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
     "viewshed": "shadow",
     "statistics": "hotspot",
     "raster": "ndvi",
+    "suitability": "suitability",  # MCDA 适宜性选址分析
 }
 
 
