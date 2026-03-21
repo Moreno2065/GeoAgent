@@ -66,6 +66,7 @@ class Scenario(str, Enum):
 
     不暴露 ArcToolbox 全家桶，只提供有限的标准场景。
     """
+    # ── 核心 GIS 分析场景 ──────────────────────────────────────
     ROUTE = "route"            # 路径/可达性分析
     BUFFER = "buffer"          # 缓冲/邻近分析
     OVERLAY = "overlay"        # 叠置/裁剪分析
@@ -77,6 +78,23 @@ class Scenario(str, Enum):
     SHADOW_ANALYSIS = "shadow_analysis"  # 阴影分析
     HOTSPOT = "hotspot"        # 热点分析
     VISUALIZATION = "visualization"  # 可视化
+
+    # ── 🟢 高德基础 Web 服务场景 ─────────────────────────────────
+    GEOCODE = "geocode"        # 地理编码（地址 → 坐标）
+    REGEOCODE = "regeocode"     # 逆地理编码（坐标 → 地址）
+    DISTRICT = "district"       # 行政区域查询
+    STATIC_MAP = "static_map"  # 静态地图
+    COORD_CONVERT = "coord_convert"  # 坐标转换
+    GRASP_ROAD = "grasp_road"  # 轨迹纠偏
+
+    # ── 🔵 高德高级 Web 服务场景 ─────────────────────────────────
+    POI_SEARCH = "poi_search"  # POI 搜索
+    INPUT_TIPS = "input_tips"  # 输入提示
+    TRAFFIC_STATUS = "traffic_status"  # 交通态势
+    TRAFFIC_EVENTS = "traffic_events"   # 交通事件
+    TRANSIT_INFO = "transit_info"  # 公交信息
+    IP_LOCATION = "ip_location"  # IP 定位
+    WEATHER = "weather"         # 天气查询
 
     @classmethod
     def values(cls) -> list[str]:
@@ -134,6 +152,65 @@ class StatisticsSubType(str, Enum):
     DENSITY = "density"       # 密度分析
     ZONAL = "zonal"           # 分区统计
     NDVI = "ndvi"             # 植被指数
+
+
+# =============================================================================
+# 🟢 高德基础服务子类型
+# =============================================================================
+
+class GeocodeSubType(str, Enum):
+    ADDRESS = "address"       # 标准地址
+    BATCH = "batch"          # 批量地址
+
+
+class RegeocodeSubType(str, Enum):
+    BASE = "base"            # 基本地址
+    ALL = "all"              # 包含周边 POI
+
+
+class DistrictLevel(str, Enum):
+    COUNTRY = "country"      # 国家
+    PROVINCE = "province"     # 省
+    CITY = "city"            # 市
+    DISTRICT = "district"    # 区/县
+    STREET = "street"        # 街道
+
+
+class CoordinateSystem(str, Enum):
+    GPS = "gps"              # WGS84
+    BAIDU = "baidu"          # 百度坐标
+    MAPBAR = "mapbar"         # 图吧坐标
+    AUTO = "auto"            # 自动检测
+
+
+# =============================================================================
+# 🔵 高德高级服务子类型
+# =============================================================================
+
+class PoiSortRule(str, Enum):
+    DISTANCE = "distance"    # 距离优先
+    WEIGHT = "weight"        # 综合权重
+
+
+class TrafficLevel(str, Enum):
+    HIGHWAY = 1              # 高速
+    URBAN_EXPRESS = 2        # 城市快速路
+    MAIN_ROAD = 3            # 主干道
+    SECONDARY_ROAD = 4       # 次干道
+    BRANCH_ROAD = 5          # 支路
+    COUNTRY_ROAD = 6         # 乡道
+
+
+class TrafficEventType(str, Enum):
+    ALL = 0                  # 所有
+    CONSTRUCTION = 1         # 施工
+    ACCIDENT = 2             # 事故
+    CONTROL = 3               # 管制
+
+
+class WeatherExtensions(str, Enum):
+    BASE = "base"            # 实时天气
+    ALL = "all"              # 包含预报
 
 
 # =============================================================================
