@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 GeoAgent 动态工具检索引擎 (Tool RAG)
 ======================================
@@ -142,14 +143,274 @@ _TOOL_CATEGORIES = {
 }
 
 # 40+ 工具的结构化描述（手动编写，保证检索质量）
+# 方案二：为每个核心工具添加【适用场景】和触发关键词，增强检索命中率
 _TOOL_DESCRIPTIONS: List[ToolEntry] = [
-    # ===== ① 矢量工具 =====
+    # ===== ① 路径规划/路由工具（最高频） =====
+    ToolEntry(
+        tool_name="osmnx_routing",
+        description="【适用场景】当用户询问「怎么走」「最短路径」「路线规划」「从A到B」、"
+                    "「步行导航」「驾车路线」「骑行路线」「两地之间的距离」「这条路多长」时，"
+                    "必须调用此工具。【触发关键词】路径、route、步行、导航、最短、drive、walk、bike、骑行、驾车、"
+                    "从...到...、origin、destination、路径规划、导航路线。输入城市名(city_name)和起点终点地址，"
+                    "自动抓取 OpenStreetMap 路网并计算最短路径，输出交互式 HTML 地图。",
+        category="路径规划",
+        keywords=["路径", "route", "步行", "导航", "最短", "drive", "walk", "bike", "骑行", "驾车",
+                  "从A到B", "最短路径", "导航路线", "origin", "destination", "osm", "路网", "route planning"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="amap",
+        description="【适用场景】当用户需要使用国内高德地图进行路径规划、地理编码、地点搜索、"
+                    "行政区查询、公交/驾车路线规划时调用。【触发关键词】高德、amap、地理编码、地点搜索、"
+                    "坐标转换、国内地图。【说明】osmnx_routing 失败时自动降级至此工具。使用 action 参数指定操作类型。",
+        category="路径规划",
+        keywords=["高德", "amap", "地理编码", "地点搜索", "行政区", "公交路线", "驾车路线", "国内地图", "地址解析"],
+        schema={},
+    ),
+    # ===== ② 矢量数据处理工具 =====
+    ToolEntry(
+        tool_name="get_data_info",
+        description="【适用场景】当用户提供了一个文件名（如 .shp/.geojson/.gpkg/.json），"
+                    "需要了解该文件的结构、字段、坐标系统、数据量等元信息时调用。【触发关键词】数据信息、"
+                    "元数据、metadata、info、数据格式、数据结构、字段列表、crs、坐标系统。",
+        category="矢量数据",
+        keywords=["info", "元数据", "metadata", "数据信息", "字段", "结构", "crs", "坐标系统", "数据格式", "shapefile", "geojson"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="run_python_code",
+        description="【适用场景】当没有现成工具能满足需求，需要用 Python 代码自由操作地理数据时调用。"
+                    "支持 pandas/geopandas/matplotlib/folium 等所有 Python 库。【触发关键词】python、"
+                    "自定义代码、自由操作、数据处理。可执行任意 GIS 操作。",
+        category="通用工具",
+        keywords=["python", "自定义", "code", "脚本", "pandas", "geopandas", "numpy", "自由操作", "数据分析"],
+        schema={},
+    ),
+    # ===== ③ 栅格/遥感数据处理工具 =====
+    ToolEntry(
+        tool_name="get_raster_metadata",
+        description="【适用场景】当用户提供遥感影像文件（如 .tif/.tiff），需要获取其波段数、分辨率、"
+                    "坐标系统、NoData 值等元信息时调用。【触发关键词】raster、元数据、metadata、"
+                    "波段信息、影像信息、geoTIFF、Sentinel、Landsat、卫星影像。",
+        category="栅格处理",
+        keywords=["raster", "元数据", "metadata", "遥感", "波段", "geoTIFF", "Sentinel", "Landsat", "卫星影像", "tiff"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="calculate_raster_index",
+        description="【适用场景】当用户需要计算遥感指数（如 NDVI、NDWI、EVI）或进行波段数学运算时调用。"
+                    "【触发关键词】NDVI、植被指数、水体指数、NDWI、EVI、波段运算、band math、"
+                    "指数计算。(b4-b3)/(b4+b3) 自动识别为 NDVI。输出栅格文件。",
+        category="栅格处理",
+        keywords=["ndvi", "ndwi", "evi", "植被指数", "水体指数", "波段运算", "band math", "index", "遥感指数", "计算指数"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="run_gdal_algorithm",
+        description="【适用场景】当需要进行 GDAL 底层地理处理（如投影转换、栅格裁剪、重采样、格式转换）时调用。"
+                    "【触发关键词】GDAL、投影转换、重投影、重采样、裁剪、转格式、warp、translate。"
+                    "支持所有 GDAL 支持的栅格格式。",
+        category="栅格处理",
+        keywords=["gdal", "投影转换", "重采样", "裁剪", "转格式", "warp", "translate", "resample", "reproject"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="compute_all_vegetation_indices",
+        description="【适用场景】当用户需要一次性计算多种植被指数（如 NDVI、NDWI、EVI、SAVI、MSI）时调用。"
+                    "【触发关键词】所有植被指数、批量计算指数、NDVI、NDWI、SAVI、MSI、CIgreen。",
+        category="栅格处理",
+        keywords=["vegetation indices", "植被指数", "批量计算", "ndvi", "ndwi", "evi", "savi", "msi", "所有指数"],
+        schema={},
+    ),
+    # ===== ④ ArcGIS Online 数据访问工具 =====
+    ToolEntry(
+        tool_name="search_online_data",
+        description="【适用场景】当用户需要从 ArcGIS Online 搜索公开的 GIS 数据服务（Feature Layer、"
+                    "Map Service、Image Service）时调用。【触发关键词】ArcGIS、搜索数据、"
+                    "online data、feature layer、map service、公开数据、国土数据。",
+        category="在线数据",
+        keywords=["arcgis", "online", "搜索", "feature layer", "map service", "公开数据", "搜索数据", "国土"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="access_layer_info",
+        description="【适用场景】当用户提供了一个 ArcGIS 服务 URL，需要查看该服务的元信息、"
+                    "字段结构、空间范围时调用。【触发关键词】layer info、图层信息、"
+                    "服务元数据、FeatureServer、MapServer。",
+        category="在线数据",
+        keywords=["layer info", "图层信息", "服务元数据", "FeatureServer", "MapServer", "ArcGIS URL", "layer metadata"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="download_features",
+        description="【适用场景】当用户需要从 ArcGIS 服务下载矢量要素数据为本地文件时调用。"
+                    "【触发关键词】下载数据、download、导出要素、导出 geojson、要素下载。",
+        category="在线数据",
+        keywords=["下载", "download", "导出", "要素下载", "export features", "geojson download"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="query_features",
+        description="【适用场景】当用户需要对 ArcGIS 服务执行属性查询或空间查询，按条件筛选要素时调用。"
+                    "【触发关键词】query、查询、筛选、SQL查询、属性查询、where、filter。",
+        category="在线数据",
+        keywords=["query", "查询", "筛选", "SQL", "where", "filter", "属性查询", "空间查询"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="get_layer_statistics",
+        description="【适用场景】当用户需要统计 ArcGIS 矢量图层的某数值字段的统计信息（min/max/mean/std）时调用。"
+                    "【触发关键词】统计、statistics、字段统计、数值统计、聚合统计。",
+        category="在线数据",
+        keywords=["统计", "statistics", "字段统计", "数值统计", "聚合", "summary", "statistical analysis"],
+        schema={},
+    ),
+    # ===== ⑤ 空间分析工具 =====
+    ToolEntry(
+        tool_name="geospatial_hotspot_analysis",
+        description="【适用场景】当用户需要识别地理数据的热点（高值聚集）或冷点（低值聚集）区域时调用。"
+                    "【触发关键词】热点分析、hotspot、Getis-Ord Gi*、冷点、空间聚集、犯罪热点、"
+                    "疾病聚集、高值聚集、低值聚集。【输出】带 Z 得分的新 GeoJSON 文件。",
+        category="空间分析",
+        keywords=["hotspot", "热点", "冷点", "Gi*", "getis", "ord", "cluster", "聚集", "空间聚集", "犯罪热点", "疾病聚集"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="spatial_autocorrelation",
+        description="【适用场景】当用户需要检验地理数据的整体空间自相关程度时调用。"
+                    "【触发关键词】莫兰指数、Morans I、自相关、spatial autocorrelation、"
+                    "聚集还是分散、空间模式。【输出】Moran's I 值和 p 值。",
+        category="空间分析",
+        keywords=["moran", "莫兰指数", "自相关", "spatial autocorrelation", "聚集", "分散", "esda", "global spatial autocorrelation"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="facility_accessibility",
+        description="【适用场景】当用户需要分析公共服务设施（医院、学校、超市）的空间可达性，"
+                    "即从每个居民点到最近设施的时间或距离时调用。【触发关键词】可达性、accessibility、"
+                    "服务半径、设施可达性、最近设施。【输出】带可达性得分的新 GeoJSON。",
+        category="空间分析",
+        keywords=["可达性", "accessibility", "服务半径", "设施可达性", "最近设施", "travel time", "缓冲区", "facility"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="multi_criteria_site_selection",
+        description="【适用场景】当用户需要基于多个准则（POI密度、道路可达性、绿地率等）对城市地块"
+                    "进行综合选址分析时调用。【触发关键词】选址、site selection、MCDA、多准则决策、"
+                    "候选地点、权重。【输出】各地块综合得分和排序。",
+        category="空间分析",
+        keywords=["选址", "site selection", "mcda", "多准则", "候选地点", "权重", "综合得分", "智能选址", "site selection mcda"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="terrain_analysis",
+        description="【适用场景】当用户需要从 DEM（数字高程模型）提取地形信息时调用。"
+                    "【触发关键词】地形分析、DEM、坡度、坡向、山体阴影、水文分析、流域。"
+                    "支持 slope（坡度）、aspect（坡向）、hillshade（山体阴影）等分析。",
+        category="地形分析",
+        keywords=["terrain", "dem", "坡度", "坡向", "hillshade", "山体阴影", "地形", "水文", "流域", "slope", "aspect"],
+        schema={},
+    ),
+    # ===== ⑥ 可视化工具 =====
+    ToolEntry(
+        tool_name="render_3d_map",
+        description="【适用场景】当用户需要生成建筑物的三维可视化地图、3D 柱状图、热力立体图时调用。"
+                    "【触发关键词】3D地图、3D、pydeck、热力图、立体可视化、建筑高度、3D visualization、"
+                    "column layer、elevation。【输出】交互式 HTML 地图，支持鼠标旋转缩放。",
+        category="可视化",
+        keywords=["3d", "pydeck", "热力图", "3D地图", "立体可视化", "building height", "column", "elevation", "render_3d", "visualization"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="render_accessibility_map",
+        description="【适用场景】当用户需要将设施可达性分析结果渲染成交互式 3D 热力地图时调用。"
+                    "【触发关键词】可达性可视化、accessibility map、3D热力、设施可视化。"
+                    "【输入】通常是 facility_accessibility 工具的输出文件。",
+        category="可视化",
+        keywords=["可达性可视化", "accessibility map", "3D热力", "设施可视化", "accessibility visualization"],
+        schema={},
+    ),
+    # ===== ⑦ STAC/卫星影像工具 =====
+    ToolEntry(
+        tool_name="search_stac_imagery",
+        description="【适用场景】当用户需要从 STAC（空间Temporal Asset Catalog）搜索卫星影像时调用。"
+                    "【触发关键词】STAC、Sentinel、Landsat、卫星影像、search imagery、cloud cover、"
+                    "时间范围、云量过滤。【输出】符合条件的多景卫星影像元数据。",
+        category="遥感影像",
+        keywords=["stac", "sentinel", "landsat", "卫星影像", "imagery", "cloud cover", "search imagery", "遥感"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="search_stac",
+        description="【适用场景】从 STAC API 搜索特定区域和时间范围的卫星影像元数据，"
+                    "支持 Sentinel-2、Landsat 等主流卫星。【触发关键词】搜索卫星、"
+                    "STAC search、影像检索、时间筛选、云量筛选。",
+        category="遥感影像",
+        keywords=["stac", "search", "sentinel", "landsat", "卫星影像", "imagenary search", "bbox", "cloud cover"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="stac_to_visualization",
+        description="【适用场景】当用户需要将 STAC 搜索到的卫星影像波段组合渲染为自然色、"
+                    "假彩色等可视化图像时调用。【触发关键词】卫星可视化、波段组合、自然色、"
+                    "假彩色、stac visualization、Sentinel-2、Landsat。【输出】PNG 或 HTML 图像。",
+        category="遥感影像",
+        keywords=["stac visualization", "波段组合", "自然色", "假彩色", "render satellite", "Sentinel", "Landsat", "compositing"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="read_cog_remote",
+        description="【适用场景】当用户提供了一个 COG（Cloud Optimized GeoTIFF）URL，需要远程读取"
+                    "其元数据或截取子区域数据时调用。【触发关键词】COG、cloud optimized、"
+                    "远程读取、GeoTIFF URL。【说明】无需下载完整文件。",
+        category="栅格处理",
+        keywords=["cog", "cloud optimized", "geotiff url", "远程读取", "remote read", "url raster"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="geotiff_to_cog",
+        description="【适用场景】当用户需要将普通 GeoTIFF 文件转换为 COG（Cloud Optimized GeoTIFF）格式，"
+                    "以便高效远程访问时调用。【触发关键词】转COG、geotiff to cog、"
+                    "cloud optimized、格式转换。【输出】LZW 压缩的 COG。",
+        category="栅格处理",
+        keywords=["geotiff to cog", "cog转换", "cloud optimized", "格式转换", "compression", "lzw"],
+        schema={},
+    ),
+    # ===== ⑧ 矢量格式转换工具 =====
+    ToolEntry(
+        tool_name="vector_to_geoparquet",
+        description="【适用场景】当用户需要将 Shapefile/GeoJSON 等矢量格式转换为 Apache Parquet 列式存储格式，"
+                    "以便在大数据分析环境（Spark/Dask）中高效处理时调用。【触发关键词】Parquet、"
+                    "GeoParquet、列式存储、矢量转换。【说明】比 Shapefile 轻量且支持嵌套字段。",
+        category="数据格式",
+        keywords=["parquet", "geoparquet", "列式存储", "矢量转换", "格式转换", "shapefile to parquet", "apache arrow"],
+        schema={},
+    ),
+    # ===== ⑨ 网络搜索工具 =====
+    ToolEntry(
+        tool_name="deepseek_search",
+        description="【适用场景】当用户需要搜索最新的 GIS 领域新闻、技术文档或网络资源时调用。"
+                    "【触发关键词】search、搜索、news、最新、deepseek search、ddgs。"
+                    "【说明】支持 DuckDuckGo 搜索，返回标题/摘要/URL 列表。",
+        category="搜索工具",
+        keywords=["search", "搜索", "news", "最新资讯", "deepseek search", "ddgs", "网络检索"],
+        schema={},
+    ),
+    ToolEntry(
+        tool_name="search_gis_knowledge",
+        description="【适用场景】当用户需要从本地 GIS 知识库检索相关概念、技术文档或操作指南时调用。"
+                    "【触发关键词】知识库检索、GIS概念、技术文档、操作指南。【说明】先于网络搜索。",
+        category="搜索工具",
+        keywords=["知识库", "gis knowledge", "技术文档", "概念检索", "操作指南", "search knowledge"],
+        schema={},
+    ),
+    # ===== ⑩ 其他 GIS 工具（保留原有） =====
     ToolEntry(
         tool_name="vector_buffer",
         description="创建缓冲区（点/线/面周围按固定距离扩展），对应 ArcGIS Buffer。输入矢量文件和距离（米），输出缓冲后的矢量面。用于道路拓宽、设施服务区分析。",
         category="矢量处理",
         keywords=["buffer", "缓冲区", "缓冲", "扩张", "服务区", "周边"],
-        schema={},  # 动态从 gis_task_tools 填充
+        schema={},
     ),
     ToolEntry(
         tool_name="vector_clip",
@@ -200,7 +461,7 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         keywords=["erase", "擦除", "差集", "difference"],
         schema={},
     ),
-    # ===== ② 栅格工具 =====
+    # 栅格工具
     ToolEntry(
         tool_name="raster_clip",
         description="按矢量面或矩形范围裁剪栅格，对应 ArcGIS Extract by Mask。用于从大范围影像中提取子区域。",
@@ -212,28 +473,21 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         tool_name="raster_mosaic",
         description="拼接多个相邻栅格影像为一张，对应 ArcGIS Mosaic。用于将分景卫星影像拼接为完整区域。",
         category="栅格处理",
-        keywords=["mosaic", "镶嵌", "拼接", "merge", "拼接"],
+        keywords=["mosaic", "镶嵌", "拼接", "merge"],
         schema={},
     ),
     ToolEntry(
         tool_name="raster_resample",
         description="改变栅格像元大小（分辨率），对应 ArcGIS Resample。如将 30m 重采样为 100m 以加快计算。",
         category="栅格处理",
-        keywords=["resample", "重采样", "分辨率", "像元大小", "downsample"],
+        keywords=["resample", "重采样", "分辨率", "像元大小"],
         schema={},
     ),
     ToolEntry(
         tool_name="raster_reproject",
         description="栅格投影转换，对应 ArcGIS Project Raster。如从地理坐标系 EPSG:4326 转换到投影坐标系 EPSG:32650。",
         category="栅格处理",
-        keywords=["reproject", "投影转换", "crs", "坐标转换", "t_srs"],
-        schema={},
-    ),
-    ToolEntry(
-        tool_name="raster_calculate_index",
-        description="波段数学运算计算植被/水体指数（NDVI/NDWI/EVI等），对应 ArcGIS Raster Calculator。支持 b1,b2,... 引用波段，自动处理 nodata。",
-        category="栅格处理",
-        keywords=["ndvi", "ndwi", "evi", "植被指数", "水体指数", "波段运算", "band math", "index"],
+        keywords=["reproject", "投影转换", "crs", "坐标转换"],
         schema={},
     ),
     ToolEntry(
@@ -261,7 +515,7 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         tool_name="raster_hillshade",
         description="生成 DEM 山体阴影图，用于增强地形立体感，对应 ArcGIS Hillshade。支持自定义光源方位角和高度角。",
         category="地形分析",
-        keywords=["hillshade", "山体阴影", "阴影", "shading", "阴影图"],
+        keywords=["hillshade", "山体阴影", "阴影", "shading"],
         schema={},
     ),
     ToolEntry(
@@ -278,12 +532,12 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         keywords=["statistics", "统计", "直方图", "histogram", "元数据"],
         schema={},
     ),
-    # ===== ③ 空间分析工具 =====
+    # 空间分析
     ToolEntry(
         tool_name="spatial_hotspot",
         description="Getis-Ord Gi* 热点分析，识别高值或低值聚集区，对应 ArcGIS Hot Spot Analysis。输出每个要素的 Z 得分，|Z|>1.96 为显著热点/冷点。",
         category="空间分析",
-        keywords=["hotspot", "热点", "聚集", "Gi*", "getis", "ord", "冷点", "cluster"],
+        keywords=["hotspot", "热点", "聚集", "Gi*", "getis", "冷点", "cluster"],
         schema={},
     ),
     ToolEntry(
@@ -304,14 +558,14 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         tool_name="spatial_zonal_stats",
         description="分区统计，计算各区域（如行政区划）内栅格的值统计量，对应 ArcGIS Zonal Statistics。如计算每个县的平均海拔。",
         category="空间分析",
-        keywords=["zonal", "分区统计", "区域统计", "分县统计", "统计"],
+        keywords=["zonal", "分区统计", "区域统计", "分县统计"],
         schema={},
     ),
     ToolEntry(
         tool_name="hydrology_watershed",
         description="流域/汇水区划分，对应 ArcGIS Watershed。基于流向栅格和倾泻点，确定每个汇水区的边界。",
         category="水文分析",
-        keywords=["watershed", "流域", "汇水区", "汇流", "catchment", "delineation", "水文"],
+        keywords=["watershed", "流域", "汇水区", "汇流", "catchment", "水文"],
         schema={},
     ),
     ToolEntry(
@@ -321,14 +575,7 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         keywords=["flow accumulation", "汇流累积", "流向", "stream", "河流", "河道提取"],
         schema={},
     ),
-    ToolEntry(
-        tool_name="terrain_slope_aspect",
-        description="一次性提取 DEM 的坡度和坡向，对应 ArcGIS Slope + Aspect。底层: WhiteboxTools（高精度）。",
-        category="地形分析",
-        keywords=["slope", "aspect", "坡度", "坡向", "terrain", "dem"],
-        schema={},
-    ),
-    # ===== ④ 坐标系统工具 =====
+    # 坐标系统
     ToolEntry(
         tool_name="crs_define",
         description="给无坐标系信息的矢量/栅格文件定义坐标系，对应 ArcGIS Define Projection。不转换数据，只标注 CRS。",
@@ -350,14 +597,7 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         keywords=["coordinate", "坐标转换", "proj", "transform", "经纬度"],
         schema={},
     ),
-    ToolEntry(
-        tool_name="crs_query",
-        description="查询 EPSG 坐标系元数据（名称、类型、投影参数、WKT），辅助选择正确的坐标系。",
-        category="坐标系统",
-        keywords=["epsg", "crs query", "坐标系查询", "srid"],
-        schema={},
-    ),
-    # ===== ⑤ 地图可视化工具 =====
+    # 可视化
     ToolEntry(
         tool_name="map_folium_interactive",
         description="生成交互式 HTML Web 地图，对应 ArcGIS Map Viewer。支持多图层切换、热力图、分级色彩图、量测控件。",
@@ -379,14 +619,7 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         keywords=["raster plot", "影像渲染", "imshow", "色带", "stretch"],
         schema={},
     ),
-    ToolEntry(
-        tool_name="map_multi_layer",
-        description="多图层叠加渲染到一张 Matplotlib 静态图，适合对比分析多个矢量图层。",
-        category="地图可视化",
-        keywords=["multi-layer", "多图层", "叠加渲染", "overlay"],
-        schema={},
-    ),
-    # ===== ⑥ 数据库操作工具 =====
+    # 数据库
     ToolEntry(
         tool_name="db_convert_format",
         description="矢量格式互转（Shapefile↔GeoJSON↔GPKG），对应 ArcGIS Feature Class to Feature Class。",
@@ -406,27 +639,6 @@ _TOOL_DESCRIPTIONS: List[ToolEntry] = [
         description="将矢量文件写入 PostGIS 数据库，对应 ArcGIS Feature Class to Geodatabase。",
         category="数据库操作",
         keywords=["postgis", "postgresql", "写入数据库", "write db"],
-        schema={},
-    ),
-    ToolEntry(
-        tool_name="db_geojson_to_features",
-        description="GeoJSON 与各矢量格式（Shapefile/GPKG）互转，对应 ArcGIS JSON to Features。",
-        category="数据库操作",
-        keywords=["geojson", "json", "feature", "格式转换"],
-        schema={},
-    ),
-    ToolEntry(
-        tool_name="db_kml_to_features",
-        description="KML/GML 转换为 Shapefile，对应 ArcGIS KML to Layer。底层 GDAL ogr2ogr。",
-        category="数据库操作",
-        keywords=["kml", "gml", "转换", "google earth", "ogr"],
-        schema={},
-    ),
-    ToolEntry(
-        tool_name="db_batch_convert",
-        description="批量将文件夹内所有矢量文件转换为目标格式，提高数据预处理效率。",
-        category="数据库操作",
-        keywords=["batch", "批量", "批量转换", "batch convert"],
         schema={},
     ),
 ]

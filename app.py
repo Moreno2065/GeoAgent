@@ -575,7 +575,11 @@ def _render_sidebar():
         else:
             st.caption("暂无文件")
 
-        uploaded = st.file_uploader("📁 上传 GIS 数据", accept_multiple_files=True)
+        uploaded = st.file_uploader(
+            "📁 上传 GIS 数据",
+            type=["shp", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
+            accept_multiple_files=True,
+        )
         if uploaded:
             new_uploads = 0
             for f in uploaded:
@@ -586,6 +590,7 @@ def _render_sidebar():
             if new_uploads > 0:
                 st.success(f"✅ {new_uploads} 个文件已写入工作区！")
                 st.cache_data.clear()
+                st.rerun()  # 🌟 新增：强制刷新，让页面立刻重新执行一遍获取最新状态！
             else:
                 st.info(f"ℹ️ {len(uploaded)} 个文件已在工作区就绪。")
 
@@ -1399,7 +1404,7 @@ def _handle_user_message(prompt: str, agent):
         prompt = prompt + injected_ctx
         st.session_state["pending_click"] = None
 
-    user_msg_id = f"user_{uuid.uuid4().hex[:8]}"
+    user_msg_id = f"user_{hash(prompt) & 0x7FFFFFFF}"
     st.session_state["conversations"][cid]["messages"].append({
         "role": "user",
         "content": prompt,
@@ -1585,7 +1590,7 @@ def _handle_user_message(prompt: str, agent):
             node = stream_state.get("current_node", "")
             _log("info", f"🏁 执行完成 — {node.replace('**', '')}" if node else "🏁 执行完成")
 
-        asst_msg_id = f"asst_{uuid.uuid4().hex[:8]}"
+        asst_msg_id = f"asst_{hash((cid, final_content[:80])) & 0x7FFFFFFF}"
         st.session_state["conversations"][cid]["messages"].append({
             "role": "assistant",
             "content": final_content,
@@ -1608,6 +1613,10 @@ def _handle_user_message(prompt: str, agent):
                 )
                 _render_html_map_inline(str(latest_map), height=760)
                 _update_kpi_from_tool_results(stream_state["tools"])
+
+        # rerun 前强制重置 LLM 状态灯，避免假死
+        st.session_state["llm_status"] = "idle"
+        st.session_state["llm_current_node"] = ""
 
         st.rerun()
 

@@ -426,6 +426,7 @@ class GeoAgent:
         self.stats = {"total_turns": 0, "tool_calls": 0, "errors": 0}
         self._load_history()
         self._stop_event = threading.Event()
+        self._workflow_instance = None  # 持久化 workflow 实例，保留 Checkpointer 记忆
 
     # ── API Key 持久化 ──────────────────────────────────────────────────────
 
@@ -620,14 +621,15 @@ class GeoAgent:
         """
         try:
             from geoagent.workflow import GeoAgentWorkflow
-            wf = GeoAgentWorkflow(
-                api_key=self.api_key,
-                model=self.model,
-                base_url=self.base_url,
-                max_steps=max_steps,
-                max_retries=max_retries,
-            )
-            for event in wf.run_stream(user_input, event_callback, thread_id):
+            if self._workflow_instance is None:
+                self._workflow_instance = GeoAgentWorkflow(
+                    api_key=self.api_key,
+                    model=self.model,
+                    base_url=self.base_url,
+                    max_steps=max_steps,
+                    max_retries=max_retries,
+                )
+            for event in self._workflow_instance.run_stream(user_input, event_callback, thread_id):
                 yield event
         except ImportError:
             yield {"event": "error", "payload": {"error": "langgraph 未安装，请运行: pip install langgraph"}}

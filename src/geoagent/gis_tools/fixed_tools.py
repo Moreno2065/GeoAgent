@@ -1,4 +1,4 @@
-﻿"""
+"""
 固化的高频 GIS 基础工具
 """
 
@@ -23,7 +23,7 @@ except ImportError:
 
 def get_workspace_dir() -> Path:
     """获取 workspace 目录路径"""
-    return Path(__file__).parent.parent.parent / "workspace"
+    return Path(__file__).resolve().parents[3] / "workspace"
 
 
 def get_data_info(file_name: str) -> str:
