@@ -293,6 +293,8 @@ class ParameterExtractor:
     def extract_file_references(self, query: str) -> List[str]:
         """🚀 终极文件提取器：自动剥离介词，精准提取文件名"""
         references = []
+        
+        # ── 模式1：标准 GIS 扩展名匹配 ────────────────────────────────
         for ext in self.GIS_EXTENSIONS:
             if ext.lower() not in query.lower():
                 continue
@@ -305,7 +307,31 @@ class ParameterExtractor:
             for m in matches:
                 if len(m) > 3:  # 过滤掉太短的错误匹配
                     references.append(m.strip())
-                    
+        
+        # ── 模式2：中文名 + 文件类型词（shp/SHP/图层/数据）──────────────
+        # 处理 "土地利用点 shp" / "道路线 shp" / "河流数据 shp" 等情况
+        gis_type_patterns = [
+            r"(?:给|对|以|把|为)\s*([^\s,，。、]+?(?:点|线|面|区|数据|图层|文件))\s*(?:shp|SHP|\.shp)?",  # 介词 + 名称 + shp
+            r"([^\s,，。、]+?(?:点|线|面|区|数据|图层|文件))\s*(?:shp|SHP)",  # 名称 + shp（不带扩展名）
+        ]
+        
+        for pattern in gis_type_patterns:
+            matches = re.findall(pattern, query, re.IGNORECASE)
+            for m in matches:
+                # 清理可能的垃圾词
+                cleaned = m.strip()
+                
+                # 🛡️ 过滤掉开头的介词（如"给土地利用点" -> "土地利用点"）
+                prepositions = ['给', '对', '以', '把', '为']
+                for prep in prepositions:
+                    if cleaned.startswith(prep):
+                        cleaned = cleaned[len(prep):].strip()
+                
+                if any(bad in cleaned.lower() for bad in ["缓冲", "半径", "距离", "增加", "生成", "分析"]):
+                    continue
+                if len(cleaned) >= 3:
+                    references.append(cleaned)
+        
         return list(set(references))
 
     def extract_value_field(self, query: str) -> Optional[str]:
@@ -409,17 +435,32 @@ class ParameterExtractor:
     def _extract_entity_name(self, query: str) -> Optional[str]:
         """🛡️ 实体兜底提取：增加硬过滤"""
         patterns = [
-            r"(?:在|对|以|给)\s*([^\s,，。、]+?)\s*(?:周边|附近|方圆|做|进行)",
+            r"(?:在|对|以|给)\s*([^\s,，。、]+?)\s*(?:周边|附近|方圆|做|进行|缓冲|分析)",
             r"([^\s,，。、]+?)\s*(?:周边|附近|方圆|周围)",
-            r"(?:分析|缓冲|找)\s*(?!半径|距离|范围|大小)([^\s,，。、]+)",
+            r"(?:分析|缓冲|找)\s*(?!半径|距离|米|m|buffer)([^\s,，。、]+)",
+            # 🆕 新增：匹配 "xxx shp" / "xxx.shp" / "土地利用 shp" 等 GIS 文件描述
+            r"(?:给|对|以|把)\s*([^\s,，。、]+?)\s*(?:shp|SHP|\.shp)\s*(?:这个)?(?:文件|图层|数据)?",
+            r"([^\s,，。、]+?)\s*(?:shp|SHP)(?![a-zA-Z0-9])",  # 不跟字母数字的 shp
+            # 🆕 新增：匹配 "土地利用点 shp" 这类中文名 + 文件类型词
+            r"([^\s,，。、]+?(?:点|线|面|区|数据|图层|文件))\s*(?:shp|SHP|\.shp)?",
         ]
         for pattern in patterns:
-            match = re.search(pattern, query)
+            match = re.search(pattern, query, re.IGNORECASE)
             if match:
                 entity = match.group(1).strip()
                 
+                # 🛡️ 清理开头的介词（如"给土地利用点" -> "土地利用点"）
+                prepositions = ['给', '对', '以', '把', '为']
+                for prep in prepositions:
+                    if entity.startswith(prep):
+                        entity = entity[len(prep):].strip()
+                
                 # 🛡️ 终极硬过滤：如果提取出来的词包含以下任何垃圾词，直接扔掉！
-                if any(bad in entity for bad in ["半径", "距离", "米", "m", "buffer", "缓冲"]):
+                if any(bad in entity.lower() for bad in ["半径", "距离", "米", "m", "buffer", "缓冲", "分析"]):
+                    continue
+                    
+                # 🛡️ 过滤掉太短的匹配
+                if len(entity) < 2:
                     continue
                     
                 return entity

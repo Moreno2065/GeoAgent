@@ -16,17 +16,56 @@ Reasoner - 被锁死的 NL→DSL 编译器
 
 不使用时（推荐 MVP）：
   Layer 3 直接从 extracted_params 构建 DSL，完全不用 LLM。
+
+支持模型：
+  - DeepSeek: deepseek-reasoner (默认), deepseek-chat, deepseek-v3
+  - GLM: glm-4, glm-4-plus, glm-4-flash
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
 from geoagent.layers.architecture import Scenario
+
+
+# =============================================================================
+# 模型配置
+# =============================================================================
+
+REASONER_MODELS = {
+    # DeepSeek
+    "deepseek-reasoner": {
+        "base_url": "https://api.deepseek.com",
+        "description": "DeepSeek Reasoner - 推理模型，推荐用于复杂任务",
+    },
+    "deepseek-chat": {
+        "base_url": "https://api.deepseek.com",
+        "description": "DeepSeek Chat - 通用对话",
+    },
+    "deepseek-v3": {
+        "base_url": "https://api.deepseek.com",
+        "description": "DeepSeek V3 - 最新模型",
+    },
+    # GLM
+    "glm-4": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "description": "GLM-4 - 中文理解强",
+    },
+    "glm-4-plus": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "description": "GLM-4 Plus - 增强版",
+    },
+    "glm-4-flash": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "description": "GLM-4 Flash - 快速版",
+    },
+}
 
 
 # =============================================================================
@@ -115,7 +154,7 @@ class ReasonerError(Exception):
 
 class GeoAgentReasoner:
     """
-    NL → GeoDSL 编译器（DeepSeek Reasoner 模型驱动）
+    NL → GeoDSL 编译器（支持 DeepSeek / GLM 多模型）
 
     特征：
     - 纯翻译：NL → GeoDSL，无任何决策逻辑
@@ -124,9 +163,13 @@ class GeoAgentReasoner:
     - 透明：LLM 只做翻译，执行层完全确定性
 
     使用方式：
+        # DeepSeek Reasoner
         reasoner = GeoAgentReasoner(api_key="sk-...", model="deepseek-reasoner")
         dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
-        dsl = GeoDSL(**dsl_dict)
+
+        # GLM
+        reasoner = GeoAgentReasoner(api_key="glm-xxx", model="glm-4")
+        dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
     """
 
     # Re-generate if output is not valid JSON
@@ -135,8 +178,8 @@ class GeoAgentReasoner:
     def __init__(
         self,
         api_key: str,
-        model: str = "deepseek-r1",
-        base_url: str = "https://api.deepseek.com",
+        model: str = "deepseek-reasoner",
+        base_url: Optional[str] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         temperature: float = 0.0,
     ):
@@ -145,6 +188,13 @@ class GeoAgentReasoner:
 
         self.api_key = api_key
         self.model = model
+
+        # 自动选择 base_url
+        if base_url is None:
+            base_url = REASONER_MODELS.get(model, {}).get("base_url")
+            if base_url is None:
+                base_url = "https://api.deepseek.com"
+
         self.base_url = base_url
         self.max_retries = max_retries
         self.temperature = temperature
@@ -262,12 +312,20 @@ _reasoner: Optional[GeoAgentReasoner] = None
 
 def get_reasoner(
     api_key: Optional[str] = None,
-    model: str = "deepseek-r1",
-    base_url: str = "https://api.deepseek.com",
+    model: str = "deepseek-reasoner",
+    base_url: Optional[str] = None,
     temperature: float = 0.0,
 ) -> GeoAgentReasoner:
     """
     获取全局 Reasoner 单例（线程不安全，仅用于单线程场景）。
+
+    支持 DeepSeek / GLM 双模型：
+
+        # DeepSeek Reasoner（默认）
+        reasoner = get_reasoner(api_key="sk-...")
+
+        # GLM
+        reasoner = get_reasoner(api_key="glm-xxx", model="glm-4")
 
     建议每次请求创建新实例或使用依赖注入。
     """
@@ -277,6 +335,13 @@ def get_reasoner(
             api_key = _load_api_key()
         if not api_key:
             raise ValueError("需要 API Key 或设置 DEEPSEEK_API_KEY 环境变量")
+
+        # 自动选择 base_url
+        if base_url is None:
+            base_url = REASONER_MODELS.get(model, {}).get("base_url")
+            if base_url is None:
+                base_url = "https://api.deepseek.com"
+
         _reasoner = GeoAgentReasoner(
             api_key=api_key,
             model=model,
@@ -310,10 +375,18 @@ def translate_with_reasoner(
     user_input: str,
     scenario: Optional[Scenario] = None,
     api_key: Optional[str] = None,
-    model: str = "deepseek-r1",
+    model: str = "deepseek-reasoner",
 ) -> Dict[str, Any]:
     """
     便捷函数：单次翻译
+
+    支持 DeepSeek / GLM：
+
+        # DeepSeek
+        dsl = translate_with_reasoner("芜湖南站到方特", model="deepseek-reasoner")
+
+        # GLM
+        dsl = translate_with_reasoner("芜湖南站到方特", model="glm-4", api_key="glm-xxx")
 
     Args:
         user_input: 自然语言

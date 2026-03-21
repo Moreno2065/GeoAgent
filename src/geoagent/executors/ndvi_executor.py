@@ -76,7 +76,7 @@ class NdviExecutor(BaseExecutor):
     def _resolve_output(self, index: str, output_file: Optional[str]) -> str:
         if output_file:
             return self._resolve_path(output_file)
-        return self._resolve_path(f"workspace/{index.upper()}.tif")
+        return self._resolve_path(f"{index.upper()}.tif")
 
     def _get_band_expr(self, task: Dict[str, Any]) -> tuple[str, str]:
         """获取波段表达式"""

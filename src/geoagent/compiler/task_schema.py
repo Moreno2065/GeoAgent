@@ -33,6 +33,21 @@ class TaskType(str, Enum):
     SUITABILITY = "suitability"
     VIEWSHED = "viewshed"
     GENERAL = "general"
+    # 🟢 高德基础服务
+    GEOCODE = "geocode"
+    REGEOCODE = "regeocode"
+    DISTRICT = "district"
+    STATIC_MAP = "static_map"
+    COORD_CONVERT = "coord_convert"
+    GRASP_ROAD = "grasp_road"
+    # 🔵 高德高级服务
+    POI_SEARCH = "poi_search"
+    INPUT_TIPS = "input_tips"
+    TRAFFIC_STATUS = "traffic_status"
+    TRAFFIC_EVENTS = "traffic_events"
+    TRANSIT_INFO = "transit_info"
+    IP_LOCATION = "ip_location"
+    WEATHER = "weather"
 
     @classmethod
     def values(cls) -> list[str]:
@@ -526,6 +541,246 @@ class ViewshedTask(BaseTask):
 
 
 # =============================================================================
+# 🟢 高德基础 Web 服务任务模型
+# =============================================================================
+
+class GeocodeTask(BaseTask):
+    """
+    地理编码任务：将结构化地址转换为经纬度坐标。
+
+    示例：
+        NL: "将北京市朝阳区阜通东大街6号转换为坐标"
+        Task: GeocodeTask(task="geocode", address="北京市朝阳区阜通东大街6号")
+    """
+    task: Literal["geocode"] = "geocode"
+    address: str = Field(description="结构化地址，如 '北京市朝阳区阜通东大街6号'")
+    city: Optional[str] = Field(default=None, description="指定查询的城市（城市名/citycode/adcode）")
+    batch: bool = Field(default=False, description="是否批量查询，多个地址用 '|' 分割")
+
+
+class RegeocodeTask(BaseTask):
+    """
+    逆地理编码任务：将经纬度坐标转换为详细结构化地址。
+
+    示例：
+        NL: "查询坐标 116.45,39.93 附近 1000 米内的地址"
+        Task: RegeocodeTask(task="regeocode", location="116.45,39.93", radius=1000, extensions="all")
+    """
+    task: Literal["regeocode"] = "regeocode"
+    location: str = Field(description="经纬度坐标，格式 'lon,lat'")
+    radius: int = Field(default=1000, ge=0, le=3000, description="搜索半径（米）")
+    extensions: Literal["base", "all"] = Field(
+        default="base",
+        description="'base' 返回基本地址，'all' 返回周边 POI 和道路信息"
+    )
+    poitype: Optional[str] = Field(default=None, description="返回附近 POI 类型")
+
+
+class DistrictTask(BaseTask):
+    """
+    行政区域查询任务：获取省市区县的行政区划及边界坐标。
+
+    示例：
+        NL: "查询安徽省下辖的所有城市"
+        Task: DistrictTask(task="district", keywords="安徽", subdistrict=2, extensions="all")
+    """
+    task: Literal["district"] = "district"
+    keywords: str = Field(default="", description="查询关键字，如 '北京'、'芜湖'")
+    subdistrict: int = Field(
+        default=1,
+        ge=0, le=3,
+        description="显示下级行政区级数：0 不返回，1 返回下一级，2 返回下两级"
+    )
+    extensions: Literal["base", "all"] = Field(
+        default="base",
+        description="'base' 不返回边界，'all' 返回边界轮廓坐标串 (polyline)"
+    )
+
+
+class StaticMapTask(BaseTask):
+    """
+    静态地图任务：生成一张带标记的地图图片 URL。
+
+    示例：
+        NL: "生成一张标注芜湖南站的地图"
+        Task: StaticMapTask(task="static_map", location="芜湖南站", zoom=15, markers="红色:芜湖南站")
+    """
+    task: Literal["static_map"] = "static_map"
+    location: str = Field(description="地图中心点坐标或地址")
+    zoom: int = Field(default=15, ge=1, le=17, description="缩放级别 1~17")
+    size: str = Field(default="400*400", description="图片尺寸，如 '400*400'（最大 1024*1024）")
+    scale: int = Field(default=1, ge=1, le=2, description="1 普通图，2 高清图")
+    markers: Optional[str] = Field(default=None, description="标注点，格式 'size,color,label:lon,lat'")
+    paths: Optional[str] = Field(default=None, description="折线路径")
+    traffic: int = Field(default=0, ge=0, le=1, description="是否展示实时路况：0 否，1 是")
+
+
+class CoordConvertTask(BaseTask):
+    """
+    坐标转换任务：将其他坐标系转换为高德 GCJ-02 坐标系。
+
+    示例：
+        NL: "将 GPS 坐标 116.4,39.9 转换为高德坐标"
+        Task: CoordConvertTask(task="coord_convert", locations="116.4,39.9", coordsys="gps")
+    """
+    task: Literal["coord_convert"] = "coord_convert"
+    locations: str = Field(description="坐标串，多个用 ';' 分隔，格式 'lon,lat;lon,lat'")
+    coordsys: Literal["gps", "mapbar", "baidu"] = Field(
+        default="gps",
+        description="原坐标系：gps(WGS84) / mapbar / baidu(百度)"
+    )
+
+
+class GraspRoadTask(BaseTask):
+    """
+    轨迹纠偏任务：将漂移的车辆 GPS 轨迹纠正到实际道路上。
+
+    示例：
+        NL: "将车辆轨迹 116.4,39.9,20,110,1478831753 纠偏到道路"
+        Task: GraspRoadTask(task="grasp_road", points=[{"x": 116.4, "y": 39.9, "sp": 20, "ag": 110, "tm": 1478831753}])
+    """
+    task: Literal["grasp_road"] = "grasp_road"
+    points: List[Dict[str, Any]] = Field(
+        description="轨迹点列表，格式：[{'x': lon, 'y': lat, 'sp': 速度, 'ag': 角度, 'tm': 时间戳}]"
+    )
+
+
+# =============================================================================
+# 🔵 高德高级 Web 服务任务模型
+# =============================================================================
+
+class PoiSearchTask(BaseTask):
+    """
+    POI 搜索任务：关键字搜索、周边搜索、多边形搜索。
+
+    示例：
+        NL: "在芜湖南站周边 3 公里内搜索所有餐厅"
+        Task: PoiSearchTask(task="poi_search", keywords="餐厅", location="芜湖南站", radius=3000)
+    """
+    task: Literal["poi_search"] = "poi_search"
+    keywords: str = Field(default="", description="查询关键字（支持多个，用 '|' 分隔）")
+    types: Optional[str] = Field(default=None, description="POI 分类编码或名称，如 '餐饮服务|050000'")
+    city: str = Field(default="", description="指定城市（adcode 或城市名）")
+    location: Optional[str] = Field(default=None, description="中心点坐标（填了就是周边搜索）")
+    radius: int = Field(default=3000, ge=100, le=5000, description="周边搜索半径（米）")
+    polygon: Optional[str] = Field(default=None, description="多边形范围坐标串（填了就是多边形搜索）")
+    sortrule: Literal["distance", "weight"] = Field(
+        default="weight",
+        description="'distance' 距离优先，'weight' 综合权重"
+    )
+    extensions: Literal["base", "all"] = Field(
+        default="all",
+        description="'base' 基本信息，'all' 返回营业时间、评分等深度信息"
+    )
+
+
+class InputTipsTask(BaseTask):
+    """
+    输入提示任务：用于搜索框的 Auto-Complete 补全。
+
+    示例：
+        NL: "搜索 '方特' 的输入提示"
+        Task: InputTipsTask(task="input_tips", keywords="方特")
+    """
+    task: Literal["input_tips"] = "input_tips"
+    keywords: str = Field(description="用户输入的残缺关键字")
+    location: Optional[str] = Field(default=None, description="当前位置坐标（提升周边 POI 排序权重）")
+    city: Optional[str] = Field(default=None, description="限定查询的城市")
+    datatype: Literal["all", "poi", "bus", "busline"] = Field(
+        default="all",
+        description="提示类型：all/poi/bus/busline"
+    )
+
+
+class TrafficStatusTask(BaseTask):
+    """
+    交通态势查询任务：获取特定区域或道路的实时拥堵情况。
+
+    示例：
+        NL: "查询北京市五环内的实时路况"
+        Task: TrafficStatusTask(task="traffic_status", rectangle="116.0,39.6;116.7,40.0", city="北京")
+    """
+    task: Literal["traffic_status"] = "traffic_status"
+    rectangle: Optional[str] = Field(
+        default=None,
+        description="矩形区域，格式 '左下lon,lat;右上lon,lat'"
+    )
+    circle: Optional[str] = Field(
+        default=None,
+        description="圆形区域，格式 'lon,lat,radius'"
+    )
+    road_name: Optional[str] = Field(default=None, description="指定道路名称（需配合 city）")
+    city: Optional[str] = Field(default=None, description="城市名称或 adcode")
+    level: int = Field(
+        default=5,
+        ge=1, le=6,
+        description="道路等级：1 高速，2 快速路，3 主干道，4 次干道，5 支路，6 乡道"
+    )
+
+
+class TrafficEventsTask(BaseTask):
+    """
+    交通事件查询任务：获取施工、事故、封路等突发事件。
+
+    示例：
+        NL: "查询北京市的所有交通事件"
+        Task: TrafficEventsTask(task="traffic_events", city="北京", type=0)
+    """
+    task: Literal["traffic_events"] = "traffic_events"
+    city: str = Field(description="城市 adcode 或城市名")
+    type: int = Field(
+        default=0,
+        ge=0, le=3,
+        description="事件类型：0 所有，1 施工，2 事故，3 管制"
+    )
+
+
+class TransitInfoTask(BaseTask):
+    """
+    公交信息查询任务：查询公交线路详情或站点信息。
+
+    示例：
+        NL: "查询南京地铁1号线的详细信息"
+        Task: TransitInfoTask(task="transit_info", keywords="地铁1号线", city="南京", type="line")
+    """
+    task: Literal["transit_info"] = "transit_info"
+    keywords: str = Field(description="公交线路名或站点名")
+    city: str = Field(description="所在城市")
+    info_type: Literal["line", "station"] = Field(
+        default="line",
+        description="'line' 查询线路，'station' 查询站点"
+    )
+
+
+class IpLocationTask(BaseTask):
+    """
+    IP 定位任务：根据 IP 地址返回粗略地理位置。
+
+    示例：
+        NL: "查询 IP 114.114.114.114 的位置"
+        Task: IpLocationTask(task="ip_location", ip="114.114.114.114")
+    """
+    task: Literal["ip_location"] = "ip_location"
+    ip: str = Field(default="", description="IPv4 或 IPv6 地址，空则自动获取本机 IP")
+
+
+class WeatherTask(BaseTask):
+    """
+    天气查询任务：获取实时天气或未来预报。
+
+    示例：
+        NL: "查询芜湖市的天气"
+        Task: WeatherTask(task="weather", city="芜湖", extensions="all")
+    """
+    task: Literal["weather"] = "weather"
+    city: str = Field(description="城市 adcode 或城市名")
+    extensions: Literal["base", "all"] = Field(
+        default="base",
+        description="'base' 实时天气，'all' 返回未来 3 天预报"
+    )
+
+
+# =============================================================================
 # 联合模型（任务解析入口）
 # =============================================================================
 
@@ -543,6 +798,21 @@ TaskModel = Union[
     SuitabilityTask,
     ViewshedTask,
     GeneralTask,
+    # 🟢 高德基础服务
+    GeocodeTask,
+    RegeocodeTask,
+    DistrictTask,
+    StaticMapTask,
+    CoordConvertTask,
+    GraspRoadTask,
+    # 🔵 高德高级服务
+    PoiSearchTask,
+    InputTipsTask,
+    TrafficStatusTask,
+    TrafficEventsTask,
+    TransitInfoTask,
+    IpLocationTask,
+    WeatherTask,
 ]
 
 # 任务模型映射表（用于动态路由）
@@ -559,6 +829,21 @@ TASK_MODEL_MAP: Dict[str, type[BaseModel]] = {
     "suitability": SuitabilityTask,
     "viewshed": ViewshedTask,
     "general": GeneralTask,
+    # 🟢 高德基础服务
+    "geocode": GeocodeTask,
+    "regeocode": RegeocodeTask,
+    "district": DistrictTask,
+    "static_map": StaticMapTask,
+    "coord_convert": CoordConvertTask,
+    "grasp_road": GraspRoadTask,
+    # 🔵 高德高级服务
+    "poi_search": PoiSearchTask,
+    "input_tips": InputTipsTask,
+    "traffic_status": TrafficStatusTask,
+    "traffic_events": TrafficEventsTask,
+    "transit_info": TransitInfoTask,
+    "ip_location": IpLocationTask,
+    "weather": WeatherTask,
 }
 
 
@@ -597,6 +882,21 @@ def get_task_description(intent: str) -> str:
         "suitability": "选址分析：多准则决策分析（MCDA）确定最佳位置",
         "viewshed": "视域分析：计算观察点的可见范围/通视分析",
         "general": "通用任务：复杂或多步骤的 GIS 分析",
+        # 🟢 高德基础服务
+        "geocode": "地理编码：将地址转换为经纬度坐标",
+        "regeocode": "逆地理编码：将经纬度转换为详细地址及周边信息",
+        "district": "行政区域查询：获取省市区县的行政区划及边界",
+        "static_map": "静态地图：生成带标记的地图图片 URL",
+        "coord_convert": "坐标转换：将其他坐标系转换为高德 GCJ-02 坐标",
+        "grasp_road": "轨迹纠偏：将 GPS 轨迹纠正到实际道路上",
+        # 🔵 高德高级服务
+        "poi_search": "POI 搜索：关键字/周边/多边形搜索地点信息",
+        "input_tips": "输入提示：搜索框自动补全建议",
+        "traffic_status": "交通态势：查询区域或道路的实时拥堵情况",
+        "traffic_events": "交通事件：查询施工、事故、封路等突发事件",
+        "transit_info": "公交信息：查询公交线路或站点详情",
+        "ip_location": "IP 定位：根据 IP 地址返回地理位置",
+        "weather": "天气查询：获取实时天气或未来预报",
     }
     return descriptions.get(intent, "未知任务类型")
 
@@ -684,6 +984,21 @@ __all__ = [
     "HotspotTask",
     "VisualizationTask",
     "GeneralTask",
+    # 🟢 高德基础服务任务模型
+    "GeocodeTask",
+    "RegeocodeTask",
+    "DistrictTask",
+    "StaticMapTask",
+    "CoordConvertTask",
+    "GraspRoadTask",
+    # 🔵 高德高级服务任务模型
+    "PoiSearchTask",
+    "InputTipsTask",
+    "TrafficStatusTask",
+    "TrafficEventsTask",
+    "TransitInfoTask",
+    "IpLocationTask",
+    "WeatherTask",
     # 联合类型
     "TaskModel",
     # 工具函数

@@ -40,8 +40,9 @@ from geoagent.layers.layer3_orchestrate import (
     _get_enum_value as _get_orch_scenario_value,
 )
 from geoagent.layers.layer4_dsl import GeoDSL, DSLBuilder, SchemaValidationError
-from geoagent.layers.layer5_executor import ExecutorResult, execute_task
 from geoagent.layers.layer6_render import RenderResult, ResultRenderer, render_result
+from geoagent.executors.router import execute_task as _execute_task
+from geoagent.executors.base import ExecutorResult
 
 
 # =============================================================================
@@ -259,7 +260,7 @@ class GeoAgentPipeline:
 
             if event_callback:
                 event_callback("intent_classified", {
-                    "scenario": intent_result.primary.value,
+                    "scenario": intent_result.primary.value if hasattr(intent_result.primary, 'value') else str(intent_result.primary),
                     "confidence": intent_result.confidence,
                 })
 
@@ -301,7 +302,7 @@ class GeoAgentPipeline:
 
             if event_callback:
                 event_callback("dsl_built", {
-                    "scenario": dsl.scenario.value,
+                    "scenario": dsl.scenario.value if hasattr(dsl.scenario, 'value') else str(dsl.scenario),
                     "task": dsl.task,
                     "inputs": dsl.inputs,
                     "parameters": dsl.parameters,
@@ -310,7 +311,7 @@ class GeoAgentPipeline:
             # ── 第5层：任务执行 ────────────────────────────────────────
             # 合并 inputs 和 parameters
             task_dict = {**dsl.inputs, **dsl.parameters, "task": dsl.task}
-            executor_result = execute_task(dsl.scenario, task_dict)
+            executor_result = _execute_task(task_dict)
             ctx.executor_result = executor_result
             ctx.status = PipelineStatus.EXECUTING
 
@@ -333,7 +334,7 @@ class GeoAgentPipeline:
             return PipelineResult(
                 success=True,
                 status=PipelineStatus.COMPLETED,
-                scenario=dsl.scenario.value,
+                scenario=dsl.scenario.value if hasattr(dsl.scenario, 'value') else str(dsl.scenario),
                 summary=render_result.summary,
                 conclusion=render_result.conclusion.to_dict() if render_result.conclusion else None,
                 explanation=render_result.explanation.to_dict() if render_result.explanation else None,
@@ -466,7 +467,7 @@ def run_pipeline_mvp(
 
     # 执行
     task_dict = {**dsl.inputs, **dsl.parameters, "task": dsl.task}
-    executor_result = execute_task(dsl.scenario, task_dict)
+    executor_result = _execute_task(task_dict)
 
     # 渲染
     renderer = ResultRenderer()

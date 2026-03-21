@@ -87,11 +87,16 @@ class RouteExecutor(BaseExecutor):
     def _run_amap(self, task: Dict[str, Any]) -> ExecutorResult:
         """使用高德地图 API"""
         try:
-            from geoagent.plugins.amap_plugin import AmapPlugin
+            from geoagent.plugins.amap_plugin import AmapPlugin, _resolve_location_to_coords
 
             plugin = AmapPlugin()
             mode = task.get("mode", "walking")
-            city = task.get("city") or "全国"
+            start = task.get("start", "")
+            end = task.get("end", "")
+            user_city = task.get("city") or ""
+
+            # 🆕 智能推断城市：如果用户未指定，尝试从起点地址中提取城市
+            inferred_city = self._infer_city(start, end, user_city)
 
             action_map = {
                 "walking": "direction_walking",
@@ -102,9 +107,9 @@ class RouteExecutor(BaseExecutor):
 
             raw = plugin.execute({
                 "action": action,
-                "origin": task["start"],
-                "destination": task["end"],
-                "city": city,
+                "origin": start,
+                "destination": end,
+                "city": inferred_city,
             })
 
             # 解析 Amap 返回
@@ -124,15 +129,15 @@ class RouteExecutor(BaseExecutor):
                 "amap",
                 {
                     "mode": mode,
-                    "start": task["start"],
-                    "end": task["end"],
+                    "start": start,
+                    "end": end,
                     "provider": "amap",
                     "route_data": data,
                     "engine": "Amap REST API",
                 },
                 meta={
                     "action": action,
-                    "city": city,
+                    "city": inferred_city,
                 }
             )
 
@@ -148,6 +153,51 @@ class RouteExecutor(BaseExecutor):
                 f"路径规划执行失败: {str(e)}",
                 engine="amap"
             )
+
+    def _infer_city(self, start: str, end: str, user_city: str) -> str:
+        """
+        智能推断城市：用于提高同名地点的识别准确率
+        
+        策略：
+        1. 用户明确指定的城市优先
+        2. 从起点地址中提取城市名
+        3. 如果地址中包含 "市/区/县"，提取该行政区划
+        """
+        # 用户已指定城市
+        if user_city and user_city != "全国":
+            return user_city
+        
+        # 常见中国城市列表（用于快速匹配）
+        KNOWN_CITIES = [
+            "北京", "上海", "广州", "深圳", "天津", "重庆",
+            "武汉", "成都", "杭州", "南京", "西安", "长沙",
+            "郑州", "合肥", "南昌", "济南", "青岛", "大连",
+            "沈阳", "哈尔滨", "长春", "石家庄", "福州", "厦门",
+            "昆明", "贵阳", "太原", "兰州", "乌鲁木齐", "呼和浩特",
+            "海口", "三亚", "宁波", "苏州", "无锡", "佛山",
+            "东莞", "珠海", "中山", "惠州", "常州", "徐州",
+            "南通", "扬州", "盐城", "淮安", "连云港", "泰州",
+            "镇江", "宿迁", "芜湖", "蚌埠", "淮南", "马鞍山",
+        ]
+        
+        # 从地址中查找城市
+        for city in KNOWN_CITIES:
+            if city in start:
+                return city
+            if city in end:
+                return city
+        
+        # 检查是否包含省/市/区等行政区划后缀
+        import re
+        match = re.search(r'([^\s]+?市)', start)
+        if match:
+            return match.group(1).replace("市", "")
+        match = re.search(r'([^\s]+?市)', end)
+        if match:
+            return match.group(1).replace("市", "")
+        
+        # 默认返回空字符串，让 API 自己处理
+        return ""
 
     def _run_osmnx(self, task: Dict[str, Any]) -> ExecutorResult:
         """使用 OSMnx + NetworkX"""

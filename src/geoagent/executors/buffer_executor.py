@@ -95,11 +95,18 @@ class BufferExecutor(BaseExecutor):
             )
 
     def _resolve_output(self, input_layer: str, output_file: str | None) -> str:
-        """解析输出路径"""
+        """解析输出路径
+        
+        处理逻辑：
+        1. 如果用户指定了 output_file → 转换为绝对路径（若已是绝对路径则直接返回）
+        2. 自动生成输出路径时，使用纯文件名，避免路径重复问题
+        """
         if output_file:
             return self._resolve_path(output_file)
+        
+        # 自动生成：直接用文件名部分，避免 workspace/ 前缀重复
         stem = Path(input_layer).stem
-        return self._resolve_path(f"workspace/{stem}_buffer.shp")
+        return self._resolve_path(f"{stem}_buffer.shp")
 
     def _run_geopandas(self, task: Dict[str, Any]) -> ExecutorResult:
         """GeoPandas 缓冲区（主力引擎）"""

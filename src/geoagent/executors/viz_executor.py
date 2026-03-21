@@ -64,8 +64,8 @@ class VisualizationExecutor(BaseExecutor):
         if output_file:
             return self._resolve_path(output_file)
         if viz_type in ("interactive_map", "heatmap", "3d_map"):
-            return self._resolve_path(f"workspace/map_{viz_type}.html")
-        return self._resolve_path(f"workspace/map_{viz_type}.png")
+            return self._resolve_path(f"map_{viz_type}.html")
+        return self._resolve_path(f"map_{viz_type}.png")
 
     def _run_folium(self, task: Dict[str, Any]) -> ExecutorResult:
         """Folium 交互式地图（主力引擎）"""

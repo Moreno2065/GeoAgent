@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import geopandas as gpd
 from geoagent.geo_engine.data_utils import resolve_path, ensure_dir
 
 
@@ -36,6 +37,37 @@ def _resolve(file_name: str) -> Path:
 def _ensure_dir(filepath: str):
     """确保输出目录存在"""
     ensure_dir(filepath)
+
+
+def _read_gdf_with_crs(file_path: Path, target_crs: str = "EPSG:4326") -> gpd.GeoDataFrame:
+    """
+    读取矢量文件并确保有 CRS
+    
+    如果文件没有 CRS，基于坐标值智能推断：
+    - 经度范围 [-180, 180]，纬度 [-90, 90] → 设为 EPSG:4326
+    - 其他情况 → 设为 EPSG:3857 (Web Mercator)
+    """
+    gdf = gpd.read_file(file_path)
+    
+    if gdf.crs is None:
+        # 获取几何边界来推断坐标系
+        bounds = gdf.total_bounds
+        minx, miny, maxx, maxy = bounds
+        
+        # WGS84 地理坐标范围判断
+        if -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90:
+            inferred_crs = "EPSG:4326"
+        else:
+            inferred_crs = "EPSG:3857"
+        
+        print(f"[警告] 文件 {file_path.name} 缺少 CRS，已自动设为 {inferred_crs}")
+        gdf = gdf.set_crs(inferred_crs, allow_override=True)
+    
+    # 如果目标 CRS 与当前 CRS 不同，则转换
+    if target_crs and gdf.crs != target_crs:
+        gdf = gdf.to_crs(target_crs)
+    
+    return gdf
 
 
 def _std_result(
@@ -97,7 +129,7 @@ def analysis_idw(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, An
         if not fpath.exists():
             return _std_result(False, error=f"输入点文件不存在: {fpath}")
 
-        gdf = gpd.read_file(fpath).to_crs("EPSG:4326")
+        gdf = _read_gdf_with_crs(fpath)
 
         if field not in gdf.columns:
             return _std_result(False, error=f"字段 '{field}' 不存在，可用: {list(gdf.columns)}")
@@ -186,7 +218,7 @@ def analysis_kriging(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str
         if not fpath.exists():
             return _std_result(False, error=f"输入点文件不存在: {fpath}")
 
-        gdf = gpd.read_file(fpath).to_crs("EPSG:4326")
+        gdf = _read_gdf_with_crs(fpath)
 
         if field not in gdf.columns:
             return _std_result(False, error=f"字段 '{field}' 不存在")
@@ -649,7 +681,7 @@ def analysis_distance_matrix(inputs: Dict[str, Any], params: Dict[str, Any]) -> 
         if not fpath.exists():
             return _std_result(False, error=f"输入文件不存在: {fpath}")
 
-        gdf = gpd.read_file(fpath).to_crs("EPSG:4326")
+        gdf = _read_gdf_with_crs(fpath)
 
         n = len(gdf)
         coords = np.array([[p.x, p.y] for p in gdf.geometry])

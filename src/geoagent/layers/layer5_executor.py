@@ -65,8 +65,11 @@ class TaskRouter(_get_router().__class__):
         """执行任务路由"""
         from geoagent.layers.architecture import Scenario
 
-        if isinstance(scenario_or_str, Scenario):
+        # 安全获取 scenario 字符串值
+        if hasattr(scenario_or_str, 'value'):
             scenario_str = scenario_or_str.value
+        elif isinstance(scenario_or_str, str):
+            scenario_str = scenario_or_str
         else:
             scenario_str = str(scenario_or_str)
 

@@ -251,11 +251,34 @@ class ResultRenderer:
     def _render_route(self, result: ExecutorResult) -> RenderResult:
         """渲染路径分析结果"""
         data = result.data or {}
-        distance = data.get("distance", data.get("route_length_m", "?"))
-        duration = data.get("duration", data.get("duration_min", "?"))
+        
+        # 从 route_data 中提取路径信息
+        route_data = data.get("route_data", {})
+        distance_raw = route_data.get("distance") or data.get("distance") or "?"
+        duration_raw = route_data.get("duration") or data.get("duration") or "?"
+        
+        # 转换距离（米）转为公里显示
+        try:
+            distance_m = int(distance_raw) if distance_raw != "?" else "?"
+            distance_km = round(distance_m / 1000, 1) if distance_m != "?" else "?"
+            distance_display = distance_km if distance_km != "?" else distance_raw
+        except (ValueError, TypeError):
+            distance_m = distance_raw
+            distance_km = distance_raw
+        
+        # 转换时长（秒）转为分钟显示
+        try:
+            duration_s = int(duration_raw) if duration_raw != "?" else "?"
+            duration_min = round(duration_s / 60, 0) if duration_s != "?" else "?"
+            duration_display = int(duration_min) if duration_min != "?" else duration_raw
+        except (ValueError, TypeError):
+            duration_s = duration_raw
+            duration_min = duration_raw
+            duration_display = duration_raw
+        
         mode = data.get("mode", "walking")
-        start = data.get("start", "?")
-        end = data.get("end", "?")
+        start = data.get("start", route_data.get("origin_name", "?"))
+        end = data.get("end", route_data.get("destination_name", "?"))
 
         mode_text = {
             "walking": "步行",
@@ -269,8 +292,8 @@ class ResultRenderer:
         conclusion = BusinessConclusion(
             summary=summary,
             key_findings=[
-                f"总距离约 {distance} 米" if isinstance(distance, (int, float)) else f"总距离：{distance}",
-                f"预计 {duration} 分钟" if isinstance(duration, (int, float)) else f"预计耗时：{duration}",
+                f"总距离约 {distance_display} {'公里' if distance_km != '?' else '米'}",
+                f"预计 {duration_display} 分钟" if duration_display != "?" else f"预计耗时：{duration_raw} 秒",
                 f"使用 {result.engine} 引擎计算",
             ],
             recommendations=[
@@ -284,7 +307,7 @@ class ResultRenderer:
             title=f"{mode_text}路径规划结果",
             what_i_did=f"计算了从 {start} 到 {end} 的最优 {mode_text} 路径",
             why="路径规划是 GIS 分析的基础功能，用于确定两点之间的最优路线",
-            what_it_means=f"路线总长约 {distance} 米，步行约 {duration} 分钟",
+            what_it_means=f"路线总长约 {distance_display} {'公里' if distance_km != '?' else '米'}，{mode_text}约 {duration_display} 分钟",
             data_used=f"基于 {result.engine} 路网数据",
         )
 
@@ -302,10 +325,14 @@ class ResultRenderer:
             map_file=data.get("map_file"),
             output_files=output_files,
             metrics={
-                "distance_m": distance,
-                "duration_min": duration,
+                "distance_m": distance_m,
+                "distance_km": distance_display,
+                "duration_min": duration_display,
+                "duration_s": duration_s,
                 "mode": mode,
                 "engine": result.engine,
+                "start": start,
+                "end": end,
             },
             raw_result=result.to_dict(),
         )

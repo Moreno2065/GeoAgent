@@ -923,7 +923,7 @@ def _resolve_location_to_coords(location: str, city: str = "") -> Optional[dict]
     智能位置解析：支持地址、POI 名称、经纬度等多种输入格式
 
     :param location: str, 位置描述（地址、POI 名称、"lon,lat"）
-    :param city: str, 可选的限定城市
+    :param city: str, 可选的限定城市（用于提高同名地点的识别准确率）
     :return: dict，包含 lon, lat, address, adcode
     """
     location = location.strip()
@@ -934,14 +934,14 @@ def _resolve_location_to_coords(location: str, city: str = "") -> Optional[dict]
     coords = _parse_location(location)
     if coords:
         lon, lat = coords
-        regeo = regeocode(f"{lon},{lat}", radius=100, extensions="base")
+        regeo = regeocode("{},{}".format(lon, lat), radius=100, extensions="base")
         return {
             "lon": lon, "lat": lat,
             "address": regeo.get("address", "") if regeo else "",
             "adcode": regeo.get("adcode", "") if regeo else "",
         }
 
-    # 尝试 2: 标准地理编码
+    # 尝试 2: 标准地理编码（传递 city 参数以提高准确率）
     gc = geocode(location, city)
     if gc:
         return {
@@ -953,7 +953,7 @@ def _resolve_location_to_coords(location: str, city: str = "") -> Optional[dict]
             "district": gc.get("district", ""),
         }
 
-    # 尝试 3: POI 搜索兜底
+    # 尝试 3: POI 搜索兜底（传递 city 参数以提高准确率）
     result = search_poi(keywords=location, city=city, extensions="base", offset=1)
     if result and result.get("pois"):
         poi = result["pois"][0]
@@ -1110,13 +1110,15 @@ class AmapPlugin(BasePlugin):
         strategy = int(params.get("strategy", 0))
         waypoints = str(params.get("waypoints", "")).strip()
         province = str(params.get("province", "")).strip()
+        # 🆕 支持 city 参数（高德 API 中城市用于限制搜索范围）
+        city = str(params.get("city", "")).strip() or province
 
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
 
-        # 智能解析起点/终点
-        origin_info = _resolve_location_to_coords(origin)
-        dest_info = _resolve_location_to_coords(destination)
+        # 智能解析起点/终点（传递 city 以提高同名地点的识别准确率）
+        origin_info = _resolve_location_to_coords(origin, city=city)
+        dest_info = _resolve_location_to_coords(destination, city=city)
 
         if not origin_info:
             return _geo_error(f"无法解析起点: {origin}")
@@ -1427,6 +1429,7 @@ class AmapPlugin(BasePlugin):
         """步行路径规划（兼容旧版）"""
         origin = str(params.get("origin", "")).strip()
         destination = str(params.get("destination", "")).strip()
+        city = str(params.get("city", "")).strip()
 
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
@@ -1436,6 +1439,7 @@ class AmapPlugin(BasePlugin):
             "origin": origin,
             "destination": destination,
             "mode": "walking",
+            "city": city,
         })
         return result
 
@@ -1444,6 +1448,7 @@ class AmapPlugin(BasePlugin):
         origin = str(params.get("origin", "")).strip()
         destination = str(params.get("destination", "")).strip()
         strategy = str(params.get("strategy", "0")).strip()
+        city = str(params.get("city", "")).strip()
 
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
@@ -1454,6 +1459,7 @@ class AmapPlugin(BasePlugin):
             "destination": destination,
             "mode": "driving",
             "strategy": strategy,
+            "city": city,
         })
         return result
 
@@ -1461,7 +1467,7 @@ class AmapPlugin(BasePlugin):
         """公交路径规划（兼容旧版）"""
         origin = str(params.get("origin", "")).strip()
         destination = str(params.get("destination", "")).strip()
-        city = str(params.get("city", "全国")).strip()
+        city = str(params.get("city", "")).strip()
 
         if not origin or not destination:
             return _geo_error("缺少必需参数: origin 和 destination")
@@ -1471,5 +1477,6 @@ class AmapPlugin(BasePlugin):
             "origin": origin,
             "destination": destination,
             "mode": "transit",
+            "city": city,
         })
         return result

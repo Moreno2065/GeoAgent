@@ -48,6 +48,24 @@ _WORKSPACE_DIR.mkdir(exist_ok=True)
 _OUTPUTS_DIR = _WORKSPACE_DIR / "outputs"
 _OUTPUTS_DIR.mkdir(exist_ok=True)
 
+# DeepSeek 模型选项（只保留 deepseek-v3）
+DEEPSEEK_MODEL_OPTIONS = {
+    "deepseek-v3": {
+        "model": "deepseek-v3",
+        "label": "DeepSeek V3",
+        "description": "最新模型，能力更强",
+    },
+}
+
+# GLM 模型选项（只保留 glm-4-plus）
+GLM_MODEL_OPTIONS = {
+    "glm-4-plus": {
+        "model": "glm-4-plus",
+        "label": "GLM-4 Plus",
+        "description": "增强版，能力更强",
+    },
+}
+
 
 # =============================================================================
 # 工具函数
@@ -256,6 +274,7 @@ def _init_session_state():
         "active_conv_id": None,
         "agent_contexts": {},
         "deepseek_key": _read_key(".api_key"),
+        "glm_key": _read_key(".glm_api_key"),
         "amap_key": _read_key(".amap_key"),
         "last_map_file": None,
         "pending_click": None,
@@ -511,38 +530,115 @@ def _render_sidebar():
 
         st.divider()
 
+        # ── LLM 模型选择 ────────────────────────────────────────────
+        st.subheader("🤖 LLM 配置")
+
+        # 主模型选择
+        provider_options = ["deepseek", "glm"]
+        provider_labels = {
+            "deepseek": "🔵 DeepSeek（主模型）",
+            "glm": "🟢 GLM（备用模型）",
+        }
+
+        selected_provider = st.selectbox(
+            "主模型提供商",
+            options=provider_options,
+            format_func=lambda x: provider_labels.get(x, x),
+            index=0,
+            key="provider_select",
+        )
+
+        # DeepSeek 配置
+        if selected_provider == "deepseek":
+            deepseek_model_options = list(DEEPSEEK_MODEL_OPTIONS.keys())
+            selected_ds_model = st.selectbox(
+                "DeepSeek 模型",
+                options=deepseek_model_options,
+                format_func=lambda x: DEEPSEEK_MODEL_OPTIONS[x]["label"],
+                index=0,
+                key="deepseek_model_select",
+            )
+        else:
+            # GLM 作为主模型
+            glm_model_options = list(GLM_MODEL_OPTIONS.keys())
+            selected_ds_model = st.selectbox(
+                "GLM 模型",
+                options=glm_model_options,
+                format_func=lambda x: GLM_MODEL_OPTIONS[x]["label"],
+                index=0,
+                key="glm_model_select",
+            )
+
         # ── API Key 配置 ────────────────────────────────────────
-        # V2 六层架构只需要 DeepSeek Key（路由/执行由确定性后端代码完成）
+        st.caption("API Key 配置")
+
+        # DeepSeek Key
         dk = st.text_input(
-            "DeepSeek API Key",
+            "🔵 DeepSeek API Key",
             value=st.session_state["deepseek_key"],
             type="password",
             key="deepseek_key_input",
+            help="以 sk- 开头的 DeepSeek API Key",
         )
+
+        # GLM Key
+        gk = st.text_input(
+            "🟢 GLM API Key（可选，备用模型）",
+            value=st.session_state["glm_key"],
+            type="password",
+            key="glm_key_input",
+            help="GLM API Key，主模型失败时自动切换",
+        )
+
+        # 高德 Key
         ak = st.text_input(
-            "高德 Web API Key（可选，用于真实路径规划）",
+            "🗺️ 高德 Web API Key（可选）",
             value=st.session_state["amap_key"],
             type="password",
             key="amap_key_input",
+            help="用于真实路径规划",
         )
         if ak:
             os.environ["AMAP_API_KEY"] = ak
 
-        if st.button("🚀 启动 Agent", use_container_width=True):
+        # ── 启动 Agent ────────────────────────────────────────────
+        if st.button("🚀 启动 Agent", use_container_width=True, type="primary"):
+            # 验证 DeepSeek Key
             dk = dk.strip()
             if not dk.startswith("sk-"):
-                st.error("DeepSeek Key 格式错误，应以 sk- 开头")
+                st.error("❌ DeepSeek Key 格式错误，应以 sk- 开头")
             else:
+                # 保存 Key
                 _write_key(".api_key", dk)
+                if gk:
+                    _write_key(".glm_api_key", gk.strip())
                 if ak:
                     _write_key(".amap_key", ak)
                 st.session_state["deepseek_key"] = dk
+                st.session_state["glm_key"] = gk
+
+                # 确定主模型
+                primary_model = DEEPSEEK_MODEL_OPTIONS[selected_ds_model]["model"] if selected_provider == "deepseek" else GLM_MODEL_OPTIONS[selected_ds_model]["model"]
+
                 try:
-                    st.session_state["agent_v2"] = create_agent_v2(api_key=dk)
+                    # 创建 Agent（支持双模型）
+                    st.session_state["agent_v2"] = create_agent_v2(
+                        primary_api_key=dk,
+                        primary_model=primary_model,
+                        fallback_api_key=gk.strip() if gk else None,
+                        fallback_model="glm-4" if gk else None,
+                    )
                     st.session_state["agent"] = None
-                    st.success("✅ Agent 已初始化 — 六层架构")
+
+                    # 显示当前配置
+                    model_info = st.session_state["agent_v2"].get_current_model_info()
+                    st.success(
+                        f"✅ Agent 已启动\n"
+                        f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
+                        f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
+                    )
                 except Exception as e:
-                    st.error(f"初始化失败：{e}")
+                    st.error(f"❌ 初始化失败：{e}")
 
         agent_v2 = st.session_state.get("agent_v2")
         agent_online_v2 = bool(agent_v2)
@@ -551,8 +647,13 @@ def _render_sidebar():
         agent_online = agent_online_v2 or agent_online_v1
 
         if agent_online:
-            mode_label = "V2 六层"
-            st.success(f"🟢 Agent 在线 — {mode_label}")
+            model_info = agent_v2.get_current_model_info() if agent_online_v2 else {}
+            status_text = f"🟢 Agent 在线"
+            if model_info:
+                status_text += f"\n• 主: {model_info.get('provider', '')}/{model_info.get('model', '')}"
+                if model_info.get('has_fallback'):
+                    status_text += f"\n• 备: {model_info.get('fallback_model', '')}"
+            st.success(status_text)
         else:
             st.error("🔴 Agent 离线 — 请先启动")
 
@@ -1733,21 +1834,33 @@ def _handle_user_message(prompt: str, agent):
                 if result.summary:
                     lines.append(f"\n📋 **摘要**: {result.summary}")
 
-                rr = getattr(result, "render_result", None)
-                if rr:
-                    if rr.explanation:
-                        title = rr.explanation.title
-                        what = rr.explanation.what_i_did
-                        if title:
-                            lines.append(f"\n💡 *{title}*")
-                        if what:
-                            lines.append(f"\n**做了什么**: {what}")
-                    if rr.metrics:
-                        lines.append("\n📈 **关键指标**:")
-                        for k, v in list(rr.metrics.items())[:8]:
-                            lines.append(f"  - **{k}**: `{v}`")
-                    if rr.output_files:
-                        lines.append(f"\n📁 **输出文件**: {', '.join(rr.output_files)}")
+                # 显示 metrics（路径规划的距离、时长等）
+                if result.metrics:
+                    lines.append("\n📈 **关键指标**:")
+                    for k, v in list(result.metrics.items())[:10]:
+                        # 格式化显示
+                        label_map = {
+                            "distance_m": "距离(米)",
+                            "distance_km": "距离(公里)",
+                            "duration_min": "时长(分钟)",
+                            "duration_s": "时长(秒)",
+                            "mode": "出行方式",
+                            "engine": "引擎",
+                            "start": "起点",
+                            "end": "终点",
+                        }
+                        label = label_map.get(k, k)
+                        lines.append(f"  - **{label}**: `{v}`")
+
+                # 显示 conclusion
+                if result.conclusion:
+                    conclusion = result.conclusion
+                    if isinstance(conclusion, dict):
+                        findings = conclusion.get("key_findings", [])
+                        if findings:
+                            lines.append("\n🔍 **分析结果**:")
+                            for f in findings[:5]:
+                                lines.append(f"  - {f}")
 
                 final_content = "\n".join(lines)
             else:

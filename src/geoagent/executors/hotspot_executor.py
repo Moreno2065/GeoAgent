@@ -71,7 +71,7 @@ class HotspotExecutor(BaseExecutor):
     def _resolve_output(self, input_file: str, output_file: Optional[str]) -> str:
         if output_file:
             return self._resolve_path(output_file)
-        return self._resolve_path(f"workspace/hotspot_{Path(input_file).stem}.geojson")
+        return self._resolve_path(f"hotspot_{Path(input_file).stem}.geojson")
 
     def _run_pysal(self, task: Dict[str, Any]) -> ExecutorResult:
         """PySAL 热点分析（主力引擎）"""

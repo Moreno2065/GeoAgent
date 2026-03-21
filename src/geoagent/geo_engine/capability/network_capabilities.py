@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import geopandas as gpd
 from geoagent.geo_engine.data_utils import resolve_path, ensure_dir
 
 
@@ -36,6 +37,37 @@ def _resolve(file_name: str) -> Path:
 def _ensure_dir(filepath: str):
     """确保输出目录存在"""
     ensure_dir(filepath)
+
+
+def _read_gdf_with_crs(file_path: Path, target_crs: str = "EPSG:4326") -> gpd.GeoDataFrame:
+    """
+    读取矢量文件并确保有 CRS
+    
+    如果文件没有 CRS，基于坐标值智能推断：
+    - 经度范围 [-180, 180]，纬度 [-90, 90] → 设为 EPSG:4326
+    - 其他情况 → 设为 EPSG:3857 (Web Mercator)
+    """
+    gdf = gpd.read_file(file_path)
+    
+    if gdf.crs is None:
+        # 获取几何边界来推断坐标系
+        bounds = gdf.total_bounds
+        minx, miny, maxx, maxy = bounds
+        
+        # WGS84 地理坐标范围判断
+        if -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90:
+            inferred_crs = "EPSG:4326"
+        else:
+            inferred_crs = "EPSG:3857"
+        
+        print(f"[警告] 文件 {file_path.name} 缺少 CRS，已自动设为 {inferred_crs}")
+        gdf = gdf.set_crs(inferred_crs, allow_override=True)
+    
+    # 如果目标 CRS 与当前 CRS 不同，则转换
+    if target_crs and gdf.crs != target_crs:
+        gdf = gdf.to_crs(target_crs)
+    
+    return gdf
 
 
 def _std_result(
@@ -445,9 +477,9 @@ def network_closest_facility(inputs: Dict[str, Any], params: Dict[str, Any]) -> 
         if not city:
             return _std_result(False, error="需要提供 city 参数")
 
-        # 读取需求点和设施点
-        demand_gdf = gpd.read_file(_resolve(demand_file)).to_crs("EPSG:4326")
-        facility_gdf = gpd.read_file(_resolve(facilities_file)).to_crs("EPSG:4326")
+        # 读取需求点和设施点（自动处理缺失 CRS）
+        demand_gdf = _read_gdf_with_crs(_resolve(demand_file))
+        facility_gdf = _read_gdf_with_crs(_resolve(facilities_file))
 
         # 构建路网
         bounds = demand_gdf.total_bounds
@@ -540,9 +572,9 @@ def network_location_allocation(inputs: Dict[str, Any], params: Dict[str, Any]) 
         mode = params.get("mode", "drive")
         output_file = params.get("output_file")
 
-        # 读取数据
-        candidates_gdf = gpd.read_file(_resolve(candidates_file)).to_crs("EPSG:4326")
-        demand_gdf = gpd.read_file(_resolve(demand_file)).to_crs("EPSG:4326")
+        # 读取数据（自动处理缺失 CRS）
+        candidates_gdf = _read_gdf_with_crs(_resolve(candidates_file))
+        demand_gdf = _read_gdf_with_crs(_resolve(demand_file))
 
         # 简化的贪婪选址算法
         # 计算需求点到候选点的距离矩阵
@@ -701,7 +733,7 @@ def network_accessibility_score(inputs: Dict[str, Any], params: Dict[str, Any]) 
         mode = params.get("mode", "walk")
         output_file = params.get("output_file")
 
-        points_gdf = gpd.read_file(_resolve(points_file)).to_crs("EPSG:4326")
+        points_gdf = _read_gdf_with_crs(_resolve(points_file))
 
         results = []
         for idx, row in points_gdf.iterrows():

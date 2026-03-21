@@ -270,6 +270,13 @@ class DSLBuilder:
         Raises:
             SchemaValidationError: 校验失败
         """
+        # 强制将 scenario 转换为枚举，确保后续 .value 和字典查找绝对安全
+        if not hasattr(scenario, "value"):
+            try:
+                scenario = Scenario(str(scenario))
+            except Exception:
+                scenario = Scenario.ROUTE
+
         # 分离 inputs 和 parameters
         inputs, parameters = self._separate_params(scenario, extracted_params)
 
@@ -461,7 +468,10 @@ def _build_from_reasoner_output(
     merged["inputs"] = inputs
     merged["parameters"] = parameters
     merged.setdefault("version", "1.0")
-    merged.setdefault("task", scenario.value)
+    
+    # 使用安全的方式获取 scenario 的 value
+    task_val = scenario.value if hasattr(scenario, "value") else str(scenario)
+    merged.setdefault("task", task_val)
     merged.setdefault("outputs", {"map": True, "summary": True})
 
     return GeoDSL(**merged)

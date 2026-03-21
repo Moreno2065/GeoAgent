@@ -73,6 +73,7 @@ class Scenario(str, Enum):
     INTERPOLATION = "interpolation"  # 插值/表面分析
     VIEWSHED = "viewshed"      # 视域/阴影
     STATISTICS = "statistics"   # 统计/聚合
+    SUITABILITY = "suitability"  # 适宜性分析/选址（MCDA）
     RASTER = "raster"          # 栅格分析
     ACCESSIBILITY = "accessibility"   # 可达性分析
     SHADOW_ANALYSIS = "shadow_analysis"  # 阴影分析
@@ -251,6 +252,20 @@ MVP_SCENARIO_EXECUTOR_MAP = {
     Scenario.VIEWSHED: "shadow_executor",
     Scenario.STATISTICS: "hotspot_executor",
     Scenario.RASTER: "ndvi_executor",
+    Scenario.SUITABILITY: "suitability_executor",  # 适宜性选址（MCDA）
+    Scenario.GEOCODE: "amap_executor",
+    Scenario.REGEOCODE: "amap_executor",
+    Scenario.DISTRICT: "amap_executor",
+    Scenario.STATIC_MAP: "amap_executor",
+    Scenario.COORD_CONVERT: "amap_executor",
+    Scenario.GRASP_ROAD: "amap_executor",
+    Scenario.POI_SEARCH: "amap_executor",
+    Scenario.INPUT_TIPS: "amap_executor",
+    Scenario.TRAFFIC_STATUS: "amap_executor",
+    Scenario.TRAFFIC_EVENTS: "amap_executor",
+    Scenario.TRANSIT_INFO: "amap_executor",
+    Scenario.IP_LOCATION: "amap_executor",
+    Scenario.WEATHER: "amap_executor",
 }
 
 # 引擎名称
@@ -273,6 +288,16 @@ __all__ = [
     "InterpolationSubType",
     "ViewshedSubType",
     "StatisticsSubType",
+    # 高德基础服务子类型
+    "GeocodeSubType",
+    "RegeocodeSubType",
+    "DistrictLevel",
+    "CoordinateSystem",
+    # 高德高级服务子类型
+    "PoiSortRule",
+    "TrafficLevel",
+    "TrafficEventType",
+    "WeatherExtensions",
     "PipelineStatus",
     "Engine",
     "ARCHITECTURE_VERSION",

@@ -16,6 +16,7 @@ GeoAgent V2 核心类（基于六层架构）
 
 from __future__ import annotations
 
+import os
 import json
 from typing import Any, Dict, Optional, Callable
 from pathlib import Path
@@ -29,10 +30,18 @@ from geoagent.pipeline import (
     run_pipeline_mvp,
 )
 from geoagent.layers.architecture import ARCHITECTURE_VERSION, ARCHITECTURE_NAME
+from geoagent.llm_config import (
+    LLMProvider,
+    LLMConfig,
+    get_llm_manager,
+    DEEPSEEK_PRESETS,
+    GLM_PRESETS,
+)
 
 
 # API Key 持久化
 _API_KEY_FILE = Path(__file__).parent.parent.parent / ".api_key"
+_GLM_API_KEY_FILE = Path(__file__).parent.parent.parent / ".glm_api_key"
 
 
 # =============================================================================
@@ -66,6 +75,16 @@ class GeoAgentV2:
           reasoner_factory=lambda: get_reasoner(),
       )
       result = agent.run("先做500m缓冲区再找里面的餐厅")
+
+    【双模型支持】
+      支持 DeepSeek / GLM 双模型配置，主模型失败自动切换到备用模型：
+
+      agent = GeoAgentV2(
+          primary_api_key="sk-deepseek-xxx",
+          primary_model="deepseek-chat",
+          fallback_api_key="glm-xxx",      # 可选
+          fallback_model="glm-4",
+      )
     """
 
     def __init__(
@@ -76,35 +95,63 @@ class GeoAgentV2:
         enable_clarification: bool = True,
         use_reasoner: bool = False,
         reasoner_factory: Callable[[], Any] = None,
+        # 新增：双模型支持
+        primary_api_key: str = None,
+        primary_model: str = "deepseek-chat",
+        fallback_api_key: str = None,
+        fallback_model: str = "glm-4",
     ):
         """
         Args:
-            api_key: DeepSeek API 密钥
-            model: 模型名称
+            api_key: DeepSeek API 密钥 (兼容旧接口)
+            model: 模型名称 (兼容旧接口)
             base_url: API 基础 URL
             enable_clarification: 是否启用追问机制
             use_reasoner: 是否使用 Reasoner 模式（NL → GeoDSL）
-                - False（默认）：MVP 确定性模式，Layer 4 纯规则构建，不用 LLM
-                - True：复杂 NL（如"先做500m缓冲区再找里面的餐厅"）使用 Reasoner 翻译
             reasoner_factory: Reasoner 实例工厂（use_reasoner=True 时必须提供）
+            primary_api_key: 主模型 API Key (DeepSeek)
+            primary_model: 主模型名称
+            fallback_api_key: 备用模型 API Key (GLM)
+            fallback_model: 备用模型名称
         """
-        if not api_key:
-            api_key = self._load_api_key()
-        if not api_key:
-            import os
-            api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
+        # 确定 API Key
+        final_api_key = (
+            api_key
+            or primary_api_key
+            or self._load_api_key()
+            or self._load_glm_api_key()
+            or os.getenv("DEEPSEEK_API_KEY", "")
+        )
+
+        if not final_api_key:
             raise ValueError("必须提供 API 密钥或设置 DEEPSEEK_API_KEY 环境变量")
 
-        if not api_key.startswith("sk-"):
-            raise ValueError(f"无效的 API Key 格式：应以为 'sk-' 开头，当前为：{api_key[:8]}***")
+        # 验证 API Key 格式并确定提供商
+        if final_api_key.startswith("sk-"):
+            # DeepSeek Key
+            self.provider = LLMProvider.DEEPSEEK
+            self.api_key = final_api_key
+            self._save_api_key(final_api_key)
+        elif len(final_api_key) >= 24:
+            # 可能是 GLM Key
+            self.provider = LLMProvider.GLM
+            self.api_key = final_api_key
+            self._glm_api_key = final_api_key
+            self._save_glm_api_key(final_api_key)
+        else:
+            raise ValueError(f"无效的 API Key 格式，当前为：{final_api_key[:8]}***")
 
-        self.api_key = api_key
-        self._save_api_key(api_key)
-        self.model = model
-        self.base_url = base_url
+        # 保存配置
+        self.model = primary_model if self.provider == LLMProvider.DEEPSEEK else fallback_model
+        self.base_url = base_url if self.provider == LLMProvider.DEEPSEEK else "https://open.bigmodel.cn/api/paas/v4"
         self.enable_clarification = enable_clarification
         self.use_reasoner = use_reasoner
+
+        # 备用模型配置
+        self._fallback_api_key = fallback_api_key
+        self._fallback_model = fallback_model
+        self._fallback_provider = LLMProvider.GLM
+        self._fallback_base_url = "https://open.bigmodel.cn/api/paas/v4"
 
         # 初始化 Pipeline
         self._pipeline = GeoAgentPipeline(
@@ -119,7 +166,22 @@ class GeoAgentV2:
             "successful": 0,
             "failed": 0,
             "clarification_needed": 0,
+            "fallback_triggered": 0,
         }
+
+        # 创建 OpenAI 客户端
+        self._client = self._create_client(
+            self.provider, self.api_key, self.base_url
+        )
+        self._fallback_client = None
+        if fallback_api_key:
+            self._fallback_client = self._create_client(
+                LLMProvider.GLM, fallback_api_key, self._fallback_base_url
+            )
+
+    def _create_client(self, provider: LLMProvider, api_key: str, base_url: str) -> OpenAI:
+        """创建 OpenAI 兼容客户端"""
+        return OpenAI(api_key=api_key, base_url=base_url)
 
     # ── API Key 管理 ──────────────────────────────────────────────────────
 
@@ -142,6 +204,46 @@ class GeoAgentV2:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _save_glm_api_key(api_key: str) -> None:
+        try:
+            with open(_GLM_API_KEY_FILE, 'w', encoding='utf-8') as f:
+                f.write(api_key)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _load_glm_api_key() -> Optional[str]:
+        try:
+            if _GLM_API_KEY_FILE.exists():
+                with open(_GLM_API_KEY_FILE, 'r', encoding='utf-8') as f:
+                    key = f.read().strip()
+                    if key:
+                        return key
+        except Exception:
+            pass
+        return None
+
+    # ── 模型信息 ──────────────────────────────────────────────────────────
+
+    def get_current_model_info(self) -> Dict[str, Any]:
+        """获取当前模型信息"""
+        return {
+            "provider": self.provider.value,
+            "model": self.model,
+            "base_url": self.base_url,
+            "has_fallback": self._fallback_api_key is not None,
+            "fallback_model": self._fallback_model if self._fallback_api_key else None,
+        }
+
+    @staticmethod
+    def get_available_models() -> Dict[str, Dict[str, str]]:
+        """获取可用的模型列表"""
+        return {
+            "deepseek": DEEPSEEK_PRESETS,
+            "glm": GLM_PRESETS,
+        }
 
     # ── 核心 API ───────────────────────────────────────────────────────────
 
@@ -293,6 +395,7 @@ class GeoAgentV2:
             "successful": 0,
             "failed": 0,
             "clarification_needed": 0,
+            "fallback_triggered": 0,
         }
 
     def info(self) -> str:
@@ -318,6 +421,10 @@ GeoAgent V2 - {ARCHITECTURE_NAME}
   - statistics     统计/聚合分析
   - raster         栅格分析
 
+当前模型配置：
+  主模型: {self.provider.value} / {self.model}
+  备用模型: {self._fallback_model if self._fallback_api_key else '无'}
+
 使用方式：
   agent = GeoAgentV2()
   result = agent.run("芜湖南站到方特的步行路径")
@@ -336,6 +443,11 @@ def create_agent_v2(
     enable_clarification: bool = True,
     use_reasoner: bool = False,
     reasoner_factory: Callable[[], Any] = None,
+    # 新增：双模型支持
+    primary_api_key: str = None,
+    primary_model: str = "deepseek-chat",
+    fallback_api_key: str = None,
+    fallback_model: str = "glm-4",
 ) -> GeoAgentV2:
     """
     创建 GeoAgent V2 实例的便捷工厂函数
@@ -344,12 +456,12 @@ def create_agent_v2(
         # MVP 确定性模式（推荐）
         agent = create_agent_v2(api_key="sk-...")
 
-        # Reasoner 模式（复杂 NL 时启用）
-        from geoagent.layers.reasoner import get_reasoner
+        # 双模型支持（DeepSeek + GLM）
         agent = create_agent_v2(
-            api_key="sk-...",
-            use_reasoner=True,
-            reasoner_factory=lambda: get_reasoner(),
+            primary_api_key="sk-deepseek-xxx",
+            primary_model="deepseek-chat",
+            fallback_api_key="glm-xxx",
+            fallback_model="glm-4",
         )
 
         result = agent.run("芜湖南站到方特的步行路径")
@@ -361,6 +473,10 @@ def create_agent_v2(
         enable_clarification=enable_clarification,
         use_reasoner=use_reasoner,
         reasoner_factory=reasoner_factory,
+        primary_api_key=primary_api_key,
+        primary_model=primary_model,
+        fallback_api_key=fallback_api_key,
+        fallback_model=fallback_model,
     )
 
 

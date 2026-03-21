@@ -25,6 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import geopandas as gpd
 from geoagent.geo_engine.data_utils import resolve_path, ensure_dir
 
 
@@ -36,6 +37,34 @@ def _resolve(file_name: str) -> Path:
 def _ensure_dir(filepath: str):
     """确保输出目录存在"""
     ensure_dir(filepath)
+
+
+def _read_gdf_with_crs(file_path: Path, target_crs: str = "EPSG:4326") -> gpd.GeoDataFrame:
+    """
+    读取矢量文件并确保有 CRS
+    
+    如果文件没有 CRS，基于坐标值智能推断：
+    - 经度范围 [-180, 180]，纬度 [-90, 90] → 设为 EPSG:4326
+    - 其他情况 → 设为 EPSG:3857 (Web Mercator)
+    """
+    gdf = gpd.read_file(file_path)
+    
+    if gdf.crs is None:
+        bounds = gdf.total_bounds
+        minx, miny, maxx, maxy = bounds
+        
+        if -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90:
+            inferred_crs = "EPSG:4326"
+        else:
+            inferred_crs = "EPSG:3857"
+        
+        print(f"[警告] 文件 {file_path.name} 缺少 CRS，已自动设为 {inferred_crs}")
+        gdf = gdf.set_crs(inferred_crs, allow_override=True)
+    
+    if target_crs and gdf.crs != target_crs:
+        gdf = gdf.to_crs(target_crs)
+    
+    return gdf
 
 
 def _std_result(
@@ -552,7 +581,14 @@ def io_fetch_osm(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, An
         if gdf.empty:
             return _std_result(False, error=f"在 {place} 未找到 OSM 数据")
 
-        gdf_proj = gdf.to_crs("EPSG:4326")
+        # OSMnx 返回的数据通常已有 CRS，为空则设默认
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326", allow_override=True)
+        
+        if gdf.crs != "EPSG:4326":
+            gdf_proj = gdf.to_crs("EPSG:4326")
+        else:
+            gdf_proj = gdf
 
         output_path = None
         if output_file:

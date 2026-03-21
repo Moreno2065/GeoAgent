@@ -93,7 +93,7 @@ class ShadowExecutor(BaseExecutor):
     def _resolve_output(self, default: str, output_file: Optional[str]) -> str:
         if output_file:
             return self._resolve_path(output_file)
-        return self._resolve_path(f"workspace/{default}")
+        return self._resolve_path(f"{default}")
 
     def _run_geometry(self, task: Dict[str, Any], sun_pos: tuple[float, float]) -> ExecutorResult:
         """基于 3D 几何算法的阴影计算（主力引擎）"""

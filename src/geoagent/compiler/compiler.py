@@ -18,7 +18,7 @@ GIS Compiler - 任务编译器主入口
 鲁棒性增强（P0-P1）：
 - 使用 json_repair 智能修复破损 JSON
 - Tenacity 指数退避重试机制
-- 多模型 Fallback（主 DeepSeek + 备用 Qwen）
+- 多模型 Fallback（主 DeepSeek + 备用 GLM）
 - response_format=json_object 强制结构化输出
 """
 
@@ -122,10 +122,10 @@ class GISCompiler:
         max_retries: int = 3,
         temperature: float = 0.1,
         enable_fallback: bool = True,
-        # P1: 备用模型配置
+        # 备用模型配置 (GLM)
         fallback_api_key: str = None,
-        fallback_model: str = "qwen-plus",
-        fallback_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        fallback_model: str = "glm-4",
+        fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
         # 重试配置
         retry_multiplier: float = 1.0,
         retry_min_wait: float = 2.0,
@@ -136,14 +136,14 @@ class GISCompiler:
 
         Args:
             api_key: API 密钥
-            model: 模型名称
+            model: 模型名称 (deepseek-chat / deepseek-reasoner)
             base_url: API 基础 URL
             max_retries: 最大重试次数
             temperature: 生成温度（越低越确定性）
             enable_fallback: 是否启用 fallback（解析失败时提示用户）
-            fallback_api_key: 备用模型 API Key（可选，默认使用通义千问）
-            fallback_model: 备用模型名称
-            fallback_base_url: 备用模型 API 地址
+            fallback_api_key: 备用模型 API Key（GLM）
+            fallback_model: 备用模型名称 (glm-4 / glm-4-plus)
+            fallback_base_url: 备用模型 API 地址 (GLM)
             retry_multiplier: 指数退避乘数
             retry_min_wait: 最小等待秒数
             retry_max_wait: 最大等待秒数
@@ -173,7 +173,7 @@ class GISCompiler:
         # 初始化主客户端
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        # P1: 初始化备用客户端（通义千问/Qwen）
+        # 初始化备用客户端 (GLM)
         self._init_fallback_client(fallback_api_key, fallback_model, fallback_base_url)
 
         # 初始化意图分类器
@@ -188,24 +188,33 @@ class GISCompiler:
             "successful": 0,
             "failed": 0,
             "retries": 0,
-            "fallback_triggered": 0,  # P1: 记录 fallback 触发次数
+            "fallback_triggered": 0,  # 记录 fallback 触发次数
         }
 
     def _init_fallback_client(
         self,
         fallback_api_key: str = None,
-        fallback_model: str = "qwen-plus",
-        fallback_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        fallback_model: str = "glm-4",
+        fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
     ) -> None:
         """
-        初始化备用 LLM 客户端
+        初始化备用 LLM 客户端 (GLM)
 
-        P1: 多模型 Fallback 机制 - 主模型失败时自动切换
+        多模型 Fallback 机制 - 主模型失败时自动切换到 GLM
         """
         # 尝试加载备用 API Key
         if not fallback_api_key:
             import os
-            fallback_api_key = os.getenv("FALLBACK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+            fallback_api_key = os.getenv("GLM_API_KEY")
+
+        # 也尝试从本地文件加载 GLM Key
+        if not fallback_api_key:
+            try:
+                glm_key_file = Path(__file__).parent.parent.parent / ".glm_api_key"
+                if glm_key_file.exists():
+                    fallback_api_key = glm_key_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
 
         if fallback_api_key:
             try:

@@ -35,6 +35,25 @@ V2 核心设计原则：
     result = agent.compile("芜湖南站到方特的步行路径")
 """
 
+import os
+
+# 加载 .env 文件
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv 未安装，手动加载
+
+# 尝试从用户目录加载 .env
+_env_path = os.path.expanduser("~/.env")
+if os.path.exists(_env_path):
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip())
+
 from geoagent.version import __version__
 
 # 核心

@@ -114,6 +114,112 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "satellite index", "remote sensing", "leaf area", "lai",
         "slope", "aspect", "dem", "elevation", "terrain",
     ],
+
+    # ── 🟢 高德基础 Web 服务 ───────────────────────────────────────────
+
+    # 地理编码
+    Scenario.GEOCODE: [
+        "地理编码", "geocode", "地址转坐标", "地址解析",
+        "把地址转成经纬度", "地址转成坐标", "查询地址坐标",
+        "这个地址在哪", "想知道地址的坐标", "获取地址坐标",
+        "address to coordinates", "geocode address",
+    ],
+
+    # 逆地理编码
+    Scenario.REGEOCODE: [
+        "逆地理编码", "regeocode", "坐标转地址", "坐标解析",
+        "把坐标转成地址", "经纬度转地址", "查询坐标地址",
+        "这个位置是哪里", "想知道坐标的地址", "获取位置地址",
+        "reverse geocode", "coordinates to address",
+    ],
+
+    # 行政区域查询
+    Scenario.DISTRICT: [
+        "行政区域", "行政区划", "district", "查询省市县",
+        "下辖哪些", "有哪些区", "区县边界", "行政区边界",
+        "城市列表", "省份列表", "获取边界", "polyline",
+        "administrative boundaries", "city district",
+    ],
+
+    # 静态地图
+    Scenario.STATIC_MAP: [
+        "静态地图", "static map", "生成地图图片", "地图截图",
+        "地图链接", "地图URL", "带标记的地图", "标注地图",
+        "生成一张地图", "创建地图图片",
+        "map image", "map snapshot",
+    ],
+
+    # 坐标转换
+    Scenario.COORD_CONVERT: [
+        "坐标转换", "convert", "坐标转换", "gcj02", "wgs84",
+        "百度坐标", "gps坐标", "图吧坐标", "坐标系统转换",
+        "坐标系统", "坐标系转换",
+        "coordinate conversion", "coordinate transform",
+    ],
+
+    # 轨迹纠偏
+    Scenario.GRASP_ROAD: [
+        "轨迹纠偏", "gps轨迹", "纠偏", "轨迹修复", "漂移修正",
+        "grasp road", "map matching", "轨迹匹配", "road snapping",
+        "gps漂移", "轨迹点纠正",
+    ],
+
+    # ── 🔵 高德高级 Web 服务 ───────────────────────────────────────────
+
+    # POI 搜索
+    Scenario.POI_SEARCH: [
+        "搜索", "search", "poi", "地点", "查找附近", "周边搜索",
+        "附近有什么", "搜索餐厅", "搜索酒店", "搜索银行",
+        "多边形搜索", "关键字搜索", "类型搜索",
+        "附近500米", "周边1公里", "3公里内",
+        "地点搜索", "场所搜索", "设施搜索",
+        "find places", "nearby search", "place search",
+    ],
+
+    # 输入提示
+    Scenario.INPUT_TIPS: [
+        "输入提示", "autocomplete", "自动补全", "search suggestions",
+        "搜索建议", "补全", "提示",
+    ],
+
+    # 交通态势
+    Scenario.TRAFFIC_STATUS: [
+        "交通态势", "交通状况", "路况", "拥堵", "traffic",
+        "实时路况", "是否拥堵", "道路状况", "traffic status",
+        "交通流量", "通行状况", "拥堵情况",
+        "road congestion", "traffic condition",
+    ],
+
+    # 交通事件
+    Scenario.TRAFFIC_EVENTS: [
+        "交通事件", "traffic events", "封路", "施工", "事故",
+        "交通管制", "封道", "绕行", "道路封闭",
+        "traffic accident", "road closure", "construction",
+        "道路施工", "交通管制", "突发事件",
+    ],
+
+    # 公交信息
+    Scenario.TRANSIT_INFO: [
+        "公交线路", "公交", "地铁", "bus", "metro", "subway",
+        "transit info", "公交信息", "地铁线路", "公交换乘",
+        "公交站点", "地铁站", "公交查询",
+        "bus route", "subway line", "transit",
+    ],
+
+    # IP 定位
+    Scenario.IP_LOCATION: [
+        "ip定位", "ip location", "查询ip", "IP所在地",
+        "ip address location", "ip归属地",
+        "根据ip查位置", "ip查询位置",
+    ],
+
+    # 天气查询
+    Scenario.WEATHER: [
+        "天气", "weather", "气温", "温度", "下雨", "晴天",
+        "weather query", "weather forecast", "天气预报",
+        "今天天气", "明天天气", "湿度", "风力", "风速",
+        "穿衣指数", "空气指数", "空气质量",
+    ],
 }
 
 
@@ -130,7 +236,8 @@ class IntentResult:
     all_intents: Set[Scenario]  # 所有识别到的意图
 
     def __str__(self) -> str:
-        return f"IntentResult(primary={self.primary.value}, confidence={self.confidence:.2f})"
+        primary = self.primary.value if hasattr(self.primary, 'value') else str(self.primary)
+        return f"IntentResult(primary={primary}, confidence={self.confidence:.2f})"
 
 
 # =============================================================================

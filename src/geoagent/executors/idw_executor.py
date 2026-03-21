@@ -94,7 +94,7 @@ class IDWExecutor(BaseExecutor):
     def _resolve_output(self, method: str, output_file: Optional[str]) -> str:
         if output_file:
             return self._resolve_path(output_file)
-        return self._resolve_path(f"workspace/interpolation_{method.lower()}.tif")
+        return self._resolve_path(f"interpolation_{method.lower()}.tif")
 
     def _read_points(self, input_path: str) -> tuple:
         """读取点数据，返回 (x, y, values, crs, bounds)"""

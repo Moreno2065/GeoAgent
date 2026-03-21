@@ -98,7 +98,7 @@ class OverlayExecutor(BaseExecutor):
     def _resolve_output(self, operation: str, output_file: str | None) -> str:
         if output_file:
             return self._resolve_path(output_file)
-        return self._resolve_path(f"workspace/overlay_{operation}.shp")
+        return self._resolve_path(f"overlay_{operation}.shp")
 
     def _run_geopandas(self, task: Dict[str, Any]) -> ExecutorResult:
         """GeoPandas 叠置分析（主力引擎）"""

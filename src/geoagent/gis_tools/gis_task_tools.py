@@ -1,4 +1,4 @@
-﻿"""
+"""
 GIS 任务专项 Function Calling 工具集
 每个工具对应 ArcGIS 工具箱的具体操作，LLM 可直接调用，无需写 Python 代码。
 
@@ -69,6 +69,27 @@ try:
 except ImportError:
     _np = None; HAS_NUMPY = False
 
+
+# =============================================================================
+# CRS 处理工具函数
+# =============================================================================
+
+def _ensure_crs(gdf, name: str = "数据"):
+    """确保 GeoDataFrame 有 CRS，缺失时智能推断"""
+    if gdf.crs is None:
+        bounds = gdf.total_bounds
+        minx, miny, maxx, maxy = bounds
+        
+        if -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90:
+            inferred_crs = "EPSG:4326"
+        else:
+            inferred_crs = "EPSG:3857"
+        
+        print(f"[警告] {name} 缺少 CRS，已自动设为 {inferred_crs}")
+        return gdf.set_crs(inferred_crs, allow_override=True)
+    return gdf
+
+
 try:
     import pyproj as _pp
     HAS_PYPROJ = True
@@ -121,6 +142,9 @@ def vector_buffer(input_file: str, output_file: str,
 
     try:
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         if gdf.crs and gdf.crs.to_epsg() != 3857:
             gdf_proj = gdf.to_crs(epsg=3857)
         else:
@@ -154,6 +178,10 @@ def vector_clip(input_file: str, clip_file: str, output_file: str) -> str:
     try:
         source = _gpd.read_file(_resolve(input_file))
         clipper = _gpd.read_file(_resolve(clip_file))
+        # 确保有 CRS
+        source = _ensure_crs(source, input_file)
+        clipper = _ensure_crs(clipper, clip_file)
+        
         if source.crs != clipper.crs:
             clipper = clipper.to_crs(source.crs)
         clipped = _gpd.overlay(source, clipper, how="intersection")
@@ -183,6 +211,10 @@ def vector_intersect(input_file: str, intersect_file: str,
     try:
         gdf1 = _gpd.read_file(_resolve(input_file))
         gdf2 = _gpd.read_file(_resolve(intersect_file))
+        # 确保有 CRS
+        gdf1 = _ensure_crs(gdf1, input_file)
+        gdf2 = _ensure_crs(gdf2, intersect_file)
+        
         if gdf1.crs != gdf2.crs:
             gdf2 = gdf2.to_crs(gdf1.crs)
         how = "union" if keep_all else "intersection"
@@ -212,6 +244,10 @@ def vector_union(input_file: str, union_file: str, output_file: str) -> str:
     try:
         gdf1 = _gpd.read_file(_resolve(input_file))
         gdf2 = _gpd.read_file(_resolve(union_file))
+        # 确保有 CRS
+        gdf1 = _ensure_crs(gdf1, input_file)
+        gdf2 = _ensure_crs(gdf2, union_file)
+        
         if gdf1.crs != gdf2.crs:
             gdf2 = gdf2.to_crs(gdf1.crs)
         result = _gpd.overlay(gdf1, gdf2, how="union")
@@ -244,6 +280,10 @@ def vector_spatial_join(target_file: str, join_file: str,
     try:
         target = _gpd.read_file(_resolve(target_file))
         join_src = _gpd.read_file(_resolve(join_file))
+        # 确保有 CRS
+        target = _ensure_crs(target, target_file)
+        join_src = _ensure_crs(join_src, join_file)
+        
         if target.crs != join_src.crs:
             join_src = join_src.to_crs(target.crs)
         suffix_l = "_target"; suffix_r = "_join"
@@ -336,6 +376,10 @@ def vector_erase(input_file: str, erase_file: str, output_file: str) -> str:
     try:
         source = _gpd.read_file(_resolve(input_file))
         eraser = _gpd.read_file(_resolve(erase_file))
+        # 确保有 CRS
+        source = _ensure_crs(source, input_file)
+        eraser = _ensure_crs(eraser, erase_file)
+        
         if source.crs != eraser.crs:
             eraser = eraser.to_crs(source.crs)
         result = _gpd.overlay(source, eraser, how="difference")
@@ -765,6 +809,9 @@ def spatial_hotspot(input_file: str, output_file: str,
         from esda.getisord import G_Local
         import libpysal as _lps
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf_proj = gdf.to_crs(epsg=4326)
         else:
@@ -813,6 +860,9 @@ def spatial_morans_i(input_file: str, field: str,
         from esda.moran import Moran
         import libpysal as _lps
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs(epsg=4326)
         w_type = "Queen" if queen else "Rook"
@@ -851,6 +901,9 @@ def spatial_kernel_density(input_file: str, output_file: str,
     try:
         from scipy.stats import gaussian_kde
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         if gdf.crs and gdf.crs.to_epsg() != 3857:
             gdf = gdf.to_crs(epsg=3857)
         bounds = gdf.total_bounds
@@ -1275,6 +1328,9 @@ def map_folium_interactive(input_files: List[str],
         names = layer_names or [f"Layer {i+1}" for i in range(len(input_files))]
         for fname, name in zip(input_files, names):
             gdf = _gpd.read_file(_resolve(fname))
+            # 确保有 CRS
+            gdf = _ensure_crs(gdf, fname)
+            
             if gdf.crs and gdf.crs.to_epsg() != 4326:
                 gdf = gdf.to_crs(epsg=4326)
 
@@ -1348,6 +1404,9 @@ def map_static_plot(input_file: str, output_file: str,
 
     try:
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         fig, ax = _plt.subplots(figsize=figsize or [10, 8])
         if column:
             gdf.plot(column=column, cmap=cmap, legend=legend, ax=ax, edgecolor="black", linewidth=0.3)
@@ -1435,6 +1494,9 @@ def map_multi_layer(input_files: List[str],
         cs = colors or default_colors
         for i, fname in enumerate(input_files):
             gdf = _gpd.read_file(_resolve(fname))
+            # 确保有 CRS
+            gdf = _ensure_crs(gdf, fname)
+            
             c = cs[i % len(cs)]
             if column and column in gdf.columns:
                 gdf.plot(column=column, cmap=cs[i % len(cs)], ax=ax, alpha=0.7, edgecolor="black", linewidth=0.3)
@@ -1541,6 +1603,9 @@ def db_write_postgis(input_file: str,
     try:
         import psycopg2
         gdf = _gpd.read_file(_resolve(input_file))
+        # 确保有 CRS
+        gdf = _ensure_crs(gdf, input_file)
+        
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs(epsg=4326)
         engine_url = connection_string.replace("postgresql://", "postgresql+psycopg2://")
