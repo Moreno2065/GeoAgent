@@ -191,6 +191,7 @@ class ResultRenderer:
         "viewshed": "_render_viewshed",
         "statistics": "_render_statistics",
         "raster": "_render_raster",
+        "code_sandbox": "_render_code_sandbox",  # 受限代码执行
     }
 
     def render(self, result: ExecutorResult) -> RenderResult:
@@ -245,6 +246,76 @@ class ResultRenderer:
             map_file=data.get("map_file"),
             output_files=[f for f in output_files if f],
             metrics=self._extract_metrics(result),
+            raw_result=result.to_dict(),
+        )
+
+    def _render_code_sandbox(self, result: ExecutorResult) -> RenderResult:
+        """
+        渲染代码沙盒执行结果。
+
+        CODE_SANDBOX 场景的输出通常是纯文本或 JSON，不生成地图。
+        """
+        data = result.data or {}
+        output = data.get("output", "")
+        exec_result = data.get("result", output)
+        elapsed_ms = data.get("elapsed_ms", 0)
+        files_created = data.get("files_created", [])
+        engine = data.get("engine", result.engine)
+
+        # 尝试提取关键指标
+        metrics = {}
+        if elapsed_ms:
+            metrics["执行时间"] = f"{elapsed_ms}ms"
+        if files_created:
+            metrics["生成文件"] = ", ".join(files_created)
+
+        # 从输出中尝试解析数字结果
+        key_result = ""
+        if isinstance(exec_result, str):
+            lines = exec_result.strip().split("\n")
+            if lines:
+                key_result = lines[-1][:200]  # 取最后一行（通常是结果）
+        elif isinstance(exec_result, dict):
+            key_result = str(exec_result)[:200]
+
+        summary = f"代码执行完成（{engine}）"
+        if key_result:
+            summary = f"代码执行完成：{key_result}"
+
+        conclusion = BusinessConclusion(
+            summary=summary,
+            key_findings=[
+                f"执行引擎：{engine}",
+                f"执行时间：{elapsed_ms}ms" if elapsed_ms else "执行完成",
+                f"生成文件：{', '.join(files_created)}" if files_created else "无文件输出",
+            ],
+            recommendations=[
+                "如需将结果保存为 GIS 文件，请使用 geopandas 的 to_file() 方法",
+                "如需可视化结果，可将 GeoDataFrame 传入 GeoAgent 可视化流程",
+            ],
+            data_quality="code_generated",
+            confidence="medium",  # LLM 生成的代码，结果置信度中等
+        )
+
+        explanation = ExplanationCard(
+            title="代码沙盒执行结果",
+            what_i_did="通过 LLM 生成的 Python 代码，在受控环境中执行",
+            why="这是一个非标准的 GIS 任务，标准 Executor 无法覆盖，由代码沙盒执行",
+            what_it_means=f"代码已成功执行，结果：{key_result[:100]}..." if len(key_result) > 100 else f"代码已成功执行，结果：{key_result}",
+            caveats=(
+                "⚠️ 代码由 LLM 生成，结果仅供参考，请核实计算逻辑是否正确。"
+                "如需确定性结果，建议使用标准 Executor。"
+            ),
+        )
+
+        return RenderResult(
+            success=True,
+            summary=summary,
+            conclusion=conclusion,
+            explanation=explanation,
+            map_file=None,  # sandbox 通常不生成地图
+            output_files=files_created,
+            metrics=metrics,
             raw_result=result.to_dict(),
         )
 

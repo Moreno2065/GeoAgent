@@ -30,10 +30,11 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
     # ── 路径/可达性分析 ────────────────────────────────────────────────
     Scenario.ROUTE: [
         # 中文
-        "路径", "route", "步行", "导航", "最短路径", "寻路", "routing",
+        "路径", "路线", "route", "步行", "导航", "最短路径", "寻路", "routing",
         "从...到", "到...的", "出发地", "目的地", "起点", "终点",
         "可达", "可达性", "等时圈", "服务范围", "通行时间", "出行时间",
         "15分钟", "10分钟", "5分钟", "30分钟生活圈",
+        "查一下", "查查",
         # 英文
         "driving", "walking", "walk", "drive", "bike", "cycling",
         "shortest path", "shortest route", "navigation", "directions",
@@ -236,6 +237,20 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "今天天气", "明天天气", "湿度", "风力", "风速",
         "穿衣指数", "空气指数", "空气质量",
     ],
+
+    # ── 🟣 代码沙盒（受限代码执行）────────────────────────────────
+    Scenario.CODE_SANDBOX: [
+        # 中文
+        "写一段代码", "写python", "python代码", "写脚本",
+        "生成测试数据", "代码实现", "计算面积", "编程", "用代码",
+        "写代码", "帮我写", "python实现", "写个脚本",
+        "生成数据", "用python", "script", "compute",
+        "写个函数", "代码计算", "脚本", "计算一下",
+        # 英文
+        "write code", "python code", "write script", "generate test data",
+        "code implementation", "compute area", "programming",
+        "custom calculation", "custom logic",
+    ],
 }
 
 
@@ -278,12 +293,12 @@ class IntentClassifier:
         print(result.confidence)  # 0.95
     """
 
-    def __init__(self, threshold: float = 0.0):
+    def __init__(self, threshold: float = 0.25):
         """
         初始化意图分类器
 
         Args:
-            threshold: 置信度阈值，低于此值则返回 None
+            threshold: 置信度阈值，低于此值则返回 "general"（无法确定场景）
         """
         self.threshold = threshold
         self._build_index()
@@ -348,7 +363,17 @@ class IntentClassifier:
                             matched[intent].append(kw)
 
         if not matched:
-            # 没有匹配，返回默认意图
+            # ── 🚨 安检门：无匹配时检查是否为垃圾输入 ──────────────────
+            stripped = query.strip()
+            is_garbage = stripped.isdigit() or len(stripped) < 2
+            if is_garbage:
+                return IntentResult(
+                    primary="general",  # 安检门专用标记，不走任何 GIS 场景
+                    confidence=1.0,
+                    matched_keywords=[],
+                    all_intents=set()
+                )
+            # ── 无匹配且非垃圾，返回默认意图 ─────────────────────────
             return IntentResult(
                 primary=Scenario.ROUTE,
                 confidence=0.0,
@@ -385,10 +410,10 @@ class IntentClassifier:
             # 单意图模式：返回得分最高的意图
             all_intents = {sorted_intents[0][0]} if sorted_intents else set()
 
-        # 检查是否低于阈值
+        # 检查是否低于阈值——低于阈值 = 无法确定场景，标记为 general
         if confidence < self.threshold:
             return IntentResult(
-                primary=Scenario.ROUTE,
+                primary="general",  # type: ignore[arg-type]
                 confidence=confidence,
                 matched_keywords=[],
                 all_intents=set()

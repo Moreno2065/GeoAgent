@@ -84,6 +84,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "fetch_osm":     lambda: __import__(
                               "geoagent.executors.osm_executor",
                               fromlist=["OSMExecutor"]).OSMExecutor,
+        # 受限代码执行
+        "code_sandbox":  lambda: __import__(
+                              "geoagent.executors.code_sandbox_executor",
+                              fromlist=["CodeSandboxExecutor"]).CodeSandboxExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -128,6 +132,8 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "vector_intersect": "gdal",
     # OSM 在线下载
     "fetch_osm":       "fetch_osm",
+    # 受限代码执行
+    "code_sandbox":    "code_sandbox",
 }
 
 
@@ -166,7 +172,9 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "vector_clip":      "gdal",
     "vector_intersect": "gdal",
     # OSM 在线下载
-    "fetch_osm":       "fetch_osm",
+    "fetch_osm":        "fetch_osm",
+    # 受限代码执行
+    "code_sandbox":     "code_sandbox",
 }
 
 

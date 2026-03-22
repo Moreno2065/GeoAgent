@@ -308,6 +308,46 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
             "description": "目标坐标系",
         },
     },
+
+    # ── 🟣 代码沙盒（受限代码执行）───────────────────────────────────────
+    Scenario.CODE_SANDBOX: {
+        "code": {
+            "type": "string",
+            "required": True,
+            "description": "LLM 生成的 Python 代码",
+        },
+        "description": {
+            "type": "string",
+            "required": False,
+            "description": "任务描述（用于代码生成时的上下文）",
+        },
+        "context_data": {
+            "type": "dict",
+            "required": False,
+            "description": "传入的数据上下文（如 workspace 文件路径、变量等）",
+        },
+        "language": {
+            "type": "string",
+            "required": False,
+            "default": "python",
+            "description": "编程语言（目前仅支持 python）",
+        },
+        "timeout_seconds": {
+            "type": "number",
+            "required": False,
+            "default": 60.0,
+            "min": 1.0,
+            "max": 300.0,
+            "description": "执行超时时间（秒）",
+        },
+        "mode": {
+            "type": "string",
+            "required": False,
+            "default": "exec",
+            "options": ["exec", "eval"],
+            "description": "执行模式：exec=执行语句块，eval=计算表达式",
+        },
+    },
 }
 
 

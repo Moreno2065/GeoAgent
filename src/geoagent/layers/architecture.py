@@ -80,6 +80,9 @@ class Scenario(str, Enum):
     HOTSPOT = "hotspot"        # 热点分析
     VISUALIZATION = "visualization"  # 可视化
 
+    # ── 🟣 代码沙盒场景（受限代码执行）──────────────────────────────
+    CODE_SANDBOX = "code_sandbox"  # 受限代码执行（非标准任务的自定义 Python 代码）
+
     # ── 🟢 高德基础 Web 服务场景 ─────────────────────────────────
     GEOCODE = "geocode"        # 地理编码（地址 → 坐标）
     REGEOCODE = "regeocode"     # 逆地理编码（坐标 → 地址）
@@ -266,6 +269,7 @@ MVP_SCENARIO_EXECUTOR_MAP = {
     Scenario.TRANSIT_INFO: "amap_executor",
     Scenario.IP_LOCATION: "amap_executor",
     Scenario.WEATHER: "amap_executor",
+    Scenario.CODE_SANDBOX: "code_sandbox_executor",  # 受限代码执行（补丁层）
 }
 
 # 引擎名称
@@ -278,6 +282,7 @@ class Engine(str, Enum):
     SCIENTIFIC = "scientific"  # SciPy
     PYSAL = "pysal"
     POSTGIS = "postgis"
+    SANDBOX = "sandbox"  # 代码沙盒（受限 Python 执行）
 
 
 __all__ = [

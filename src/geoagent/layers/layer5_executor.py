@@ -53,6 +53,7 @@ SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
     "statistics": "hotspot",
     "raster": "ndvi",
     "suitability": "suitability",  # MCDA 适宜性选址分析
+    "code_sandbox": "code_sandbox",  # 受限代码执行（补丁层）
 }
 
 
@@ -196,6 +197,29 @@ def execute_general(task_dict: Dict[str, Any]) -> ExecutorResult:
     return execute_task("general", task_dict)
 
 
+def execute_code_sandbox(task_dict: Dict[str, Any]) -> ExecutorResult:
+    """
+    执行受限代码沙盒任务。
+
+    由 LLM 生成自定义 Python 代码，在受控环境中执行。
+    仅在标准 Executor 无法覆盖的任务时使用。
+
+    Args:
+        task_dict: 包含以下字段的字典：
+            - code: LLM 生成的 Python 代码
+            - context_data: 数据上下文（可选）
+            - description: 任务描述（可选）
+            - timeout_seconds: 超时时间（默认 60.0）
+            - mode: "exec" 或 "eval"（默认 "exec"）
+
+    Returns:
+        ExecutorResult
+    """
+    from geoagent.executors.code_sandbox_executor import CodeSandboxExecutor
+    executor = CodeSandboxExecutor()
+    return executor.run(task_dict)
+
+
 # =============================================================================
 # Capability Registry 便捷函数（54 个标准化能力节点）
 # =============================================================================
@@ -275,6 +299,7 @@ __all__ = [
     "execute_accessibility",
     "execute_suitability",
     "execute_general",
+    "execute_code_sandbox",
     # Capability Registry
     "execute_capability",
     "execute_capability_from_task",

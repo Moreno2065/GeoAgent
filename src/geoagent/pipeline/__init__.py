@@ -363,7 +363,7 @@ class GeoAgentPipeline:
 
             if event_callback:
                 event_callback("orchestration_complete", {
-                    "scenario": orchestration_result.scenario.value,
+                    "scenario": _get_orch_scenario_value(orchestration_result.scenario),
                     "status": orchestration_result.status.value,
                 })
 
@@ -372,7 +372,7 @@ class GeoAgentPipeline:
                 return PipelineResult(
                     success=False,
                     status=PipelineStatus.CLARIFICATION_NEEDED,
-                    scenario=orchestration_result.scenario.value,
+                    scenario=_get_orch_scenario_value(orchestration_result.scenario),
                     clarification_needed=True,
                     clarification_questions=[
                         {"field": q.field, "question": q.question, "options": q.options}
@@ -381,6 +381,18 @@ class GeoAgentPipeline:
                     context=ctx,
                     error="参数不完整，需要澄清",
                     error_type="clarification_needed",
+                )
+
+            # 🚨 安检门拦截：无效输入直接返回错误
+            if orchestration_result.error:
+                return PipelineResult(
+                    success=False,
+                    status=PipelineStatus.PENDING,
+                    scenario="unknown",
+                    clarification_needed=False,
+                    context=ctx,
+                    error=orchestration_result.error,
+                    error_type="invalid_input",
                 )
 
             # ── 第4层：DSL 构建 ────────────────────────────────────────

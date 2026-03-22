@@ -1368,6 +1368,13 @@ class ScenarioOrchestrator:
                 "visualize": True,
                 "outputs": {"map": True, "summary": True},
             },
+            # 受限代码执行
+            Scenario.CODE_SANDBOX: {
+                "language": "python",
+                "timeout_seconds": 60.0,
+                "mode": "exec",
+                "outputs": {"map": False, "summary": True},
+            },
         }
 
     def orchestrate(
@@ -1384,6 +1391,20 @@ class ScenarioOrchestrator:
             intent_result = self.intent_classifier.classify(text)
 
         scenario = intent_result.primary
+
+        # ==========================================
+        # 🚨 哈基米防幻觉安检门：拦截无法分类为 GIS 场景的输入
+        # ==========================================
+        scenario_str = scenario.value if hasattr(scenario, 'value') else str(scenario)
+        if scenario_str == "general":
+            return OrchestrationResult(
+                status=PipelineStatus.PENDING,
+                scenario=Scenario.ROUTE,  # 占位，满足类型注解；上游会将其转字符串处理
+                needs_clarification=False,
+                error="本哈基米是一个严肃的🌍空间智能引擎！只接受 GIS 地理指令（如：帮我查一下从芜湖南站到方特的步行路线，或分析芜湖市的缓冲区）。请发送明确的地理分析请求～",
+                intent_result=intent_result,
+            )
+        # ==========================================
 
         if event_callback:
             event_callback("intent_classified", {

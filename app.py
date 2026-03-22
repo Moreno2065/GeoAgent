@@ -624,65 +624,63 @@ def _render_sidebar():
 
         # ── 启动 Agent ────────────────────────────────────────────
         if st.button("🚀 启动 Agent", use_container_width=True, type="primary"):
-            # 验证 DeepSeek Key
             dk = dk.strip()
-            if not dk.startswith("sk-"):
+            gk = gk.strip() if gk else ""
+
+            # 验证 DeepSeek Key（仅在 DeepSeek 作为主模型或存在时才必须）
+            if selected_provider == "deepseek" and not dk.startswith("sk-"):
                 st.error("❌ DeepSeek Key 格式错误，应以 sk- 开头")
+            elif selected_provider == "glm" and not gk:
+                st.error("❌ 请输入 GLM API Key")
             else:
                 # 保存 Key
                 _write_key(".api_key", dk)
                 if gk:
-                    _write_key(".glm_api_key", gk.strip())
+                    _write_key(".glm_api_key", gk)
                 if ak:
-                    _write_key(".amap_key", ak)
+                    _write_key(".amap_key", ak.strip())
                 st.session_state["deepseek_key"] = dk
                 st.session_state["glm_key"] = gk
 
-                # ── 主模型选择：根据 selected_provider 确定主模型配置 ─────────
-                # 验证：DeepSeek Key（仅在 DeepSeek 作为主模型时才必须）
-                if selected_provider == "deepseek" and not dk.startswith("sk-"):
-                    st.error("❌ DeepSeek Key 格式错误，应以 sk- 开头")
+                # ── 主模型选择 ───────────────────────────────────────────
+                if selected_provider == "glm":
+                    # 主模型 = GLM
+                    primary_api_key = gk
+                    primary_model = "glm-4.6v"
+                    primary_base_url = "https://open.bigmodel.cn/api/paas/v4"
+                    # 备用 = DeepSeek（如果有）
+                    fallback_api_key = dk if dk.startswith("sk-") else None
+                    fallback_model = "deepseek-chat"
+                    fallback_base_url = "https://api.deepseek.com"
                 else:
-                    if selected_provider == "glm":
-                        # 主模型 = GLM
-                        primary_api_key = gk.strip() if gk.strip() else None
-                        primary_model = "glm-4.6v"
-                        primary_base_url = "https://open.bigmodel.cn/api/paas/v4"
-                        # 备用 = DeepSeek（如果有）
-                        fallback_api_key = dk.strip() if dk.startswith("sk-") else None
-                        fallback_model = "deepseek-chat"
-                        fallback_base_url = "https://api.deepseek.com"
-                    else:
-                        # 主模型 = DeepSeek（默认）
-                        primary_api_key = dk.strip()
-                        primary_model = "deepseek-chat"
-                        primary_base_url = "https://api.deepseek.com"
-                        # 备用 = GLM（如果有）
-                        fallback_api_key = gk.strip() if gk.strip() else None
-                        fallback_model = "glm-4.6v"
-                        fallback_base_url = "https://open.bigmodel.cn/api/paas/v4"
+                    # 主模型 = DeepSeek（默认）
+                    primary_api_key = dk
+                    primary_model = "deepseek-chat"
+                    primary_base_url = "https://api.deepseek.com"
+                    # 备用 = GLM（如果有）
+                    fallback_api_key = gk if gk else None
+                    fallback_model = "glm-4.6v"
+                    fallback_base_url = "https://open.bigmodel.cn/api/paas/v4"
 
-                    try:
-                        # 创建 Agent（支持双模型，provider 由主模型决定）
-                        st.session_state["agent_v2"] = create_agent_v2(
-                            primary_api_key=primary_api_key,
-                            primary_model=primary_model,
-                            primary_base_url=primary_base_url,
-                            fallback_api_key=fallback_api_key,
-                            fallback_model=fallback_model,
-                            fallback_base_url=fallback_base_url,
-                        )
-                        st.session_state["agent"] = None
+                try:
+                    st.session_state["agent_v2"] = create_agent_v2(
+                        primary_api_key=primary_api_key,
+                        primary_model=primary_model,
+                        primary_base_url=primary_base_url,
+                        fallback_api_key=fallback_api_key,
+                        fallback_model=fallback_model,
+                        fallback_base_url=fallback_base_url,
+                    )
+                    st.session_state["agent"] = None
 
-                        # 显示当前配置
-                        model_info = st.session_state["agent_v2"].get_current_model_info()
-                        st.success(
-                            f"✅ Agent 已启动\n"
-                            f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
-                            f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
-                        )
-                    except Exception as e:
-                        st.error(f"❌ 初始化失败：{e}")
+                    model_info = st.session_state["agent_v2"].get_current_model_info()
+                    st.success(
+                        f"✅ Agent 已启动\n"
+                        f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
+                        f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
+                    )
+                except Exception as e:
+                    st.error(f"❌ 初始化失败：{e}")
 
         agent_v2 = st.session_state.get("agent_v2")
         agent_online_v2 = bool(agent_v2)

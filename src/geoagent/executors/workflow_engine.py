@@ -214,6 +214,43 @@ class WorkflowEngine:
             # 1. 解析输入：处理 tmp_xxx 变量引用
             resolved_args = self._resolve_inputs(step)
 
+            # ── code_sandbox 特殊处理 ──────────────────────────────────────────
+            if step.task == "code_sandbox":
+                from geoagent.executors.code_sandbox_executor import CodeSandboxExecutor
+                sandbox_executor = CodeSandboxExecutor()
+
+                # 将 context 中的中间变量作为 context_data 传入
+                sandbox_task = {
+                    "code": resolved_args.get("code", step.parameters.get("code", "")),
+                    "description": step.description or step.parameters.get("description", ""),
+                    "context_data": self._build_context_data(resolved_args),
+                    "timeout_seconds": float(
+                        resolved_args.get("timeout_seconds",
+                            step.parameters.get("timeout_seconds", 60.0))
+                    ),
+                    "mode": resolved_args.get("mode", step.parameters.get("mode", "exec")),
+                    "session_id": f"wf_{step.step_id}",
+                }
+                result = sandbox_executor.run(sandbox_task)
+                step_result.result = result
+
+                if result.success and result.data:
+                    self.context[step.output_id] = result.data
+                    self._emit("step_complete", {
+                        "step_id": step.step_id,
+                        "output_id": step.output_id,
+                        "success": True,
+                    })
+                else:
+                    step_result.error = result.error
+                    self._emit("step_error", {
+                        "step_id": step.step_id,
+                        "error": result.error,
+                    })
+                step_result.status = "completed"
+                return step_result
+
+            # ── 标准执行器路径 ─────────────────────────────────────────────
             # 2. 构建任务字典
             task_dict = {
                 "task": step.task,
@@ -305,6 +342,29 @@ class WorkflowEngine:
     def _is_variable_ref(value: str) -> bool:
         """判断是否为变量引用（tmp_xxx 格式）"""
         return isinstance(value, str) and value.startswith("tmp_")
+
+    def _build_context_data(self, resolved_args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        为 code_sandbox 步骤构建 context_data。
+
+        将 resolved_args 中非 code/description/timeout 等控制参数的
+        实际数据参数收集为 context_data 字典，供 sandbox 中的代码使用。
+
+        Args:
+            resolved_args: 已解析的参数字典
+
+        Returns:
+            context_data 字典（可被 sandbox 代码作为 `data` 变量访问）
+        """
+        control_keys = {"code", "description", "timeout_seconds", "mode", "session_id"}
+        context_data: Dict[str, Any] = {}
+        for key, value in resolved_args.items():
+            if key not in control_keys and value is not None:
+                context_data[key] = value
+        # 附加当前 context 中所有 tmp_xxx 变量
+        for var_name, var_value in self.context.items():
+            context_data[var_name] = var_value
+        return context_data
 
     def _topological_sort(self, steps: List[WorkflowStep]) -> List[WorkflowStep]:
         """
