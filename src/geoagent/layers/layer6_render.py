@@ -722,6 +722,75 @@ class ResultRenderer:
             raw_result=result.to_dict(),
         )
 
+    def render_with_view(
+        self,
+        result: ExecutorResult,
+        view: Optional[Dict[str, Any]] = None,
+        visualization: Optional[Dict[str, Any]] = None,
+    ) -> RenderResult:
+        """
+        渲染执行结果，并应用视图控制和可视化配置。
+
+        这是 v2.1 Pipeline 的主要渲染入口，支持自动边界适应。
+
+        Args:
+            result: Executor 返回的结果
+            view: ViewSpec 字典（视图控制配置）
+            visualization: VisualizationSpec 字典（可视化配置）
+
+        Returns:
+            RenderResult 标准化渲染结果
+        """
+        # 先执行标准渲染
+        render_result = self.render(result)
+
+        # 如果有 ViewSpec，自动计算地图边界信息
+        if view and view.get("fit_bounds", True) and render_result.map_file:
+            view_info = self._extract_view_info(view, result)
+            render_result.metrics["view"] = view_info
+
+        # 如果有 VisualizationSpec，记录可视化配置
+        if visualization:
+            render_result.metrics["visualization"] = {
+                "has_style": visualization.get("color") is not None or
+                             visualization.get("size") is not None,
+                "heatmap": visualization.get("heatmap", False),
+                "choropleth_field": visualization.get("choropleth"),
+            }
+
+        return render_result
+
+    def _extract_view_info(
+        self,
+        view: Dict[str, Any],
+        result: ExecutorResult,
+    ) -> Dict[str, Any]:
+        """从 ViewSpec 和 ExecutorResult 提取视图信息"""
+        info = {}
+
+        if view.get("fit_bounds"):
+            info["fit_bounds"] = True
+            info["padding"] = view.get("bounds_padding")
+
+        if view.get("center"):
+            info["center"] = view["center"]
+
+        if view.get("zoom"):
+            info["zoom"] = view["zoom"]
+
+        if view.get("pitch"):
+            info["pitch"] = view["pitch"]
+
+        if view.get("bearing"):
+            info["bearing"] = view["bearing"]
+
+        # 尝试从 result 中提取实际计算的边界
+        data = result.data or {}
+        if data.get("bounds"):
+            info["bounds"] = data["bounds"]
+
+        return info
+
     def _extract_metrics(self, result: ExecutorResult) -> Dict[str, Any]:
         """从结果中提取关键指标"""
         data = result.data or {}

@@ -34,7 +34,6 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "从...到", "到...的", "出发地", "目的地", "起点", "终点",
         "可达", "可达性", "等时圈", "服务范围", "通行时间", "出行时间",
         "15分钟", "10分钟", "5分钟", "30分钟生活圈",
-        "查一下", "查查",
         # 英文
         "driving", "walking", "walk", "drive", "bike", "cycling",
         "shortest path", "shortest route", "navigation", "directions",
@@ -183,14 +182,55 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
 
     # ── 🔵 高德高级 Web 服务 ───────────────────────────────────────────
 
-    # POI 搜索
+    # POI 搜索（扩展关键词：覆盖"查询附近餐厅"等自然表达）
     Scenario.POI_SEARCH: [
+        # 扩展中文关键词：包含"找"、"查"、"附近"、"周边"、"餐厅"等自然表达
         "搜索", "search", "poi", "地点", "查找附近", "周边搜索",
         "附近有什么", "搜索餐厅", "搜索酒店", "搜索银行",
         "多边形搜索", "关键字搜索", "类型搜索",
         "附近500米", "周边1公里", "3公里内",
         "地点搜索", "场所搜索", "设施搜索",
+        # 新增：自然语言表达（"找xxx"模式）
+        "找附近", "找周边", "附近找", "周边找",
+        "查询附近", "查周边", "附近查询", "周边查询",
+        "附近餐厅", "周边餐厅", "附近酒店", "周边酒店",
+        "附近银行", "周边银行", "附近超市", "周边超市",
+        "附近学校", "周边学校", "附近医院", "周边医院",
+        "附近商场", "周边商场", "附近加油站", "周边加油站",
+        "附近停车场", "周边停车场", "附近地铁站", "周边地铁站",
+        "附近公交站", "周边公交站", "附近景点", "周边景点",
+        "附近公园", "周边公园", "附近健身房", "周边健身房",
+        "附近药店", "周边药店", "附近便利店", "周边便利店",
+        "找餐厅", "找酒店", "找银行", "找超市",
+        "找学校", "找医院", "找商场", "找加油站",
+        "找停车场", "找地铁站", "找公交站", "找景点",
+        "找公园", "找健身房", "找药店", "找便利店",
+        "饭店", "餐厅", "美食", "小吃", "咖啡", "酒吧",
+        "KTV", "网吧", "电影院", "健身房",
+        # 英文
         "find places", "nearby search", "place search",
+        "find nearby", "around me", "near me",
+        "restaurant", "hotel", "bank", "supermarket",
+        "school", "hospital", "mall", "gas station",
+        "parking", "subway", "metro", "attractions",
+        "park", "gym", "pharmacy", "convenience store",
+    ],
+
+    # ── 可视化（扩展关键词：地图渲染、热力图、分类图）───────────────
+    Scenario.VISUALIZATION: [
+        # 中文
+        "可视化", "显示在地图", "画在地图", "展示地图",
+        "渲染", "绘制", "绘制地图", "呈现在地图上",
+        "热力图", "heatmap", "热图", "密度图",
+        "分类图", "分级图", "choropleth", "分级设色",
+        "专题地图", "专题图", "数据地图",
+        "把结果显示", "结果显示在地图", "显示结果",
+        "图层", "多图层", "叠加显示",
+        # 英文
+        "visualize", "visualization", "render", "display on map",
+        "heatmap", "heat map", "density map",
+        "choropleth", "thematic map", "classification map",
+        "layer", "overlay", "show on map",
     ],
 
     # 输入提示
@@ -293,7 +333,7 @@ class IntentClassifier:
         print(result.confidence)  # 0.95
     """
 
-    def __init__(self, threshold: float = 0.25):
+    def __init__(self, threshold: float = 0.05):
         """
         初始化意图分类器
 
@@ -362,20 +402,20 @@ class IntentClassifier:
                                 matched[intent] = []
                             matched[intent].append(kw)
 
+        # 无匹配 → 无法确定具体场景
         if not matched:
-            # ── 🚨 安检门：无匹配时检查是否为垃圾输入 ──────────────────
             stripped = query.strip()
             is_garbage = stripped.isdigit() or len(stripped) < 2
             if is_garbage:
                 return IntentResult(
-                    primary="general",  # 安检门专用标记，不走任何 GIS 场景
+                    primary="general",  # 安检门：垃圾输入标记
                     confidence=1.0,
                     matched_keywords=[],
                     all_intents=set()
                 )
-            # ── 无匹配且非垃圾，返回默认意图 ─────────────────────────
+            # 无匹配且非垃圾 → 无足够证据，阈值兜底
             return IntentResult(
-                primary=Scenario.ROUTE,
+                primary="general",  # type: ignore[arg-type]
                 confidence=0.0,
                 matched_keywords=[],
                 all_intents=set()

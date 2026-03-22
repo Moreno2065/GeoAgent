@@ -100,6 +100,12 @@ class Scenario(str, Enum):
     IP_LOCATION = "ip_location"  # IP 定位
     WEATHER = "weather"         # 天气查询
 
+    # ── 可视化 Pipeline 扩展场景 ─────────────────────────────────
+    POI_QUERY = "poi_query"  # POI 查询（Overpass API 封装，标准化 POI 搜索流程）
+    HEATMAP = "heatmap"       # 热力图（POI/密度数据 → 热力图渲染）
+    CHOROPLETH = "choropleth"  # 分级设色（面数据 + 数值字段 → 分类着色）
+    DATA_SOURCE = "data_source"  # 数据源加载（从 OSM/API/文件加载数据）
+
     @classmethod
     def values(cls) -> list[str]:
         return [e.value for e in cls]
@@ -218,6 +224,37 @@ class WeatherExtensions(str, Enum):
 
 
 # =============================================================================
+# 标准空间操作枚举（与 Scenario 解耦，用于 Transform 层）
+# =============================================================================
+
+class SpatialOperation(str, Enum):
+    """
+    标准空间操作枚举。
+
+    与 Scenario 解耦——一个 Scenario 可以包含多个操作。
+    例如：叠置分析 = BUFFER + OVERLAY 两个操作组合。
+
+    用于：
+    - WorkflowEngine 的 step.task 字段
+    - TransformEngine 的操作路由
+    - Executor 的任务类型映射
+    """
+    BUFFER = "buffer"
+    INTERSECT = "intersect"
+    UNION = "union"
+    CLIP = "clip"
+    DIFFERENCE = "difference"
+    DISSOLVE = "dissolve"
+    ROUTE = "route"
+    NEAREST = "nearest"
+    HEATMAP = "heatmap"
+    INTERPOLATE = "interpolate"
+    VIEWSHED = "viewshed"
+    SHADOW = "shadow"
+    OVERLAY = "overlay"  # 通用叠置（可拆解为 intersect/union/difference）
+
+
+# =============================================================================
 # 执行状态枚举
 # =============================================================================
 
@@ -305,6 +342,7 @@ __all__ = [
     "WeatherExtensions",
     "PipelineStatus",
     "Engine",
+    "SpatialOperation",
     "ARCHITECTURE_VERSION",
     "ARCHITECTURE_NAME",
     "MVP_SCENARIOS",

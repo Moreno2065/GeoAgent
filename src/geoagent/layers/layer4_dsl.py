@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from geoagent.layers.architecture import Scenario
@@ -41,6 +41,182 @@ class OutputSpec(BaseModel):
     explanation: Optional[str] = Field(default=None, description="解释卡片文本")
 
 
+# =============================================================================
+# GeoDSL 可视化扩展模型（v2.0 升级）
+# =============================================================================
+
+class VisualizationSpec(BaseModel):
+    """
+    视觉编码规范（Visual Encoding）
+
+    定义 GeoJSON 数据的渲染样式，实现数据和视觉的解耦。
+
+    设计原则：
+    - 数据（geometry）和样式（style）必须分离
+    - 支持按字段值映射视觉变量（颜色/大小/透明度）
+    - 支持固定值和字段映射两种模式
+
+    示例：
+        # 固定样式
+        VisualizationSpec(color="blue", opacity=0.4, fill_color="#3388ff")
+
+        # 字段映射样式（按 category 字段分类着色）
+        VisualizationSpec(color={"field": "category", "scheme": "category10"})
+
+        # 数值映射样式（按 population 字段值大小决定点半径）
+        VisualizationSpec(size={"field": "population", "range": [5, 30]})
+    """
+    # ── 颜色配置 ─────────────────────────────────────────────────
+    # 固定颜色（如 "blue", "#3388ff", "rgb(50,100,200)"）
+    # 或字段映射（如 {"field": "category", "scheme": "category10"}）
+    color: Optional[Any] = Field(
+        default=None,
+        description="主色调：固定值字符串 或 按字段映射字典（scheme 支持: category10, viridis, plasma）"
+    )
+    fill_color: Optional[Any] = Field(
+        default=None,
+        description="填充色：固定值 或 按字段映射"
+    )
+    stroke_color: Optional[Any] = Field(
+        default=None,
+        description="边框/线颜色"
+    )
+
+    # ── 大小配置 ─────────────────────────────────────────────────
+    # 固定数值（点半径、线宽等）
+    # 或按字段映射（如 {"field": "population", "range": [5, 30]}）
+    size: Optional[Any] = Field(
+        default=None,
+        description="大小：固定数值(px) 或 按数值字段映射字典"
+    )
+    stroke_width: float = Field(default=1.0, description="线宽/边框宽度(px)")
+
+    # ── 透明度配置 ───────────────────────────────────────────────
+    opacity: float = Field(default=0.7, ge=0.0, le=1.0, description="整体透明度")
+    fill_opacity: float = Field(default=0.6, ge=0.0, le=1.0, description="填充透明度")
+
+    # ── 标签配置 ─────────────────────────────────────────────────
+    label: Optional[str] = Field(
+        default=None,
+        description="显示的标签字段名（如 'name', 'population'）"
+    )
+    label_size: int = Field(default=12, description="标签字体大小(px)")
+    label_color: str = Field(default="#333333", description="标签颜色")
+
+    # ── 符号配置 ─────────────────────────────────────────────────
+    # point 图层的符号类型：circle / square / triangle / star
+    symbol: str = Field(default="circle", description="点符号类型")
+
+    # ── 专题地图类型 ─────────────────────────────────────────────
+    # 是否渲染为热力图
+    heatmap: bool = Field(default=False, description="是否渲染为热力图（HeatMap）")
+    # 热力图专用：权重字段
+    heatmap_weight_field: Optional[str] = Field(
+        default=None,
+        description="热力图权重字段（数值型，用于热力强度）"
+    )
+    # 是否渲染为分级设色图
+    choropleth: Optional[str] = Field(
+        default=None,
+        description="分级设色字段名（填字段名则启用 Choropleth，按该字段值分类着色）"
+    )
+    # 分级设色参数
+    choropleth_scheme: str = Field(
+        default="quantiles",
+        description="分级方法：quantiles / equal /jenks"
+    )
+    choropleth_classes: int = Field(default=5, description="分级数量（默认5级）")
+
+    # ── 字段类型推断辅助 ─────────────────────────────────────────
+    model_config = ConfigDict(use_enum_values=True)
+
+
+class ViewSpec(BaseModel):
+    """
+    视图控制规范（View Control）
+
+    控制地图的初始视图状态：中心点、缩放级别、旋转、倾斜。
+
+    示例：
+        ViewSpec(fit_bounds=True)  # 自动适应所有图层边界
+        ViewSpec(center=[31.3, 118.3], zoom=12, pitch=45, bearing=0)  # 手动指定
+    """
+    # ── 边界适应 ─────────────────────────────────────────────────
+    fit_bounds: bool = Field(
+        default=True,
+        description="自动适应所有图层边界（推荐开启，会覆盖 center/zoom）"
+    )
+    # fit_bounds 为 True 时可额外指定 padding
+    bounds_padding: Tuple[float, float, float, float] = Field(
+        default=(50, 50, 50, 50),
+        description="边界适应的内边距 (top, right, bottom, left)，单位px"
+    )
+
+    # ── 手动指定视图 ─────────────────────────────────────────────
+    center: Optional[Tuple[float, float]] = Field(
+        default=None,
+        description="地图中心点 [lat, lon]"
+    )
+    zoom: int = Field(default=12, ge=1, le=20, description="缩放级别")
+    # ── 3D 视图 ─────────────────────────────────────────────────
+    pitch: int = Field(default=0, ge=0, le=60, description="俯仰角（3D模式），0=垂直向下")
+    bearing: int = Field(default=0, ge=0, le=360, description="方位角（旋转角度）")
+
+    # ── 地图限制 ─────────────────────────────────────────────────
+    min_zoom: int = Field(default=3, description="最小缩放级别")
+    max_zoom: int = Field(default=18, description="最大缩放级别")
+
+
+class LayerSpec(BaseModel):
+    """
+    图层规范（Layer Specification）
+
+    描述单个图层的完整配置：ID、类型、数据源、样式。
+
+    设计原则：
+    - 每个图层都有唯一 layer_id（用于交互控制：点击/隐藏/切换）
+    - style 字段和 data 字段完全分离
+    - 所有输出必须是 GeoJSON（系统内部中间语言）
+
+    示例：
+        LayerSpec(
+            layer_id="buffer_1",
+            layer_type="buffer",
+            source="tmp_road_buf",  # 引用中间变量 或 文件路径
+            style=VisualizationSpec(color="blue", opacity=0.4),
+            visible=True,
+            interactive=True,
+        )
+    """
+    layer_id: str = Field(description="唯一图层ID，用于图层控制和交互")
+    layer_type: str = Field(
+        description="图层类型：buffer / poi / heatmap / choropleth / raw / route / overlay"
+    )
+    # 数据源：文件路径 或 tmp_xxx 中间变量引用
+    source: str = Field(
+        description="数据源（文件路径 或 WorkflowStep 的 output_id）"
+    )
+    # ── 可视化样式 ───────────────────────────────────────────────
+    style: Optional[VisualizationSpec] = Field(
+        default=None,
+        description="图层视觉样式（可选，不提供则使用默认样式）"
+    )
+    # ── 显示控制 ─────────────────────────────────────────────────
+    visible: bool = Field(default=True, description="是否显示")
+    # ── 交互控制 ─────────────────────────────────────────────────
+    interactive: bool = Field(
+        default=True,
+        description="是否可点击（True=弹出信息框，False=仅显示）"
+    )
+    # ── 图层名称 ─────────────────────────────────────────────────
+    name: Optional[str] = Field(
+        default=None,
+        description="图层显示名称（用于图层控制面板）"
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
 class WorkflowStep(BaseModel):
     """
     工作流中的单一步骤
@@ -49,6 +225,8 @@ class WorkflowStep(BaseModel):
     - 中间变量引用（引用前序步骤的输出）
     - 显式依赖声明
     - 任务参数传递
+    - 条件执行（可选）
+    - 循环执行（可选）
 
     示例：
         {
@@ -66,6 +244,7 @@ class WorkflowStep(BaseModel):
             "inputs": {"layer1": "tmp_buffer_1", "layer2": "tmp_river_buf", "operation": "erase"},
             "output_id": "tmp_suitable",
             "depends_on": ["step_1", "step_3"],
+            "condition": "density > 0.5",  # 可选：条件满足才执行
         }
     """
     step_id: str = Field(description="唯一步骤ID，如 'step_1', 'buffer_step'")
@@ -89,6 +268,16 @@ class WorkflowStep(BaseModel):
     output_file: Optional[str] = Field(
         default=None,
         description="输出文件路径（如果需要持久化到磁盘）"
+    )
+    # ── 条件执行（Phase 4.1 扩展）────────────────────────────────
+    condition: Optional[str] = Field(
+        default=None,
+        description="条件表达式，满足条件才执行。格式：'field > 0.5' 或 'count >= 10'"
+    )
+    # ── 循环执行（Phase 4.1 扩展）────────────────────────────────
+    for_each: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="循环执行配置。格式：{'var': 'layer', 'in': 'tmp_layers'}"
     )
 
     model_config = ConfigDict(use_enum_values=True)
@@ -141,8 +330,19 @@ class GeoDSL(BaseModel):
                   output_id: "final_result"
                   depends_on: ["step_1", "step_2"]
             final_output: "final_result"
+
+    示例（可视化扩展 v2.1）：
+        NL: "查询芜湖市的餐厅并显示成热力图"
+        GeoDSL:
+            version: "2.1"
+            scenario: "poi_search"
+            visualization:
+                heatmap: true
+                heatmap_weight_field: "count"
+            view:
+                fit_bounds: true
     """
-    version: str = Field(default="1.0", description="DSL 协议版本（2.0=支持工作流）")
+    version: str = Field(default="1.0", description="DSL 协议版本（1.0=单步, 2.0=工作流, 2.1=可视化扩展）")
     scenario: Scenario = Field(description="场景类型")
     task: str = Field(description="具体任务类型（与 scenario 一致或更细化），工作流模式下为 'workflow'")
     inputs: Dict[str, Any] = Field(
@@ -177,6 +377,22 @@ class GeoDSL(BaseModel):
     final_output: str = Field(
         default="final_result",
         description="最终输出变量名"
+    )
+    # ── 可视化扩展（v2.1）─────────────────────────────────────────────
+    # 全局视觉编码配置（可被单图层 style 覆盖）
+    visualization: Optional[VisualizationSpec] = Field(
+        default=None,
+        description="全局视觉编码配置（颜色/大小/透明度/标签等）"
+    )
+    # 视图控制配置（自动缩放/定位/旋转/倾斜）
+    view: Optional[ViewSpec] = Field(
+        default=None,
+        description="视图控制配置（中心点、缩放级别、边界适应）"
+    )
+    # 多图层配置（覆盖 visualization 全局配置）
+    layers: Optional[List[LayerSpec]] = Field(
+        default=None,
+        description="多图层配置列表（支持多图层叠加渲染）"
     )
 
     model_config = ConfigDict(use_enum_values=True)
@@ -535,6 +751,84 @@ class DSLBuilder:
 
         return inputs, parameters
 
+    def build_from_template(
+        self,
+        template_id: str,
+        extracted_params: Dict[str, Any],
+    ) -> GeoDSL:
+        """
+        从工作流模板构建 GeoDSL。
+
+        Args:
+            template_id: 模板 ID（如 "poi_distribution", "buffer_analysis"）
+            extracted_params: 从用户输入提取的参数
+
+        Returns:
+            GeoDSL 对象
+
+        Raises:
+            ValueError: 模板不存在
+        """
+        from geoagent.workflow_templates import WORKFLOW_TEMPLATES, WorkflowTemplateEngine
+
+        if template_id not in WORKFLOW_TEMPLATES:
+            raise ValueError(f"模板 '{template_id}' 不存在。可用模板：{list(WORKFLOW_TEMPLATES.keys())}")
+
+        template_data = WORKFLOW_TEMPLATES[template_id]
+        scenario_str = template_data.get("scenario", "general")
+        try:
+            scenario = Scenario(scenario_str)
+        except (ValueError, TypeError):
+            scenario = Scenario.ROUTE
+
+        # 使用模板引擎填充
+        engine = WorkflowTemplateEngine()
+        match = engine.match_best(extracted_params.get("user_input", ""))
+
+        # 构建填充后的模板
+        filled = engine.fill_template(
+            TemplateMatch(
+                template_id=template_id,
+                template_name=template_data.get("name", template_id),
+                confidence=1.0,
+                matched_keywords=[],
+                scenario=scenario,
+                steps=template_data.get("steps", []),
+                visualization=template_data.get("visualization", {}),
+                view=template_data.get("view", {}),
+            ),
+            extracted_params,
+        )
+
+        # 构建 WorkflowSteps
+        steps = [WorkflowStep(**s) for s in filled.get("steps", [])]
+
+        # 构建可视化配置
+        vis_data = filled.get("visualization")
+        visualization = None
+        if vis_data:
+            from geoagent.layers.layer4_dsl import VisualizationSpec
+            visualization = VisualizationSpec(**vis_data)
+
+        view_data = filled.get("view")
+        view = None
+        if view_data:
+            from geoagent.layers.layer4_dsl import ViewSpec
+            view = ViewSpec(**view_data)
+
+        return GeoDSL(
+            version="2.1",
+            scenario=scenario,
+            task="workflow",
+            inputs={"user_input": extracted_params.get("user_input", "")},
+            is_workflow=True,
+            steps=steps,
+            final_output=steps[-1].output_id if steps else "final_result",
+            outputs=OutputSpec(map=True, summary=True),
+            visualization=visualization,
+            view=view,
+        )
+
     def build_from_orchestration(
         self,
         orchestration_result: Any,
@@ -842,6 +1136,9 @@ __all__ = [
     "OutputSpec",
     "WorkflowStep",
     "GeoDSL",
+    "VisualizationSpec",
+    "ViewSpec",
+    "LayerSpec",
     "SCHEMA_REQUIRED_PARAMS",
     "SchemaValidationError",
     "SchemaValidator",

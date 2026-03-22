@@ -410,7 +410,30 @@ class GeoAgentPipeline:
 
             # ── 第5层：任务执行 ────────────────────────────────────────
             # 合并 inputs 和 parameters
-            task_dict = {**dsl.inputs, **dsl.parameters, "task": dsl.task}
+            # 追加可视化 Pipeline 配置（v2.1）
+            task_dict = {
+                **dsl.inputs,
+                **dsl.parameters,
+                "task": dsl.task,
+            }
+            # 多图层配置（来自 GeoDSL.layers）
+            if dsl.layers:
+                task_dict["layers"] = [
+                    layer.model_dump() if hasattr(layer, 'model_dump') else layer
+                    for layer in dsl.layers
+                ]
+            # 全局视觉编码配置（来自 GeoDSL.visualization）
+            if dsl.visualization:
+                vis = dsl.visualization
+                task_dict["visualization"] = (
+                    vis.model_dump() if hasattr(vis, 'model_dump') else vis
+                )
+            # 视图控制配置（来自 GeoDSL.view）
+            if dsl.view:
+                view_cfg = dsl.view
+                task_dict["view"] = (
+                    view_cfg.model_dump() if hasattr(view_cfg, 'model_dump') else view_cfg
+                )
             executor_result = _execute_task(task_dict)
             ctx.executor_result = executor_result
             ctx.status = PipelineStatus.EXECUTING
@@ -421,8 +444,23 @@ class GeoAgentPipeline:
                     "engine": executor_result.engine,
                 })
 
-            # ── 第6层：结果渲染 ────────────────────────────────────────
-            render_result = self._renderer.render(executor_result)
+            # ── 第6层：结果渲染 ───────────────────────────────────────
+            # 支持可视化 Pipeline 配置透传（v2.1）
+            if dsl.view or dsl.visualization:
+                view_dict = (
+                    dsl.view.model_dump() if hasattr(dsl.view, 'model_dump') and dsl.view else None
+                )
+                vis_dict = (
+                    dsl.visualization.model_dump()
+                    if hasattr(dsl.visualization, 'model_dump') and dsl.visualization else None
+                )
+                render_result = self._renderer.render_with_view(
+                    executor_result,
+                    view=view_dict,
+                    visualization=vis_dict,
+                )
+            else:
+                render_result = self._renderer.render(executor_result)
             ctx.render_result = render_result
             ctx.status = PipelineStatus.COMPLETED
 

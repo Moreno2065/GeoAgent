@@ -21,10 +21,31 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 from geoagent.layers.architecture import Scenario, PipelineStatus
+
+
+# =============================================================================
+# Pipeline 入场判断：任务类型枚举
+# =============================================================================
+
+class PipelineTaskType(str, Enum):
+    """
+    任务类型枚举，决定任务的处理方式。
+
+    四类判断：
+    - pure_pipeline: 5个条件全部满足，直接执行
+    - pipeline_plus_clarification: 条件满足但缺参数，先追问再执行
+    - sandbox_extension: 部分满足，需 sandbox 补充
+    - non_pipeline: 不满足条件，拒绝或转解释模式
+    """
+    PURE_PIPELINE = "pure_pipeline"           # 标准 Pipeline 任务
+    NEEDS_CLARIFICATION = "pipeline_plus_clarification"  # 缺参数
+    SANDBOX_EXTENSION = "sandbox_extension"  # 需 Sandbox 补丁
+    NON_PIPELINE = "non_pipeline"            # 拒绝/解释模式
 
 
 # =============================================================================
@@ -1377,6 +1398,186 @@ class ScenarioOrchestrator:
             },
         }
 
+    def can_enter_pipeline(
+        self,
+        task_text: str,
+        intent_result: Optional[Any] = None,
+        extracted_params: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, PipelineTaskType, str]:
+        """
+        五条件判断：判断一个任务是否允许进入 Pipeline 执行。
+
+        五条件公式：
+        1. has_structured_input()  - 能否标准化输入
+        2. has_known_geometry()    - 能否归类到已知几何类型
+        3. can_decompose()          - 能否拆成有限步骤
+        4. is_deterministic()       - 每步是否可确定执行
+        5. has_standard_output()    - 输出能否标准化
+
+        Args:
+            task_text: 原始用户输入
+            intent_result: 意图分类结果（可选，不提供时会自动分类）
+            extracted_params: 已提取的参数（可选，不提供时会自动提取）
+
+        Returns:
+            Tuple[bool, PipelineTaskType, str]:
+                - can_enter: 是否可以进入 pipeline
+                - task_type: 任务类型（决定处理方式）
+                - reason: 判断原因（详细说明）
+        """
+        from geoagent.layers.layer2_intent import IntentClassifier
+
+        # 1. 自动分类（如果未提供）
+        if intent_result is None:
+            classifier = IntentClassifier()
+            intent_result = classifier.classify(task_text)
+
+        scenario_str = (
+            intent_result.primary.value
+            if hasattr(intent_result.primary, 'value')
+            else str(intent_result.primary)
+        )
+
+        # ── 安检门：如果是 "general" 场景，直接拒绝 ──────────────────────────
+        if scenario_str == "general":
+            return (False, PipelineTaskType.NON_PIPELINE,
+                    "无法识别为有效 GIS 场景，输入不属于空间分析范畴。")
+
+        # 2. 自动提取参数（如果未提供）
+        if extracted_params is None:
+            extractor = self.parameter_extractor
+            extracted_params = extractor.extract_all(task_text, intent_result.primary)
+
+        params = extracted_params or {}
+
+        # ── 条件1：has_structured_input ─────────────────────────────────────
+        has_location = bool(
+            params.get("start") or params.get("end") or
+            params.get("location") or params.get("coordinates")
+        )
+        has_data_ref = bool(
+            params.get("files") or params.get("input_layer") or
+            params.get("input_file") or params.get("layer1") or
+            params.get("layer2") or params.get("input_points") or
+            params.get("dem_file")
+        )
+        has_numeric = bool(
+            params.get("distance") or params.get("time_threshold") or
+            params.get("value_field")
+        )
+        has_structured = has_location or has_data_ref or has_numeric
+
+        if not has_structured:
+            operation_keywords = [
+                "缓冲", "buffer", "叠加", "overlay", "裁剪", "clip", "差集", "difference",
+                "路径", "route", "规划", "分析", "查询", "搜索", "热力", "heatmap",
+                "插值", "interpolat", "视域", "viewshed", "选址", "适宜", "统计",
+                "热点", "hotspot", "阴影", "shadow", "可达", "accessibility",
+                "面积", "长度", "距离", "count", "范围",
+            ]
+            has_operation = any(kw in task_text.lower() for kw in operation_keywords)
+            if not has_operation:
+                return (False, PipelineTaskType.NON_PIPELINE,
+                        "无法从输入中提取结构化参数（地点/坐标/数据文件/距离/时间）。"
+                        "输入可能过于模糊或不属于 GIS 分析范畴。")
+
+        # ── 条件2：has_known_geometry ──────────────────────────────────────
+        known_geometry = self._has_known_geometry(scenario_str, params)
+        if not known_geometry and not has_data_ref:
+            return (False, PipelineTaskType.NON_PIPELINE,
+                    f"场景 '{scenario_str}' 的输入几何类型无法确定，且无数据文件引用，"
+                    "无法确定如何处理该任务。")
+
+        # ── 条件3：can_decompose ─────────────────────────────────────────────
+        can_decompose = self._can_decompose(scenario_str, task_text, params)
+        if not can_decompose:
+            return (False, PipelineTaskType.SANDBOX_EXTENSION,
+                    f"场景 '{scenario_str}' 包含复杂的、无法标准化拆解的步骤，"
+                    "需要通过 Sandbox 自定义代码扩展处理。")
+
+        # ── 条件4：is_deterministic ─────────────────────────────────────────
+        is_det, det_reason = self._is_deterministic(scenario_str, task_text)
+        if not is_det:
+            return (False, PipelineTaskType.SANDBOX_EXTENSION,
+                    f"场景 '{scenario_str}' 包含非确定性操作（{det_reason}），"
+                    "无法通过标准 Pipeline 执行，需通过 Sandbox 自定义代码处理。")
+
+        # ── 条件5：has_standard_output ─────────────────────────────────────
+        if not self._has_standard_output(scenario_str):
+            return (False, PipelineTaskType.NON_PIPELINE,
+                    f"场景 '{scenario_str}' 的输出无法标准化为 GeoJSON + 摘要格式，"
+                    "不支持此类任务。")
+
+        # ── 所有条件通过：检查是否需要追问 ─────────────────────────────────
+        try:
+            scenario_enum = Scenario(scenario_str) if isinstance(scenario_str, str) else scenario_str
+        except (ValueError, TypeError):
+            scenario_enum = Scenario.ROUTE
+
+        clarification = self.clarification_engine.check_params(scenario_enum, params)
+        if clarification.needs_clarification:
+            return (True, PipelineTaskType.NEEDS_CLARIFICATION,
+                    f"场景 '{scenario_str}' 参数不完整，需要追问。")
+
+        return (True, PipelineTaskType.PURE_PIPELINE,
+                f"场景 '{scenario_str}' 通过所有检查，可进入 Pipeline 执行。")
+
+    def _has_known_geometry(self, scenario: str, params: Dict[str, Any]) -> bool:
+        """条件2：判断任务是否能归类到已知几何类型。"""
+        if any(params.get(k) for k in (
+            "input_layer", "input_file", "dem_file", "layer1", "layer2",
+            "input_points", "files"
+        )):
+            return True
+        if scenario in ("route", "accessibility", "buffer", "overlay",
+                        "interpolation", "hotspot", "statistics",
+                        "viewshed", "shadow_analysis", "ndvi", "raster",
+                        "suitability", "poi_search", "geocode",
+                        "regeocode", "visualization", "code_sandbox"):
+            return True
+        return False
+
+    def _can_decompose(self, scenario: str, task_text: str, params: Dict[str, Any]) -> bool:
+        """条件3：判断任务是否能拆成有限步骤。"""
+        standard = {
+            "route", "buffer", "overlay", "interpolation", "viewshed",
+            "shadow_analysis", "statistics", "hotspot", "suitability",
+            "accessibility", "raster", "ndvi", "visualization",
+            "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+        }
+        if scenario in standard:
+            return True
+        if len(task_text) > 200:
+            uncertain = ["或者", "也许", "可能", "如果可以", "看情况"]
+            if sum(1 for kw in uncertain if kw in task_text) >= 2:
+                return False
+        return True
+
+    def _is_deterministic(self, scenario: str, task_text: str) -> Tuple[bool, str]:
+        """条件4：判断操作是否确定性。"""
+        non_det = ["推荐", "建议", "最合适", "最优", "最佳", "智能", "自动分析",
+                   "recommend", "suggest", "optimal", "best"]
+        for kw in non_det:
+            if kw in task_text.lower() and not any(
+                alt in task_text for alt in ["按", "根据", "criteria", "按照"]
+            ):
+                return (False, f"包含关键词 '{kw}' 且无明确评判标准")
+        if scenario == "suitability":
+            if any(kw in task_text for kw in ["最合适", "最优", "最佳"]):
+                if task_text.count("米以") + task_text.count("distance") == 0:
+                    return (False, "适宜性分析缺少具体约束条件，无法确定性执行")
+        return (True, "")
+
+    def _has_standard_output(self, scenario: str) -> bool:
+        """条件5：判断输出是否能标准化为 GeoJSON + 摘要格式。"""
+        standard = {
+            "route", "buffer", "overlay", "interpolation", "viewshed",
+            "shadow_analysis", "statistics", "hotspot", "suitability",
+            "accessibility", "raster", "ndvi", "visualization",
+            "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+        }
+        return scenario in standard
+
     def orchestrate(
         self,
         text: str,
@@ -1486,4 +1687,5 @@ __all__ = [
     "ScenarioOrchestrator",
     "get_orchestrator",
     "orchestrate",
+    "PipelineTaskType",
 ]

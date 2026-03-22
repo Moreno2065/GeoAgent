@@ -189,7 +189,7 @@ class WorkflowEngine:
 
     def _execute_step(self, step: WorkflowStep) -> StepResult:
         """
-        执行单一步骤
+        执行单一步骤（支持条件执行）
 
         Args:
             step: 工作流步骤
@@ -211,6 +211,48 @@ class WorkflowEngine:
         })
 
         try:
+            # ── 条件执行检查 ─────────────────────────────────────────────────
+            if step.condition:
+                condition_met = self._evaluate_condition(step.condition)
+                if not condition_met:
+                    self._emit("step_skipped", {
+                        "step_id": step.step_id,
+                        "condition": step.condition,
+                        "reason": "条件不满足，跳过执行",
+                    })
+                    step_result.status = "skipped"
+                    step_result.result = None
+                    return step_result
+
+            # ── 循环执行检查 ─────────────────────────────────────────────────
+            if step.for_each:
+                return self._execute_step_with_loop(step)
+
+            # ── 标准单步执行 ──────────────────────────────────────────────
+            return self._execute_single_step(step, execute_task)
+
+        except Exception as e:
+            step_result.status = "failed"
+            step_result.error = str(e)
+            self._emit("step_error", {
+                "step_id": step.step_id,
+                "error": str(e),
+                "trace": traceback.format_exc(),
+            })
+            return step_result
+
+    def _execute_single_step(
+        self,
+        step: WorkflowStep,
+        execute_task_fn: Any,
+    ) -> StepResult:
+        """执行单个步骤（标准路径）"""
+        step_result = StepResult(
+            step_id=step.step_id,
+            status="running",
+        )
+
+        try:
             # 1. 解析输入：处理 tmp_xxx 变量引用
             resolved_args = self._resolve_inputs(step)
 
@@ -219,7 +261,6 @@ class WorkflowEngine:
                 from geoagent.executors.code_sandbox_executor import CodeSandboxExecutor
                 sandbox_executor = CodeSandboxExecutor()
 
-                # 将 context 中的中间变量作为 context_data 传入
                 sandbox_task = {
                     "code": resolved_args.get("code", step.parameters.get("code", "")),
                     "description": step.description or step.parameters.get("description", ""),
@@ -251,7 +292,6 @@ class WorkflowEngine:
                 return step_result
 
             # ── 标准执行器路径 ─────────────────────────────────────────────
-            # 2. 构建任务字典
             task_dict = {
                 "task": step.task,
                 "step_id": step.step_id,
@@ -259,12 +299,10 @@ class WorkflowEngine:
                 **resolved_args,
             }
 
-            # 3. 执行任务
-            result = execute_task(task_dict)
+            result = execute_task_fn(task_dict)
             step_result.result = result
 
             if result.success and result.data:
-                # 4. 将结果存入 context
                 self.context[step.output_id] = result.data
                 self._emit("step_complete", {
                     "step_id": step.step_id,
@@ -290,6 +328,176 @@ class WorkflowEngine:
                 "trace": traceback.format_exc(),
             })
             return step_result
+
+    def _evaluate_condition(self, condition: str) -> bool:
+        """
+        计算条件表达式的布尔值。
+
+        支持格式：
+        - "field > 0.5"
+        - "count >= 10"
+        - "density < 0.3"
+        - "status == ready"
+
+        条件变量从 context 中查找。
+
+        Args:
+            condition: 条件表达式字符串
+
+        Returns:
+            True = 条件满足，执行步骤
+            False = 条件不满足，跳过步骤
+        """
+        import re
+
+        # 提取操作符
+        match = re.match(r"(\w+)\s*(>=|<=|==|!=|>|<)\s*(.+)", condition.strip())
+        if not match:
+            # 无法解析，保守返回 True（执行步骤）
+            return True
+
+        field_name = match.group(1)
+        operator = match.group(2)
+        raw_value = match.group(3).strip()
+
+        # 尝试将比较值转换为数字
+        try:
+            compare_value = float(raw_value)
+        except ValueError:
+            compare_value = raw_value.strip('"\'')
+
+        # 从 context 中查找字段值
+        field_value = None
+        for var_name, var_value in self.context.items():
+            if var_name.endswith(field_name) or field_name in var_name:
+                if isinstance(var_value, dict):
+                    field_value = var_value.get(field_name)
+                elif isinstance(var_value, (int, float, str)):
+                    field_value = var_value
+                break
+
+        # 如果在 context 中未找到，尝试从 metrics 等通用字段
+        if field_value is None:
+            for var_value in self.context.values():
+                if isinstance(var_value, dict) and field_name in var_value:
+                    field_value = var_value[field_name]
+                    break
+
+        if field_value is None:
+            # 字段不存在，保守返回 True
+            return True
+
+        # 执行比较
+        try:
+            if isinstance(field_value, str):
+                # 字符串比较
+                if operator == "==":
+                    return str(field_value) == str(compare_value)
+                elif operator == "!=":
+                    return str(field_value) != str(compare_value)
+                return True
+
+            # 数字比较
+            num_value = float(field_value)
+            if operator == ">":
+                return num_value > compare_value
+            elif operator == "<":
+                return num_value < compare_value
+            elif operator == ">=":
+                return num_value >= compare_value
+            elif operator == "<=":
+                return num_value <= compare_value
+            elif operator == "==":
+                return num_value == compare_value
+            elif operator == "!=":
+                return num_value != compare_value
+
+        except (ValueError, TypeError):
+            pass
+
+        # 无法比较，保守返回 True
+        return True
+
+    def _execute_step_with_loop(self, step: WorkflowStep) -> StepResult:
+        """
+        执行带循环的步骤。
+
+        for_each 配置格式：
+            {"var": "item", "in": "tmp_list"}
+        或
+            {"var": "item", "values": [1, 2, 3]}
+        """
+        from geoagent.executors.router import execute_task
+
+        loop_config = step.for_each
+        var_name = loop_config.get("var", "item")
+        results = []
+
+        # 解析循环变量集合
+        if "in" in loop_config:
+            source_var = loop_config["in"]
+            loop_values = self.context.get(source_var, [])
+            if not isinstance(loop_values, list):
+                loop_values = [loop_values]
+        elif "values" in loop_config:
+            loop_values = loop_config["values"]
+        else:
+            loop_values = []
+
+        self._emit("loop_start", {
+            "step_id": step.step_id,
+            "var": var_name,
+            "iterations": len(loop_values),
+        })
+
+        for i, value in enumerate(loop_values):
+            self._emit("loop_iteration", {
+                "step_id": step.step_id,
+                "iteration": i + 1,
+                var_name: value,
+            })
+
+            # 创建循环体步骤副本
+            loop_step = WorkflowStep(
+                step_id=f"{step.step_id}_iter_{i}",
+                task=step.task,
+                description=f"{step.description} [循环 {i + 1}/{len(loop_values)}]",
+                inputs={**step.inputs, var_name: value},
+                parameters=step.parameters,
+                output_id=f"{step.output_id}_iter_{i}",
+                depends_on=step.depends_on,
+                condition=None,  # 循环体内无条件
+                for_each=None,
+            )
+
+            result = self._execute_single_step(loop_step, execute_task)
+            results.append(result)
+
+            # 如果某次迭代失败，可以选择停止或继续
+            if not result.success:
+                self._emit("loop_iteration_failed", {
+                    "step_id": step.step_id,
+                    "iteration": i + 1,
+                    "error": result.error,
+                })
+                # 继续执行剩余迭代
+
+        # 将所有循环结果存入 context
+        self.context[f"{step.output_id}_results"] = results
+        self.context[step.output_id] = results[-1] if results else None
+
+        self._emit("loop_complete", {
+            "step_id": step.step_id,
+            "total_iterations": len(loop_values),
+            "successful": sum(1 for r in results if r.success),
+        })
+
+        step_result = StepResult(
+            step_id=step.step_id,
+            status="completed",
+            result=results[-1].result if results else None,
+        )
+        return step_result
 
     def _resolve_inputs(self, step: WorkflowStep) -> Dict[str, Any]:
         """

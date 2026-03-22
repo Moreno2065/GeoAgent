@@ -88,6 +88,19 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "code_sandbox":  lambda: __import__(
                               "geoagent.executors.code_sandbox_executor",
                               fromlist=["CodeSandboxExecutor"]).CodeSandboxExecutor,
+        # ── 可视化 Pipeline 扩展 ──────────────────────────────────
+        "poi_executor":  lambda: __import__(
+                              "geoagent.executors.poi_executor",
+                              fromlist=["PoiExecutor"]).PoiExecutor,
+        "heatmap_executor": lambda: __import__(
+                              "geoagent.executors.heatmap_executor",
+                              fromlist=["HeatmapExecutor"]).HeatmapExecutor,
+        "choropleth_executor": lambda: __import__(
+                              "geoagent.executors.choropleth_executor",
+                              fromlist=["ChoroplethExecutor"]).ChoroplethExecutor,
+        "datasource_executor": lambda: __import__(
+                              "geoagent.executors.datasource_executor",
+                              fromlist=["DatasourceExecutor"]).DatasourceExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -134,6 +147,12 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "fetch_osm":       "fetch_osm",
     # 受限代码执行
     "code_sandbox":    "code_sandbox",
+    # ── 可视化 Pipeline 扩展（Phase 2.2）────────────────────────────
+    "poi_query":      "poi_executor",   # POI 查询（Overpass API 封装）
+    "heatmap":         "heatmap_executor",  # 热力图
+    "choropleth":      "choropleth_executor",  # 分级设色
+    "data_source":     "datasource_executor",  # 数据源加载
+    "dissolve":       "overlay_executor",  # dissolve 复用 overlay
 }
 
 
@@ -175,6 +194,12 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "fetch_osm":        "fetch_osm",
     # 受限代码执行
     "code_sandbox":     "code_sandbox",
+    # ── 可视化 Pipeline 扩展 ────────────────────────────────────────
+    "poi_query":       "poi_query",
+    "heatmap":          "heatmap",
+    "choropleth":       "choropleth",
+    "data_source":      "data_source",
+    "dissolve":         "dissolve",
 }
 
 

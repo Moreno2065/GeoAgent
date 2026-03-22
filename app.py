@@ -11,6 +11,7 @@ import datetime
 import html
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -157,8 +158,49 @@ def _render_data_table_tab():
 def _render_map_tab(map_html_path: str | None = None, height: int = 760):
     """渲染"实时地图"Tab"""
     if map_html_path and Path(map_html_path).exists():
+        # ── v2.1 增强：显示地图元信息（多图层/视图控制）────
+        zoom_level = None
+        lat, lon = None, None
+        layer_names = []
+        try:
+            import json
+            # 尝试从 HTML 中解析 Folium 的 bounds 信息
+            with open(map_html_path, encoding="utf-8") as f:
+                html_content = f.read()
+            # 提取 LayerControl 名称（多图层指示）
+            layer_names = re.findall(r'L\.control\.layers\([^)]*\([\'"]([^\'"]+)[\'"]', html_content)
+            # 提取缩放级别
+            zoom_match = re.search(r'zoom:\s*(\d+)', html_content)
+            zoom_level = zoom_match.group(1) if zoom_match else None
+            # 提取中心点
+            center_match = re.search(r'center:\s*\[([-\d.]+),\s*([-\d.]+)\]', html_content)
+            if center_match:
+                lat, lon = float(center_match.group(1)), float(center_match.group(2))
+        except Exception:
+            pass
+
+        # 顶栏信息
+        if lat is not None and lon is not None:
+            st.caption(
+                f"📍 {map_html_path} | "
+                f"缩放: z{zoom_level or '?'} | "
+                f"中心: ({lat:.4f}, {lon:.4f})"
+            )
+        else:
+            st.caption(f"📍 当前地图: `{map_html_path}`  |  点击地图可捕获坐标")
+
         _render_html_map_inline(map_html_path, height=height)
-        st.caption(f"📍 当前地图: `{map_html_path}`  |  点击地图可捕获坐标")
+
+        # ── v2.1 增强：视图信息面板 ────────────────────────────────
+        with st.expander("🗺️ 视图信息", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**当前视图**")
+            with col2:
+                if zoom_level:
+                    st.text(f"缩放: z{zoom_level}")
+                if lat is not None and lon is not None:
+                    st.text(f"中心: ({lat:.4f}, {lon:.4f})")
         return
 
     st.info("🗺️ 等待 GeoAgent 生成空间视图...")
@@ -332,6 +374,10 @@ def _init_session_state():
         "agent_log": [],
         "sidebar_collapsed": False,
         "llm_status": "idle",  # idle | thinking | speaking | stopped
+        "llm_status_sandbox": "idle",  # idle | thinking | speaking | stopped (沙盒 LLM 状态)
+        "llm_status_sandbox_active": False,  # 是否在执行沙盒 LLM
+        "_pending_prompt": None,  # 两阶段执行：暂存待处理的 prompt
+        "_sidebar_status_ph": None,  # 侧边栏状态灯占位符（由 _render_sidebar 填充）
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -346,114 +392,114 @@ _init_session_state()
 # =============================================================================
 
 def _render_llm_status():
-    """侧边栏 LLM 状态灯。第二行为当前步骤简述。
+    """侧边栏双 LLM 状态指示器：主 LLM + 沙盒 LLM。
 
-    使用 components.html 而非 st.markdown，避免 Streamlit 对 HTML 消毒时剥掉标签、
-    只留下字面量 </span> / </div> 的问题。
+    每次渲染时记录当前状态到 session_state，配合 rerun 触发机制确保实时刷新。
     """
-    status = st.session_state.get("llm_status", "idle")
+    # ── 主 LLM 状态 ─────────────────────────────────────────────────────────
+    main_status = st.session_state.get("llm_status", "idle")
+    main_node = (st.session_state.get("llm_current_node", "") or "").strip()
+    main_model = st.session_state.get("llm_current_model", "")
 
-    if status == "idle":
-        color = "#D1D5DB"
-        label = "待机"
-        glow = "none"
-    elif status == "thinking":
-        color = "#FBBF24"
-        label = "思考中"
-        glow = f"0 0 10px {color}, 0 0 18px {color}40"
-    elif status == "speaking":
-        color = "#34D399"
-        label = "输出中"
-        glow = f"0 0 10px {color}, 0 0 18px {color}40"
-    else:  # stopped
-        color = "#F87171"
-        label = "已停止"
-        glow = "none"
+    # ── 沙盒 LLM 状态 ────────────────────────────────────────────────────────
+    sandbox_active = st.session_state.get("llm_status_sandbox_active", False)
+    sandbox_status = st.session_state.get("llm_status_sandbox", "idle")
+    sandbox_node = (st.session_state.get("llm_current_node_sandbox", "") or "").strip()
 
-    pulse_style = "animation: llm-pulse 1.5s ease-in-out infinite;" if status in ("thinking", "speaking") else ""
+    # 记录快照，外部改变这些值时触发 rerun
+    st.session_state["_llm_status_prev"] = main_status
+    st.session_state["_llm_model_prev"] = main_model
+    st.session_state["_llm_sandbox_active_prev"] = sandbox_active
+    st.session_state["_llm_sandbox_status_prev"] = sandbox_status
 
-    node = (st.session_state.get("llm_current_node", "") or "").strip()
-    node_safe = html.escape(node)
-    label_safe = html.escape(label)
-    node_block = (
-        '<p class="llm-node">' + node_safe + "</p>" if node_safe else ""
-    )
+    # ── 颜色映射 ─────────────────────────────────────────────────────────────
+    COLOR = {
+        "idle":    "#D1D5DB",
+        "thinking": "#FBBF24",
+        "speaking": "#34D399",
+        "stopped":  "#F87171",
+        "active":   "#60A5FA",
+    }
+    LABEL = {
+        "idle":    "待机",
+        "thinking": "思考中",
+        "speaking": "输出中",
+        "stopped":  "已停止",
+        "active":   "执行中",
+    }
+    ICON = {
+        "idle":    "⏸️",
+        "thinking": "🧠",
+        "speaking": "💬",
+        "stopped":  "⛔",
+        "active":   "⚙️",
+    }
 
-    # 有副标题时略增高 iframe，避免裁切
-    iframe_h = 92 if node_safe else 64
+    def _card(badge: str, status_key: str, node: str, model_short: str = "", extra_model: str = ""):
+        color = COLOR.get(status_key, COLOR["idle"])
+        label  = LABEL.get(status_key, LABEL["idle"])
+        icon   = ICON.get(status_key, ICON["idle"])
+        # 只有 thinking/speaking 时图标才脉冲
+        pulse_cls = "pulse" if status_key in ("thinking", "speaking") else ""
+        node_e = html.escape(node) if node else ""
+        node_b = (f'<p class="ln">{node_e}</p>') if node_e else ""
 
-    # 用户文案用拼接写入，避免 f-string 与花括号冲突
+        if extra_model:
+            model_html = f'<span class="lm">{extra_model}</span>'
+        elif model_short:
+            model_html = f'<span class="lm">{model_short}</span>'
+        else:
+            model_html = ""
+        return (
+            f'<div class="lc">'
+            f'<div class="lb">{badge}</div>'
+            f'<div class="ld">'
+            f'<div class="lt">'
+            f'<span class="li {pulse_cls}">{icon}</span>'
+            f'<span class="ll">LLM · {html.escape(label)}</span>'
+            f'{model_html}'
+            f'</div>'
+            + node_b +
+            f'</div>'
+            f'</div>'
+        )
+
+    # 模型简称
+    main_short = main_model.replace("deepseek-", "DS-").replace("glm-", "GLM-") if main_model else ""
+    # 沙盒模型固定显示（沙盒用 DeepSeek）
+    sandbox_model_short = "DS-Genie"
+
+    c_main    = _card("主",    main_status,    main_node,    extra_model=main_short)
+    c_sandbox = _card("沙盒",  sandbox_status,  sandbox_node,  extra_model=sandbox_model_short)
+
+    iframe_h = "120" if (main_node or sandbox_node) else "96"
+
     page = (
-        f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"/>
-<style>
-  * {{ box-sizing: border-box; }}
-  html, body {{
-    margin: 0; padding: 0;
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: transparent;
-  }}
-  @keyframes llm-pulse {{
-    0%, 100% {{ opacity: 1; transform: scale(1); }}
-    50% {{ opacity: 0.65; transform: scale(0.94); }}
-  }}
-  .llm-status {{
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 10px 12px;
-    background: linear-gradient(135deg, #FAFAFA 0%, #F3F4F6 100%);
-    border-radius: 12px;
-    border: 1px solid #E5E7EB;
-  }}
-  .llm-dot {{
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: {color};
-    box-shadow: {glow};
-    flex-shrink: 0;
-    margin-top: 2px;
-    {pulse_style}
-  }}
-  .llm-right {{
-    flex: 1;
-    min-width: 0;
-  }}
-  .llm-label {{
-    font-size: 14px;
-    font-weight: 600;
-    color: #374151;
-    letter-spacing: 0.02em;
-    margin: 0;
-    line-height: 1.35;
-  }}
-  .llm-node {{
-    font-size: 12px;
-    color: #6B7280;
-    margin: 4px 0 0 0;
-    line-height: 1.3;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 200px;
-  }}
-</style></head>
-<body>
-  <div class="llm-status">
-    <div class="llm-dot" aria-hidden="true"></div>
-    <div class="llm-right">
-      <p class="llm-label">LLM · """
-        + label_safe
-        + """</p>"""
-        + node_block
-        + """
-    </div>
-  </div>
-</body></html>"""
+        '<!DOCTYPE html>'
+        '<html lang="zh-CN"><head><meta charset="utf-8"/>'
+        '<style>'
+        '  *{box-sizing:border-box;}html,body{margin:0;padding:0;font-family:system-ui,sans-serif;background:transparent;}'
+        '  @keyframes llm-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.6;transform:scale(.9);}}'
+        '  .llm-w{	display:flex;flex-direction:column;gap:6px;}'
+        '  .lc{display:flex;align-items:center;gap:8px;padding:7px 10px;'
+        '      background:linear-gradient(135deg,#FAFAFA,#F3F4F6);border-radius:9px;border:1px solid #E5E7EB;min-height:46px;}'
+        '  .lb{font-size:10px;font-weight:700;color:#FFF;background:#6B7280;'
+        '      border-radius:4px;padding:1px 5px;flex-shrink:0;min-width:24px;text-align:center;line-height:1.6;}'
+        '  .ld{flex:1;min-width:0;}'
+        '  .lt{display:flex;align-items:baseline;gap:5px;flex-wrap:wrap;}'
+        '  .li{font-size:15px;line-height:1;}'
+        '  .li.pulse{animation:llm-pulse 1.5s ease-in-out infinite;}'
+        '  .ll{font-size:12px;font-weight:600;color:#374151;}'
+        '  .lm{font-size:10px;color:#9CA3AF;font-family:monospace;}'
+        '  .ln{font-size:11px;color:#6B7280;margin:2px 0 0;white-space:nowrap;'
+        '      overflow:hidden;text-overflow:ellipsis;max-width:190px;}'
+        '</style></head><body>'
+        '<div class="llm-w">'
+        + c_main
+        + c_sandbox
+        + '</div></body></html>'
     )
-
-    st.components.v1.html(page, height=iframe_h, scrolling=False)
+    st.components.v1.html(page, height=int(iframe_h), scrolling=False)
 
 
 # =============================================================================
@@ -537,10 +583,8 @@ def _format_click_context(clicked: dict) -> str:
 
 def _render_sidebar():
     with st.sidebar:
-        # 🌟 修改 1：使用占位符包裹状态灯，赋予它动态刷新的超能力
-        st.session_state["sidebar_status_ph"] = st.empty()
-        with st.session_state["sidebar_status_ph"]:
-            _render_llm_status()
+        # 直接渲染（每次 rerun 都会重新执行，确保状态灯实时更新）
+        _render_llm_status()
         st.header("⚙️ 配置")
 
         st.button(
@@ -1460,10 +1504,42 @@ def main():
             '<div class="section-heading">💬 &nbsp;指令舱</div>',
             unsafe_allow_html=True,
         )
-        st.markdown(
-            '<div class="section-caption">发布空间分析任务 · 历史上下文自动记忆</div>',
-            unsafe_allow_html=True,
-        )
+
+        # ── LLM 状态指示器（实时刷新，在主 rerun 路径上）────────────
+        status = st.session_state.get("llm_status", "idle")
+        node = st.session_state.get("llm_current_node", "") or ""
+
+        if status == "idle":
+            status_html = (
+                '<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;'
+                'background:#F3F4F6;border-radius:20px;font-size:0.78rem;color:#9CA3AF">'
+                '<span style="width:10px;height:10px;border-radius:50%;background:#D1D5DB;display:inline-block"></span>'
+                '待机</div>'
+            )
+        elif status == "thinking":
+            status_html = (
+                '<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;'
+                'background:#FEF3C7;border-radius:20px;font-size:0.78rem;color:#92400E">'
+                '<span style="width:10px;height:10px;border-radius:50%;background:#FBBF24;display:inline-block;'
+                'animation:llm-pulse 1.5s infinite;box-shadow:0 0 6px #FBBF24"></span>'
+                f'🧠 思考中 — {html.escape(node)}</div>'
+            )
+        elif status == "speaking":
+            status_html = (
+                '<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;'
+                'background:#D1FAE5;border-radius:20px;font-size:0.78rem;color:#065F46">'
+                '<span style="width:10px;height:10px;border-radius:50%;background:#34D399;display:inline-block;'
+                'animation:llm-pulse 1.5s infinite;box-shadow:0 0 6px #34D399"></span>'
+                f'💬 输出中 — {html.escape(node)}</div>'
+            )
+        else:  # stopped
+            status_html = (
+                '<div style="display:inline-flex;align-items:center;gap:8px;padding:6px 14px;'
+                'background:#FEE2E2;border-radius:20px;font-size:0.78rem;color:#991B1B">'
+                '<span style="width:10px;height:10px;border-radius:50%;background:#F87171;display:inline-block"></span>'
+                '已停止</div>'
+            )
+        st.markdown(status_html, unsafe_allow_html=True)
 
         # ── 聊天输入框（在消息上方）────────────────────────────
         # 优先使用 V2 agent_v2，降级到 V1 agent
@@ -1501,7 +1577,22 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
 
         if prompt:
-            _handle_user_message(prompt, agent_for_input)
+            # 两阶段：先把 prompt 存起来，rerun 一次更新状态灯，再真正执行
+            st.session_state["_pending_prompt"] = prompt
+            st.session_state["llm_status"] = "thinking"
+            # 设置当前模型名（直接从 agent_v2 获取，不依赖后续定义的 llm_model）
+            _agent = st.session_state.get("agent_v2") or st.session_state.get("agent")
+            st.session_state["llm_current_model"] = getattr(_agent, "model", "") if _agent else ""
+            st.session_state["llm_current_node"] = "🚀 启动中..."
+            st.session_state["llm_prev_status"] = st.session_state.get("llm_status", "idle")
+            st.rerun()
+
+        # 两阶段第二阶段：pending_prompt 存在时直接执行（不再走上面的 if prompt 分支）
+        pending = st.session_state.get("_pending_prompt")
+        if pending:
+            # 清理标志，防止递归
+            st.session_state["_pending_prompt"] = None
+            _handle_user_message(pending, agent_for_input)
 
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown(
@@ -1869,6 +1960,27 @@ def _handle_user_message(prompt: str, agent):
                     stream_state["error_msg"] = payload.get('error', '参数校验失败')
                     _log("error", f"❌ 参数校验失败: {payload.get('error', '')[:200]}")
 
+                # ── 沙盒 LLM 事件 ────────────────────────────────────────────
+                elif et_lower == "sandbox_llm_start":
+                    st.session_state["llm_status_sandbox"] = "thinking"
+                    st.session_state["llm_status_sandbox_active"] = True
+                    st.session_state["llm_current_node_sandbox"] = "🔮 沙盒 LLM 思考中..."
+                    _log("tool", "🔮 沙盒 LLM 开始生成代码...")
+                elif et_lower == "sandbox_llm_stream":
+                    st.session_state["llm_status_sandbox"] = "speaking"
+                    st.session_state["llm_current_node_sandbox"] = "💬 沙盒 LLM 输出中"
+                elif et_lower == "sandbox_llm_end":
+                    st.session_state["llm_status_sandbox"] = "idle"
+                    st.session_state["llm_status_sandbox_active"] = False
+                    st.session_state["llm_current_node_sandbox"] = ""
+                    _log("tool", "✅ 沙盒 LLM 代码生成完成")
+                elif et_lower == "sandbox_llm_error":
+                    st.session_state["llm_status_sandbox"] = "stopped"
+                    st.session_state["llm_status_sandbox_active"] = False
+                    st.session_state["llm_current_node_sandbox"] = f"❌ 沙盒 LLM 错误"
+                    err = payload.get("error", "")[:200]
+                    _log("error", f"❌ 沙盒 LLM 错误: {err}")
+
                 # ── V2 六层 Pipeline 事件映射 ───────────────────────────────
                 elif et_lower == "input_received":
                     stream_state["current_node"] = "L1 用户输入已接收"
@@ -1926,6 +2038,8 @@ def _handle_user_message(prompt: str, agent):
                 llm_client = getattr(agent_v2, "_client", None)
                 llm_model = getattr(agent_v2, "model", None)
 
+                _log("debug", f"🔍 LLM 诊断: client={llm_client is not None}, model={llm_model}, has_error={stream_state.get('has_error')}")
+
                 if llm_client and llm_model and not stream_state.get("has_error"):
                     system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
 
@@ -1953,8 +2067,10 @@ def _handle_user_message(prompt: str, agent):
                         stream_state["text"] = ""
                         full_text = ""
                         st.session_state["llm_status"] = "speaking"
+                        st.session_state["llm_current_model"] = llm_model
                         st.session_state["llm_current_node"] = "LLM 输出中"
 
+                        _log("debug", f"🔍 准备调用 LLM 流式输出: model={llm_model}")
                         stream = llm_client.chat.completions.create(
                             model=llm_model,
                             messages=[
@@ -1966,12 +2082,77 @@ def _handle_user_message(prompt: str, agent):
                             stream=True,
                         )
 
-                        for chunk in stream:
-                            if chunk.choices and chunk.choices[0].delta.content:
-                                content = chunk.choices[0].delta.content
-                                full_text += content
-                                stream_state["text"] = full_text
-                                _update_stream(full_text)
+                        _log("debug", "🔍 开始遍历 LLM 流...")
+                        chunk_count = 0
+                        empty_chunks = 0
+                        try:
+                            import threading
+                            import queue
+
+                            result_queue: queue.Queue = queue.Queue()
+                            stop_event = threading.Event()
+
+                            def stream_reader():
+                                try:
+                                    for chunk in stream:
+                                        result_queue.put(("chunk", chunk))
+                                        if stop_event.is_set():
+                                            break
+                                    result_queue.put(("done", None))
+                                except Exception as e:
+                                    result_queue.put(("error", str(e)))
+
+                            reader_thread = threading.Thread(target=stream_reader, daemon=True)
+                            reader_thread.start()
+                            reader_thread.join(timeout=30.0)
+
+                            if reader_thread.is_alive():
+                                stop_event.set()
+                                _log("error", "⚠️ LLM 流式响应超时（30秒），强制终止")
+                            else:
+                                while True:
+                                    try:
+                                        msg_type, data = result_queue.get_nowait()
+                                        if msg_type == "done":
+                                            break
+                                        elif msg_type == "error":
+                                            raise Exception(data)
+                                        chunk_count += 1
+                                        # 尝试多种可能的 delta 字段名
+                                        content = None
+                                        for choice in (data.choices or []):
+                                            delta = choice.delta or {}
+                                            # 标准 OpenAI: delta.content
+                                            if hasattr(delta, "content") and delta.content:
+                                                content = delta.content
+                                                break
+                                            # GLM 可能: delta.get("content") or delta.choices[0].delta["content"]
+                                            # 兼容 dict-like
+                                            if isinstance(delta, dict):
+                                                content = delta.get("content")
+                                                if content:
+                                                    break
+                                        if content:
+                                            empty_chunks = 0
+                                            full_text += content
+                                            stream_state["text"] = full_text
+                                            _update_stream(full_text)
+                                        else:
+                                            empty_chunks += 1
+                                        # 调试：记录前5个 chunk 的结构
+                                        if chunk_count <= 5:
+                                            chunk_repr = repr(data)[:150]
+                                            _log("debug", f"  chunk[{chunk_count}]: {chunk_repr}")
+                                    except queue.Empty:
+                                        break
+
+                        except Exception as e:
+                            _log("error", f"LLM 流式输出失败: {str(e)}")
+                            import traceback as tb
+                            _log("error", f"LLM 异常堆栈:\n{tb.format_exc()}")
+                            final_content = None
+
+                        _log("debug", f"🔍 LLM 流结束，共 {chunk_count} 个 chunks（{chunk_count - empty_chunks} 个含内容），text 长度={len(full_text)}")
 
                         if result.metrics:
                             metrics_lines = ["\n\n📈 **关键指标**:"]
@@ -1991,8 +2172,17 @@ def _handle_user_message(prompt: str, agent):
 
                     except Exception as e:
                         _log("error", f"LLM 流式输出失败: {str(e)}")
+                        import traceback as tb
+                        _log("error", f"LLM 异常堆栈:\n{tb.format_exc()}")
                         final_content = None
                 else:
+                    _log("debug", "⚠️ LLM 条件不满足，跳过流式输出")
+                    if not llm_client:
+                        _log("error", "  原因: llm_client 为 None")
+                    if not llm_model:
+                        _log("error", "  原因: llm_model 为 None")
+                    if stream_state.get("has_error"):
+                        _log("error", f"  原因: stream_state.has_error=True, error={stream_state.get('error_msg','')}")
                     final_content = None
 
                 # 如果流式输出没有生成 final_content，使用默认格式
@@ -2100,12 +2290,17 @@ def _handle_user_message(prompt: str, agent):
             # rerun 前强制重置 LLM 状态灯，避免假死
             st.session_state["llm_status"] = "idle"
             st.session_state["llm_current_node"] = ""
+            st.session_state["llm_current_model"] = ""
             st.rerun()
 
         finally:
             # 【关键】无论正常完成还是异常退出，必须清除处理标志
             # 防止下次 rerun 时误判为"正在处理中"而导致消息丢失
             st.session_state.pop("_handle_msg_in_progress", None)
+            # 重置沙盒 LLM 状态
+            st.session_state["llm_status_sandbox"] = "idle"
+            st.session_state["llm_status_sandbox_active"] = False
+            st.session_state["llm_current_node_sandbox"] = ""
 
 
 def _update_kpi_from_tool_results(tools: list):

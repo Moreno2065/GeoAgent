@@ -496,7 +496,10 @@ class CodeSandboxExecutor(BaseExecutor):
         # 注入上下文数据
         full_code = self._inject_context(code, context_data)
 
-        # 捕获 stdout
+        # 构建执行命名空间（用于捕获 result 变量）
+        namespace: Dict[str, Any] = {"__builtins__": __builtins__}
+
+        # 捕获 stdout/stderr
         old_stdout = _sys.stdout
         old_stderr = _sys.stderr
         stdout_capture = io.StringIO()
@@ -515,13 +518,17 @@ class CodeSandboxExecutor(BaseExecutor):
             import threading as _threading
 
             exc_info: list = [None]
+            exec_result: Any = None
 
             def _run():
                 try:
+                    nonlocal exec_result
                     if mode == "eval":
-                        eval(full_code, {"__builtins__": __builtins__}, {})
+                        exec_result = eval(full_code, namespace, {})
                     else:
-                        exec(full_code, {"__builtins__": __builtins__})
+                        # exec() 不返回值，result 需从 namespace 中获取
+                        exec(full_code, namespace)
+                        exec_result = namespace.get("result")
                 except Exception as e:
                     exc_info[0] = e
 
@@ -559,12 +566,20 @@ class CodeSandboxExecutor(BaseExecutor):
         stderr_output = stderr_capture.getvalue()
 
         if success:
+            # 优先使用 exec_result（如果有），否则回退到 stdout
+            if exec_result is not None:
+                final_result: Any = exec_result
+            elif stdout_output.strip():
+                final_result = stdout_output.strip()
+            else:
+                final_result = ""
+
             return ExecutorResult.ok(
                 task_type=self.task_type,
                 engine="sandbox_local",
                 data={
                     "output": stdout_output,
-                    "result": stdout_output.strip(),
+                    "result": final_result,
                     "session_id": session_id,
                     "elapsed_ms": round(elapsed_ms, 1),
                     "files_created": files_created,

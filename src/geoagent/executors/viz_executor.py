@@ -9,12 +9,17 @@ VizExecutor - 地图可视化执行器
 - Matplotlib：静态专题地图
 
 设计原则：全部 → 通过 Executor 调用，不让库互相调用
+
+v2.1 升级：支持可视化 Pipeline 扩展
+- layers: 多图层配置列表（来自 GeoDSL.layers）
+- visualization: 全局视觉编码配置（来自 GeoDSL.visualization）
+- view: 视图控制配置（来自 GeoDSL.view）
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
 
@@ -37,6 +42,19 @@ class VisualizationExecutor(BaseExecutor):
     supported_engines = {"folium", "pydeck", "matplotlib"}
 
     def run(self, task: Dict[str, Any]) -> ExecutorResult:
+        """
+        执行可视化任务。
+
+        支持三种调用模式：
+        1. layers 模式（v2.1）：多图层配置，来自 GeoDSL.layers
+           task = {"layers": [...], "view": {...}, "visualization": {...}}
+        2. 旧兼容模式：input_files + viz_type
+           task = {"input_files": [...], "viz_type": "heatmap", ...}
+        """
+        # ── 模式1：多图层 Pipeline 模式（v2.1 升级）──────────────────────
+        if task.get("layers"):
+            return self._run_multi_layer(task)
+        # ── 模式2：旧兼容模式 ───────────────────────────────────────────
         viz_type = task.get("viz_type", "interactive_map")
         input_files = task.get("input_files", [])
         output_file = task.get("output_file")
@@ -66,6 +84,173 @@ class VisualizationExecutor(BaseExecutor):
         if viz_type in ("interactive_map", "heatmap", "3d_map"):
             return self._resolve_path(f"map_{viz_type}.html")
         return self._resolve_path(f"map_{viz_type}.png")
+
+    def _run_multi_layer(self, task: Dict[str, Any]) -> ExecutorResult:
+        """
+        多图层渲染模式（v2.1 Pipeline 扩展）
+
+        使用 VisualizationEngine 渲染多个图层叠加的交互式地图。
+
+        Args:
+            task: 任务字典，必须包含 layers 字段
+                - layers: List[Dict] - LayerSpec 字典列表
+                - view: Dict - ViewSpec 字典
+                - visualization: Dict - VisualizationSpec 字典
+
+        Returns:
+            ExecutorResult: 包含地图文件路径和图层信息
+        """
+        try:
+            from geoagent.visualization import VisualizationEngine
+            import folium
+            import geopandas as gpd
+        except ImportError as e:
+            return ExecutorResult.err(
+                self.task_type,
+                f"可视化引擎依赖缺失: {str(e)}",
+                engine="folium",
+            )
+
+        try:
+            layers = task.get("layers", [])
+            view = task.get("view")
+            global_vis = task.get("visualization")
+            output_path = (
+                self._resolve_output("multi_layer", task.get("output_file"))
+                if task.get("output_file")
+                else self._resolve_path("map_multi_layer.html")
+            )
+
+            if not layers:
+                return ExecutorResult.err(
+                    self.task_type,
+                    "多图层渲染需要提供 layers 配置",
+                    engine="folium",
+                )
+
+            # 构建底图
+            m = folium.Map(location=[30, 117], zoom_start=5)
+
+            # 添加底图瓦片选项
+            base_tiles = [
+                ("ESRI 街道", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"),
+                ("ESRI 卫星", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"),
+                ("CartoDB 浅色", "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"),
+                ("CartoDB 深色", "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"),
+            ]
+            for name, url in base_tiles:
+                folium.TileLayer(
+                    tiles=url,
+                    attr=f"© {name}",
+                    name=name,
+                    overlay=False,
+                    control=True,
+                    show=(name == "ESRI 街道"),
+                ).add_to(m)
+
+            # 渲染每个图层
+            viz_engine = VisualizationEngine()
+            all_gdfs: List[gpd.GeoDataFrame] = []
+            rendered_layers: List[Dict[str, Any]] = []
+
+            for layer_def in layers:
+                layer_id = layer_def.get("layer_id", f"layer_{len(rendered_layers)}")
+                layer_type = layer_def.get("layer_type", "raw")
+                source = layer_def.get("source")
+                layer_style = layer_def.get("style") or global_vis
+                visible = layer_def.get("visible", True)
+                layer_name = layer_def.get("name") or layer_id
+                interactive = layer_def.get("interactive", True)
+
+                # 解析 GeoDataFrame
+                gdf = viz_engine._resolve_source(source)
+                if gdf is None:
+                    # 尝试从 input_files 兼容
+                    if isinstance(source, str) and not Path(source).exists():
+                        input_files = task.get("input_files", [])
+                        if input_files:
+                            for f in input_files:
+                                if Path(self._resolve_path(f)).exists():
+                                    gdf = gpd.read_file(self._resolve_path(f))
+                                    break
+                if gdf is None:
+                    continue
+
+                # 投影到 WGS84
+                if gdf.crs and gdf.crs.to_epsg() != 4326:
+                    gdf = gdf.to_crs(epsg=4326)
+                all_gdfs.append(gdf)
+
+                # 创建图层组
+                fg = folium.FeatureGroup(name=layer_name, show=visible)
+
+                # 渲染图层
+                layer_obj = viz_engine.render_layer(
+                    gdf,
+                    layer_type=layer_type,
+                    style=layer_style,
+                    name=layer_name,
+                    interactive=interactive,
+                )
+                layer_obj.add_to(fg)
+                fg.add_to(m)
+
+                rendered_layers.append({
+                    "layer_id": layer_id,
+                    "layer_type": layer_type,
+                    "name": layer_name,
+                    "feature_count": len(gdf),
+                    "visible": visible,
+                })
+
+            # 应用视图控制
+            if view:
+                if view.get("fit_bounds", True) and all_gdfs:
+                    viz_engine._apply_bounds(m, all_gdfs, view.get("bounds_padding"))
+                elif view.get("center") and view.get("zoom"):
+                    m.fit_bounds(
+                        [[view["center"][0], view["center"][1]],
+                         [view["center"][0], view["center"][1]]],
+                    )
+            elif all_gdfs:
+                # 默认：自动适应边界
+                viz_engine._apply_bounds(m, all_gdfs, (50, 50, 50, 50))
+
+            # 添加交互工具
+            from folium.plugins import MeasureControl, MousePosition
+            m.add_child(MeasureControl())
+            m.add_child(MousePosition())
+
+            # 添加图层控制面板
+            folium.LayerControl(collapsed=False).add_to(m)
+
+            # 保存地图
+            m.save(str(output_path))
+
+            return ExecutorResult.ok(
+                self.task_type,
+                "folium",
+                {
+                    "viz_type": "multi_layer",
+                    "layers": rendered_layers,
+                    "layer_count": len(rendered_layers),
+                    "output_file": output_path,
+                    "output_path": output_path,
+                },
+                meta={
+                    "engine_used": "Folium + VisualizationEngine",
+                    "total_features": sum(l.get("feature_count", 0) for l in rendered_layers),
+                }
+            )
+
+        except Exception as e:
+            import traceback
+            return ExecutorResult.err(
+                self.task_type,
+                f"多图层可视化失败: {str(e)}",
+                engine="folium",
+                error_detail=traceback.format_exc(),
+            )
 
     def _run_folium(self, task: Dict[str, Any]) -> ExecutorResult:
         """Folium 交互式地图（主力引擎）"""
