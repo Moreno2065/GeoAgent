@@ -192,6 +192,7 @@ class ResultRenderer:
         "statistics": "_render_statistics",
         "raster": "_render_raster",
         "code_sandbox": "_render_code_sandbox",  # 受限代码执行
+        "poi_search": "_render_poi_search",  # POI 周边搜索
     }
 
     def render(self, result: ExecutorResult) -> RenderResult:
@@ -670,6 +671,67 @@ class ResultRenderer:
                 "hotspot_count": hotspot_count,
                 "coldspot_count": coldspot_count,
                 "engine": result.engine,
+            },
+            raw_result=result.to_dict(),
+        )
+
+    def _render_poi_search(self, result: ExecutorResult) -> RenderResult:
+        """渲染 POI 周边搜索结果"""
+        data = result.data or {}
+        count = data.get("count", 0)
+        top_results = data.get("top_results", [])
+        center_point = data.get("center_point", "?")
+        keywords = data.get("keywords", "?")
+        radius = data.get("radius", 3000)
+        city = data.get("city", "")
+
+        summary = f"在 {center_point} 周边 {radius}m 内找到 {count} 个「{keywords}」"
+
+        # 生成推荐列表说明
+        recommendations = []
+        if count > 0:
+            recommendations.append(f"找到了 {count} 个符合条件的 POI")
+            if top_results:
+                recommendations.append(f"热门选择：{', '.join(top_results[:3])}")
+        else:
+            recommendations.append("未找到符合条件的 POI，请尝试扩大搜索范围或更换关键词")
+
+        conclusion = BusinessConclusion(
+            summary=summary,
+            key_findings=[
+                f"共找到 {count} 个结果",
+                f"中心点：{center_point}",
+                f"搜索半径：{radius}米",
+                f"城市：{city}" if city else "",
+            ],
+            recommendations=recommendations,
+        )
+
+        explanation = ExplanationCard(
+            title="POI 周边搜索结果",
+            what_i_did=f"搜索了 {center_point} 周边 {radius} 米范围内的「{keywords}」",
+            why="POI 搜索用于了解特定地点周边的基础设施分布情况",
+            what_it_means=f"找到 {count} 个符合条件的 POI" if count > 0 else "未找到符合条件的 POI",
+            caveats="POI 数据受高德 API 更新频率影响，可能存在滞后",
+        )
+
+        # 尝试提取 POI 坐标用于生成地图标记
+        all_pois = data.get("all_pois", [])
+        output_files = []
+
+        return RenderResult(
+            success=True,
+            summary=summary,
+            conclusion=conclusion,
+            explanation=explanation,
+            map_file=None,  # POI 搜索暂不生成地图文件
+            output_files=output_files,
+            metrics={
+                "count": count,
+                "radius": radius,
+                "keywords": keywords,
+                "center_point": center_point,
+                "top_results": top_results,
             },
             raw_result=result.to_dict(),
         )
