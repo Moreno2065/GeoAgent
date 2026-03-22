@@ -123,17 +123,17 @@ DEEPSEEK_PRESETS: Dict[str, Dict[str, Any]] = {
 GLM_PRESETS: Dict[str, Dict[str, Any]] = {
     "glm-4.6v": {
         "model": "glm-4.6v",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "description": "GLM-4 - 通用对话，中文理解强",
-    },
-    "glm-4-flash": {
-        "model": "glm-4-flash",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "description": "GLM-4 Flash - 快速版本，性价比高",
-    },
-    "glm-4-plus": {
-        "model": "glm-4-plus",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "base_url": "https://open.bigmodel.com/api/paas/v4",
+    "description": "GLM-4 - 通用对话，中文理解强",
+},
+"glm-4-flash": {
+    "model": "glm-4-flash",
+    "base_url": "https://open.bigmodel.com/api/paas/v4",
+    "description": "GLM-4 Flash - 快速版本，性价比高",
+},
+"glm-4-plus": {
+    "model": "glm-4-plus",
+    "base_url": "https://open.bigmodel.com/api/paas/v4",
         "description": "GLM-4 Plus - 增强版，能力更强",
     },
 }
@@ -372,7 +372,7 @@ def setup_dual_config(
             provider=LLMProvider.GLM,
             model=fallback_model,
             api_key=fallback_key,
-            base_url="https://open.bigmodel.cn/api/paas/v4",
+            base_url="https://open.bigmodel.com/api/paas/v4",
         )
         manager.set_fallback_config(fallback)
 

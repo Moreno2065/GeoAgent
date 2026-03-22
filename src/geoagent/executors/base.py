@@ -137,12 +137,81 @@ class BaseExecutor(ABC):
         return str(ws / relative_path)
 
     def _resolve_path(self, file_path: str) -> str:
-        """解析文件路径（相对路径 → workspace/ 绝对路径）"""
+        """
+        解析文件路径（相对路径 → workspace/ 绝对路径）
+
+        增强特性：
+        1. 调用增强后的 data_utils.resolve_path() 支持模糊匹配
+        2. 如果文件不存在，尝试自动下载（通过 FileFallbackHandler）
+        3. 如果下载成功，用下载后的文件路径替换
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            解析后的文件绝对路径
+        """
         from pathlib import Path
+
         p = Path(file_path)
         if p.is_absolute():
             return str(p)
-        return self._workspace_path(file_path)
+
+        workspace = self._workspace_path("")
+        resolved = Path(workspace) / file_path
+
+        # 如果文件已存在，直接返回
+        if resolved.exists():
+            return str(resolved)
+
+        # 文件不存在，尝试自动下载
+        return self._try_auto_download(file_path)
+
+    def _try_auto_download(self, file_name: str) -> str:
+        """
+        尝试自动下载缺失的文件
+
+        优先级：
+        1. FileFallbackHandler.find_file() - 本地模糊匹配
+        2. FileFallbackHandler.try_online_fallback() - 在线数据源下载
+
+        Args:
+            file_name: 文件名（可能无扩展名）
+
+        Returns:
+            下载后的文件绝对路径，或原始解析路径（下载失败时）
+        """
+        from pathlib import Path
+        from geoagent.executors.file_fallback_handler import FileFallbackHandler
+
+        workspace = Path(self._workspace_path(""))
+
+        try:
+            handler = FileFallbackHandler(workspace=workspace, context=self._get_context_dict())
+
+            # 先尝试本地模糊匹配
+            found = handler.find_file(file_name)
+            if found:
+                return str(found)
+
+            # 本地找不到，尝试在线下载
+            downloaded = handler.try_online_fallback(file_name, task_type="")
+            if downloaded:
+                return downloaded
+
+        except ImportError:
+            # FileFallbackHandler 导入失败（缺少依赖），静默降级
+            pass
+        except Exception:
+            # 其他异常，静默降级
+            pass
+
+        # 返回原始解析路径，让调用方自行处理错误
+        return str(workspace / file_name)
+
+    def _get_context_dict(self) -> Dict[str, Any]:
+        """获取上下文字典（供 FileFallbackHandler 使用）"""
+        return {}
 
     def _check_dependency(self, module_name: str) -> bool:
         """检查可选依赖是否可用"""

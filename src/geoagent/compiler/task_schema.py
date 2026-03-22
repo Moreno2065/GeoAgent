@@ -690,11 +690,28 @@ class PoiSearchTask(BaseTask):
         Task: PoiSearchTask(task="poi_search", keywords="餐厅", location="芜湖南站", radius=3000)
     """
     task: Literal["poi_search"] = "poi_search"
-    keywords: str = Field(default="", description="查询关键字（支持多个，用 '|' 分隔）")
+    keywords: str = Field(
+        default="",
+        description=(
+            "🚨【极其重要 - 必填】要搜索的具体店名或设施名（如'星巴克'、'便利店'、'麦当劳'、'肯德基'）。"
+            "这是现实世界的开放词汇，直接从用户原话中提取！"
+            "⚠️ 绝对不要去本地文件列表里比对，它根本不在你工作区的文件里！"
+            "如果用户说'附近有什么餐厅'，keyword 就是'餐厅'；"
+            "如果用户说'找星巴克'，keyword 就是'星巴克'。"
+        )
+    )
     types: Optional[str] = Field(default=None, description="POI 分类编码或名称，如 '餐饮服务|050000'")
     city: str = Field(default="", description="指定城市（adcode 或城市名）")
-    location: Optional[str] = Field(default=None, description="中心点坐标（填了就是周边搜索）")
-    radius: int = Field(default=3000, ge=100, le=5000, description="周边搜索半径（米）")
+    center_point: str = Field(
+        default="",
+        description=(
+            "搜索中心点（例如'上海静安寺'、'芜湖南站'、'北京市朝阳区'）。"
+            "如果用户提到了已有的图层名，提取图层名作为中心点引用。"
+            "如果是地名词（而非坐标），系统会自动调用地理编码转换为坐标。"
+        )
+    )
+    location: Optional[str] = Field(default=None, description="中心点坐标（格式 'lon,lat'，填了就是周边搜索）")
+    radius: int = Field(default=3000, ge=100, le=5000, description="周边搜索半径（米），默认 3000 米")
     polygon: Optional[str] = Field(default=None, description="多边形范围坐标串（填了就是多边形搜索）")
     sortrule: Literal["distance", "weight"] = Field(
         default="weight",

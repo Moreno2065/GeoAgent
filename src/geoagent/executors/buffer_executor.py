@@ -140,9 +140,18 @@ class BufferExecutor(BaseExecutor):
             }
             cap = cap_map.get(cap_style_str, CAP_STYLE.round)
 
-            # ── 核心修复：判断 input_layer 是文件还是地名词 ──────────────
+            # ── 核心修复：判断 input_layer 是文件还是地名词 ──────────────────
             input_path = self._resolve_path(input_layer)
-            if not Path(input_path).exists():
+            resolved = Path(input_path)
+
+            # 如果原始路径不存在，尝试加 .shp 扩展名
+            if not resolved.exists() and not input_layer.lower().endswith(".shp"):
+                shp_path = self._resolve_path(f"{input_layer}.shp")
+                if Path(shp_path).exists():
+                    input_path = shp_path
+                    resolved = Path(input_path)
+
+            if not resolved.exists():
                 # 不是文件 → 视为地名词，先通过高德 API 获取坐标
                 gdf = self._build_point_from_place(input_layer)
                 source_label = f"地名词「{input_layer}」"
@@ -250,7 +259,17 @@ class BufferExecutor(BaseExecutor):
         try:
             import arcpy
 
-            input_path = self._resolve_path(task["input_layer"])
+            input_layer_val = task["input_layer"]
+            input_path = self._resolve_path(input_layer_val)
+            resolved = Path(input_path)
+
+            # 如果原始路径不存在，尝试加 .shp 扩展名
+            if not resolved.exists() and not input_layer_val.lower().endswith(".shp"):
+                shp_path = self._resolve_path(f"{input_layer_val}.shp")
+                if Path(shp_path).exists():
+                    input_path = shp_path
+                    resolved = Path(input_path)
+
             distance = float(task["distance"])
             dissolve = bool(task.get("dissolve", False))
             output_path = self._resolve_output(task["input_layer"], task.get("output_file"))

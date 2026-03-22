@@ -101,7 +101,7 @@ class GeoAgentV2:
         primary_base_url: str = "https://api.deepseek.com",
         fallback_api_key: str = None,
         fallback_model: str = "glm-4.6v",
-        fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
+        fallback_base_url: str = "https://open.bigmodel.com/api/paas/v4",
     ):
         """
         Args:
@@ -149,7 +149,7 @@ class GeoAgentV2:
                 self.provider = LLMProvider.GLM
                 self.api_key = final_api_key
                 self.model = "glm-4.6v"
-                self.base_url = "https://open.bigmodel.cn/api/paas/v4"
+                self.base_url = "https://open.bigmodel.com/api/paas/v4"
                 self._glm_api_key = final_api_key
                 self._save_glm_api_key(final_api_key)
             else:
@@ -465,7 +465,7 @@ def create_agent_v2(
     primary_base_url: str = "https://api.deepseek.com",
     fallback_api_key: str = None,
     fallback_model: str = "glm-4.6v",
-    fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
+    fallback_base_url: str = "https://open.bigmodel.com/api/paas/v4",
 ) -> GeoAgentV2:
     """
     创建 GeoAgent V2 实例的便捷工厂函数
@@ -481,14 +481,14 @@ def create_agent_v2(
             primary_base_url="https://api.deepseek.com",
             fallback_api_key="glm-xxx",
             fallback_model="glm-4.6v",
-            fallback_base_url="https://open.bigmodel.cn/api/paas/v4",
+            fallback_base_url="https://open.bigmodel.com/api/paas/v4",
         )
 
         # GLM 主 + DeepSeek 备
         agent = create_agent_v2(
             primary_api_key="glm-xxx",
             primary_model="glm-4.6v",
-            primary_base_url="https://open.bigmodel.cn/api/paas/v4",
+            primary_base_url="https://open.bigmodel.com/api/paas/v4",
             fallback_api_key="sk-deepseek-xxx",
             fallback_model="deepseek-chat",
             fallback_base_url="https://api.deepseek.com",

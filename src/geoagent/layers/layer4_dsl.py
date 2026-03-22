@@ -564,6 +564,36 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
             "description": "执行模式：exec=执行语句块，eval=计算表达式",
         },
     },
+
+    # ── POI 周边搜索（"XX周围有多少个XX"模式）──────────────────────────────
+    Scenario.POI_SEARCH: {
+        "center_point": {
+            "type": "string",
+            "required": True,
+            "description": "中心地点（地址或地标名，用于 Geocode 转经纬度）",
+            "examples": ["上海静安寺", "北京天安门", "浦东陆家嘴"],
+        },
+        "keyword": {
+            "type": "string",
+            "required": True,
+            "description": "POI 搜索关键词（如商家名、品牌名、设施类型）",
+            "examples": ["星巴克", "餐厅", "银行", "医院", "超市", "地铁站"],
+        },
+        "radius": {
+            "type": "number",
+            "required": False,
+            "default": 3000,
+            "min": 100,
+            "max": 5000,
+            "description": "周边搜索半径（米），最大 5000 米",
+        },
+        "city": {
+            "type": "string",
+            "required": False,
+            "description": "城市名称（用于辅助定位同名地点）",
+            "examples": ["上海", "北京", "深圳", "杭州"],
+        },
+    },
 }
 
 
@@ -743,6 +773,7 @@ class DSLBuilder:
             Scenario.STATISTICS: ["input_file"],
             Scenario.RASTER: ["input_file"],
             Scenario.SUITABILITY: ["study_area"],
+            Scenario.POI_SEARCH: ["center_point"],
         }
 
         keys = inputs_keys.get(scenario, [])

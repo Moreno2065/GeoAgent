@@ -453,6 +453,38 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "step": 5,
         },
     },
+    # POI 周边搜索（"XX周围有多少个XX"模式）
+    "poi_search": {
+        "center_point": {
+            "question": "请问要搜索哪个地点周边的设施？（如：静安寺、浦东陆家嘴、公司地址）",
+            "options": None,
+            "required": True,
+            "examples": ["上海静安寺", "北京天安门", "公司地址"],
+            "step": 1,
+        },
+        "keyword": {
+            "question": "请问要搜索什么类型的设施？（如：星巴克、餐厅、银行、医院）",
+            "options": None,
+            "required": True,
+            "examples": ["星巴克", "餐厅", "银行", "医院", "超市", "地铁站"],
+            "step": 2,
+        },
+        "radius": {
+            "question": "请问搜索半径是多少？（米）",
+            "options": ["500", "1000", "2000", "3000", "5000"],
+            "required": False,
+            "default": 3000,
+            "examples": ["1000", "3000", "5000"],
+            "step": 3,
+        },
+        "city": {
+            "question": "请问在哪个城市？（用于精确定位同名地点）",
+            "options": None,
+            "required": False,
+            "examples": ["上海", "北京", "深圳", "杭州"],
+            "step": 3,
+        },
+    },
 }
 
 
@@ -1116,7 +1148,240 @@ class ParameterExtractor:
             if files:
                 params["input_files"] = files
 
+        # ── poi_search 场景 ───────────────────────────────────────
+        # LLM 精准提取 POI 搜索参数（大模型阅读理解 >> 正则抠字眼）
+        elif _scenario_str == "poi_search":
+            poi_params = self._extract_poi_params(query)
+            params.update(poi_params)
+
         return params
+
+    def _extract_poi_params(self, query: str) -> Dict[str, Any]:
+        """
+        专为 poi_search 场景设计：从自然语言中精准提取 POI 搜索参数。
+
+        策略：先用确定性正则兜底，再用 LLM 阅读理解深度提取。
+        LLM 的阅读理解能力 >> 正则抠字眼。
+
+        典型输入：
+          "上海静安寺周围有多少家星巴克"
+          "静安寺附近5公里内有多少家星巴克"
+          "查一下上海静安寺周边5000米内有多少家星巴克"
+          "静安寺周边5000米内有哪些星巴克"
+
+        输出格式：
+          {
+            "center_point": "上海静安寺",   # 中心地点（用于 geocode）
+            "radius": 5000,                  # 搜索半径（米）
+            "keyword": "星巴克",             # POI 关键词（LLM 精准抠出）
+            "city": "上海",                  # 可选：城市
+            "query_text": "...",             # 原始查询
+          }
+        """
+        import re
+        import os
+
+        result: Dict[str, Any] = {
+            "radius": 3000,  # 默认 3 公里
+            "query_text": query,
+        }
+
+        # ── 确定性正则兜底 ──────────────────────────────────────────
+
+        # 1. 提取半径
+        radius_patterns = [
+            (r"(\d+)\s*(?:公里|km)\s*(?:范围|内|以内|周边|周围)?", 1000),
+            (r"(\d+)\s*公里", 1000),
+            (r"方圆\s*(\d+)\s*(?:公里|km|米|m)?", 1),
+            (r"(\d+)\s*(?:公里|km)\s*(?:范围|内|以内|周边|周围)?", 1000),
+            (r"(\d+)\s*(?:米|m)\s*(?:范围|内|以内|周边|周围)?", 1),
+            (r"周边\s*(\d+)\s*(?:米|m)?", 1),
+            (r"周围\s*(\d+)\s*(?:米|m)?", 1),
+            (r"(\d+)\s*(?:米|m)\s*(?:周边|周围|范围|内|以内)?", 1),
+            (r"(\d+)\s*公里范围", 1000),
+        ]
+        for pattern, multiplier in radius_patterns:
+            m = re.search(pattern, query)
+            if m:
+                val = float(m.group(1))
+                radius = int(val * multiplier)
+                # 高德周边搜索最大 5000 米
+                result["radius"] = min(radius, 5000)
+                break
+
+        # 2. 提取城市（可能的显式提及）
+        city_patterns = [
+            r"(?:在|到|去|从)\s*([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
+            r"([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
+            r"(?:在|到)\s*([^\s,，。附近周边0-9]{2,8})\s*(?:附近|周边|周围)?",
+        ]
+        for pattern in city_patterns:
+            m = re.search(pattern, query)
+            if m:
+                potential_city = m.group(1).strip()
+                # 排除明显不是城市的词
+                bad_city_words = ["周边", "附近", "周围", "范围", "以内", "以外"]
+                if potential_city and not any(b in potential_city for b in bad_city_words):
+                    if len(potential_city) >= 2:
+                        result["city"] = potential_city
+                        break
+
+        # ── LLM 深度提取 center_point 和 keyword ───────────────────
+        llm_extracted = self._llm_extract_poi_params(query)
+        if llm_extracted:
+            # LLM 结果覆盖兜底结果（更精准）
+            if llm_extracted.get("center_point"):
+                result["center_point"] = llm_extracted["center_point"]
+            if llm_extracted.get("keyword"):
+                result["keyword"] = llm_extracted["keyword"]
+            if llm_extracted.get("radius") is not None:
+                result["radius"] = min(int(llm_extracted["radius"]), 5000)
+            if llm_extracted.get("city"):
+                result["city"] = llm_extracted["city"]
+
+        # 如果没有提取到 keyword，用正则兜底（常见的POI类型词）
+        if "keyword" not in result:
+            poi_type_words = [
+                "星巴克", "麦当劳", "肯德基", "汉堡王",
+                "银行", "医院", "学校", "超市", "商场",
+                "餐厅", "酒店", "银行", "药店", "便利店",
+                "地铁站", "公交站", "停车场", "加油站",
+                "公园", "健身房", "电影院", "咖啡厅",
+                "饭店", "小吃", "美食", "火锅", "面馆",
+            ]
+            for kw in poi_type_words:
+                if kw in query:
+                    result["keyword"] = kw
+                    break
+
+        return result
+
+    def _llm_extract_poi_params(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        调用 LLM 深度提取 POI 搜索参数。
+
+        大模型的阅读理解能力 >> 任何正则表达式。
+        能从"上海静安寺周围有多少家星巴克"这种自然语言中，
+        精准地抠出 center_point="上海静安寺", keyword="星巴克", radius=3000。
+
+        仅在配置了 API Key 时调用，失败时返回 None（降级为正则兜底）。
+        """
+        import json
+        import os
+
+        # 检查 API Key
+        api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            return None
+
+        # 检查是否配置了禁用 LLM
+        if os.getenv("GEOAGENT_DISABLE_LLM", "").lower() in ("1", "true", "yes"):
+            return None
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            )
+
+            SYSTEM_PROMPT = """你是一个精准的 GIS 参数提取器。你的任务只有一个：
+从用户输入中精确提取 POI 周边搜索的三个核心参数。
+
+## 你的任务
+
+给定用户输入，提取以下三个参数：
+
+1. **center_point**: 中心地点（地址或地标名），用于后续 Geocode 转经纬度。
+   - "上海静安寺" → "上海静安寺"
+   - "北京市朝阳区" → "北京市朝阳区"
+   - "我公司" → "我公司"
+   注意：只提取地点，不要包含"附近""周边""周围"等词！
+
+2. **keyword**: 要搜索的 POI 关键词（如商家名、品牌名、设施类型）。
+   - "上海静安寺周围有多少家星巴克" → "星巴克"
+   - "查找附近的餐厅" → "餐厅"
+   - "搜索周边的医院" → "医院"
+   - "附近有哪些银行" → "银行"
+   注意：只提取关键词，不要包含"附近""周边""有多少"等词！
+
+3. **radius**: 搜索半径（米），必须是整数。
+   - "5公里内" → 5000
+   - "3公里" → 3000
+   - "500米" → 500
+   - 默认 3000
+
+4. **city**（可选）: 城市名称，辅助 Geocode 定位同名地点。
+   - "上海静安寺" → "上海"
+   - "北京天安门" → "北京"
+
+## 输出格式
+
+必须输出纯 JSON，不要任何解释：
+
+```json
+{
+  "center_point": "提取的地点",
+  "keyword": "提取的关键词",
+  "radius": 3000,
+  "city": "城市名（可选）"
+}
+```
+
+如果无法提取某个字段，用 null 表示。
+
+## 重要规则
+
+1. **只输出 JSON**，不要 markdown 包裹，不要解释
+2. **center_point 必须是干净的地点描述**，不含"附近""周边""周围""以内"等词
+3. **keyword 必须是纯粹的搜索词**，如"星巴克""餐厅""银行"，而不是"星巴克附近"
+4. **radius 必须是整数**，单位是米
+5. 如果用户没有明确说半径，默认 3000
+"""
+            USER_PROMPT = f"用户输入：{query}"
+
+            response = client.chat.completions.create(
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": USER_PROMPT},
+                ],
+                temperature=0.0,
+                max_tokens=512,
+            )
+
+            raw = response.choices[0].message.content or ""
+            # 去掉可能的 markdown 包裹
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`").strip()
+                # 去掉可能的 "json" 前缀
+                for line in raw.splitlines():
+                    if line.strip() == "json":
+                        continue
+                    if line.strip().startswith("{"):
+                        raw = "\n".join(raw.splitlines()[raw.splitlines().index(line):])
+                        break
+
+            parsed = json.loads(raw)
+
+            # 基本校验
+            result = {}
+            if parsed.get("center_point"):
+                result["center_point"] = str(parsed["center_point"]).strip()
+            if parsed.get("keyword"):
+                result["keyword"] = str(parsed["keyword"]).strip()
+            if parsed.get("radius"):
+                result["radius"] = int(parsed["radius"])
+            if parsed.get("city"):
+                result["city"] = str(parsed["city"]).strip()
+
+            return result if result else None
+
+        except Exception:
+            # LLM 调用失败时降级为正则兜底，不报错
+            return None
 
     def _extract_facility_type(self, query: str) -> str:
         """从查询中提取设施类型"""

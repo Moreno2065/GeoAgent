@@ -55,7 +55,7 @@ workspace/*.jpg
 workspace/*.shp
 workspace/*.tif
 workspace/temp_script.py
-
+workspace/
 # OS
 .DS_Store
 Thumbs.db
@@ -83,3 +83,12 @@ workspace/conversation_files/cbce7874/土地利用.shp
 .gitignore
 workspace/conversation_files/aefb32e8/河流.shx
 workspace/conversation_files/aefb32e8/河流.shp
+workspace/河流_测试缓冲.cpg
+.gitignore
+workspace/河流_测试缓冲.dbf
+workspace/河流_测试缓冲.prj
+workspace/河流_测试缓冲.shx
+workspace/河流_buffer.cpg
+workspace/河流_buffer.dbf
+workspace/河流_buffer.shx
+.gitignore

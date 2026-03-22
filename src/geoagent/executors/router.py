@@ -84,6 +84,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "fetch_osm":     lambda: __import__(
                               "geoagent.executors.osm_executor",
                               fromlist=["OSMExecutor"]).OSMExecutor,
+        # ArcGIS Online 下载
+        "arcgis_download": lambda: __import__(
+                              "geoagent.executors.arcgis_executor",
+                              fromlist=["ArcGISExecutor"]).ArcGISExecutor,
         # 受限代码执行
         "code_sandbox":  lambda: __import__(
                               "geoagent.executors.code_sandbox_executor",
@@ -147,9 +151,11 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "vector_buffer":    "gdal",
     "vector_clip":      "gdal",
     "vector_intersect": "gdal",
-    # OSM 在线下载
-    "fetch_osm":       "fetch_osm",
-    # 受限代码执行
+        # OSM 在线下载
+        "fetch_osm":       "fetch_osm",
+        # ArcGIS Online 下载
+        "arcgis_download": "arcgis_download",
+        # 受限代码执行
     "code_sandbox":    "code_sandbox",
     # ── 可视化 Pipeline 扩展（Phase 2.2）────────────────────────────
     "poi_query":      "poi_executor",   # POI 查询（Overpass API 封装）

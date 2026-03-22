@@ -76,12 +76,27 @@ class OSMExecutor(BaseExecutor):
 
     def _resolve_center_point(self, center_point: str) -> tuple[float, float]:
         """
-        解析 center_point：
-        - "116.397,39.908" → (39.908, 116.397)  # OSMnx 需要 (lat, lon)
-        - "tiananmen_pt" 等变量名暂时无法解析（需 workflow engine 提供变量表）
-          → 抛出明确错误引导用户
+        解析 center_point：支持三种模式
+
+        模式1：直接坐标 "lng,lat" → (lat, lon)
+            例如: "116.397,39.908" → (39.908, 116.397)
+        模式2：地名词 → 通过地理编码获取坐标
+            例如: "北京市" → 自动 geocoding → (lat, lon)
+        模式3：变量名（由 workflow engine 解析后传入，此时应该是坐标字符串）
+            已在 workflow 层解析，直接尝试解析为坐标
+
+        Args:
+            center_point: 中心点字符串
+
+        Returns:
+            (lat, lon) 元组
+
+        Raises:
+            ValueError: 无法解析为坐标
         """
         center_point = center_point.strip()
+
+        # 模式1：尝试直接坐标解析
         parts = center_point.split(",")
         if len(parts) == 2:
             try:
@@ -91,10 +106,63 @@ class OSMExecutor(BaseExecutor):
             except ValueError:
                 pass
 
-        # 变量名（未绑定）→ 给出明确错误
+        # 模式2：尝试作为地名词解析
+        return self._geocode_place(center_point)
+
+    def _geocode_place(self, place_name: str) -> tuple[float, float]:
+        """
+        将地名词解析为坐标
+
+        优先级：
+        1. 高德 API（精确，支持中国地名）
+        2. Nominatim（OSM 免费 API，兜底）
+
+        Args:
+            place_name: 地名
+
+        Returns:
+            (lat, lon) 元组
+
+        Raises:
+            ValueError: 无法解析地名
+        """
+        # 方案1：高德 API
+        try:
+            from geoagent.plugins.amap_plugin import AmapPlugin
+            import json
+
+            amap = AmapPlugin()
+            result_str = amap.execute({"action": "geocode", "address": place_name})
+            result = json.loads(result_str)
+            if result.get("success"):
+                location = result.get("location", {})
+                lng = location.get("lng") or location.get("longitude")
+                lat = location.get("lat") or location.get("latitude")
+                if lng and lat:
+                    return (float(lat), float(lng))  # OSMnx: (lat, lon)
+        except Exception:
+            pass  # 高德不可用，继续尝试备选方案
+
+        # 方案2：Nominatim（OSM 免费 API，兜底）
+        try:
+            from geopy.geocoders import Nominatim
+            from geopy.extra.rate_limiter import RateLimiter
+
+            geolocator = Nominatim(user_agent="GeoAgent-OSM")
+            geocode_fn = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+            location = geocode_fn(place_name, language="zh")
+            if location:
+                return (location.latitude, location.longitude)
+        except ImportError:
+            pass  # geopy 未安装
+        except Exception:
+            pass  # 网络错误或其他异常
+
+        # 全都失败
         raise ValueError(
-            f"fetch_osm 的 center_point='{center_point}' 无法解析为坐标。"
-            f"请确保前置步骤（geocode）已输出了 [lng,lat] 格式的坐标字符串。"
+            f"无法将地名词「{place_name}」解析为坐标。"
+            f"请检查：1) 高德 API KEY 是否配置；2) 网络连接是否正常；"
+            f"3) 地名是否正确（支持中文地名）。"
         )
 
     def _run_osmnx(

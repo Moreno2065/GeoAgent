@@ -54,15 +54,15 @@ REASONER_MODELS = {
     },
     # GLM
     "glm-4.6v": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "base_url": "https://open.bigmodel.com/api/paas/v4",
         "description": "GLM-4V - 视觉模型",
     },
     "glm-4-plus": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "base_url": "https://open.bigmodel.com/api/paas/v4",
         "description": "GLM-4 Plus - 增强版",
     },
     "glm-4-flash": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "base_url": "https://open.bigmodel.com/api/paas/v4",
         "description": "GLM-4 Flash - 快速版",
     },
 }

@@ -207,6 +207,17 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "找公园", "找健身房", "找药店", "找便利店",
         "饭店", "餐厅", "美食", "小吃", "咖啡", "酒吧",
         "KTV", "网吧", "电影院", "健身房",
+        # 🆕 Step 1: 查店面/查数量意图（"XX周围有多少个XX"模式）
+        "多少家", "有哪些", "星巴克", "查一下", "搜索周边",
+        "周边设施", "找找", "POI", "网点", "门店",
+        "附近有多少", "周边有多少", "附近有几家", "周边有几家",
+        "附近有", "周边有", "附近哪些", "周边哪些",
+        "找找附近", "找找周边", "查查附近", "查查周边",
+        "搜一下", "搜附近", "搜周边",
+        "附近商家", "周边商家", "附近商铺", "周边商铺",
+        "附近网点", "周边网点", "附近门店", "周边门店",
+        "附近有多少家", "附近有几家", "周围有多少",
+        "搜索附近", "搜索周边",
         # 英文
         "find places", "nearby search", "place search",
         "find nearby", "around me", "near me",
@@ -214,6 +225,8 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "school", "hospital", "mall", "gas station",
         "parking", "subway", "metro", "attractions",
         "park", "gym", "pharmacy", "convenience store",
+        "how many", "how many nearby", "how many around",
+        "places nearby", "nearby places", "shops nearby",
     ],
 
     # ── 可视化（扩展关键词：地图渲染、热力图、分类图）───────────────

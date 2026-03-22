@@ -501,12 +501,17 @@ class WorkflowEngine:
 
     def _resolve_inputs(self, step: WorkflowStep) -> Dict[str, Any]:
         """
-        解析步骤的输入参数，处理变量引用
+        解析步骤的输入参数，处理变量引用和文件缺失自动下载
 
         支持的输入格式：
-        1. 字面量：{"layer": "道路.shp"} → 直接使用
+        1. 字面量：{"layer": "道路.shp"} → 直接使用或自动下载
         2. 变量引用：{"layer": "tmp_roads"} → 从 context 获取
         3. 显式引用：{"layer": {"from_step": "step_1"}} → 从 context 获取
+
+        自动下载流程：
+        1. 调用 data_utils.resolve_path() 进行模糊匹配
+        2. 如果文件不存在，尝试 FileFallbackHandler 自动下载
+        3. 下载成功后替换为新路径继续执行
 
         Args:
             step: 工作流步骤
@@ -514,6 +519,9 @@ class WorkflowEngine:
         Returns:
             解析后的参数字典
         """
+        from pathlib import Path
+        from geoagent.executors.file_fallback_handler import FileFallbackHandler
+
         resolved: Dict[str, Any] = {}
 
         for key, value in step.inputs.items():
@@ -528,7 +536,51 @@ class WorkflowEngine:
                         )
                 else:
                     # 字面量（文件名、路径等）
-                    resolved[key] = value
+                    # 先尝试标准路径解析（支持模糊匹配）
+                    resolved_path = self._resolve_path_from_inputs(value)
+                    resolved_path_obj = Path(resolved_path)
+
+                    if resolved_path_obj.exists():
+                        # 文件存在，直接使用
+                        resolved[key] = resolved_path
+                    else:
+                        # 文件不存在，尝试自动下载
+                        handler = FileFallbackHandler(
+                            workspace=self.workspace,
+                            context=self.context
+                        )
+
+                        # 先尝试本地模糊匹配
+                        found = handler.find_file(value)
+                        if found:
+                            resolved[key] = str(found)
+                            self._emit("file_found", {
+                                "step_id": step.step_id,
+                                "key": key,
+                                "original": value,
+                                "found": str(found),
+                                "source": "workspace_fuzzy_match",
+                            })
+                        else:
+                            # 尝试在线下载
+                            downloaded = handler.try_online_fallback(value, step.task)
+                            if downloaded:
+                                resolved[key] = downloaded
+                                self._emit("file_downloaded", {
+                                    "step_id": step.step_id,
+                                    "key": key,
+                                    "original": value,
+                                    "downloaded": downloaded,
+                                })
+                            else:
+                                # 下载失败，保持原值，让 executor 自行报错
+                                resolved[key] = resolved_path
+                                self._emit("file_not_found", {
+                                    "step_id": step.step_id,
+                                    "key": key,
+                                    "original": value,
+                                    "warning": "文件不存在且无法自动下载，将由 Executor 处理",
+                                })
             elif isinstance(value, dict):
                 # 显式引用格式 {"from_step": "step_id", "field": "xxx"}
                 from_step_id = value.get("from_step")
@@ -545,6 +597,21 @@ class WorkflowEngine:
                 resolved[key] = value
 
         return resolved
+
+    def _resolve_path_from_inputs(self, file_name: str) -> str:
+        """
+        解析文件路径（支持模糊匹配）
+
+        调用 data_utils.resolve_path() 实现扩展名补全和模糊匹配
+
+        Args:
+            file_name: 文件名
+
+        Returns:
+            解析后的文件绝对路径
+        """
+        from geoagent.geo_engine.data_utils import resolve_path
+        return str(resolve_path(file_name))
 
     @staticmethod
     def _is_variable_ref(value: str) -> bool:

@@ -77,12 +77,68 @@ def get_workspace() -> Path:
     return Path(__file__).parent.parent.parent / "workspace"
 
 
-def resolve_path(file_name: str) -> Path:
-    """解析文件路径（相对路径 → workspace/）"""
+# 支持的文件扩展名（按优先级排序）
+VECTOR_EXTENSIONS = [".shp", ".geojson", ".json", ".gpkg", ".gjson"]
+RASTER_EXTENSIONS = [".tif", ".tiff", ".img", ".asc"]
+ALL_EXTENSIONS = VECTOR_EXTENSIONS + RASTER_EXTENSIONS
+
+
+def resolve_path(file_name: str, fuzzy: bool = True) -> Path:
+    """
+    解析文件路径（相对路径 → workspace/）
+
+    增强特性：
+    1. 精确匹配（带扩展名）
+    2. 扩展名自动补全（无扩展名时尝试常见 GIS 格式）
+    3. 模糊匹配（文件名片段包含，大小写不敏感）
+    4. 如果都找不到，返回默认路径（让调用方决定如何处理）
+
+    Args:
+        file_name: 文件名（可能无扩展名）
+        fuzzy: 是否启用模糊匹配（默认 True）
+
+    Returns:
+        解析后的文件路径
+    """
     f = Path(file_name)
     if f.is_absolute():
         return f
-    return get_workspace() / file_name
+
+    workspace = get_workspace()
+
+    # 策略1：精确匹配（带扩展名）
+    direct = workspace / file_name
+    if direct.exists():
+        return direct
+
+    # 策略2：扩展名自动补全
+    if not f.suffix:
+        for ext in ALL_EXTENSIONS:
+            candidate = workspace / f"{file_name}{ext}"
+            if candidate.exists():
+                return candidate
+
+    # 策略3：模糊匹配（文件名片段包含）
+    if fuzzy:
+        name_lower = f.stem.lower()
+        for existing in workspace.iterdir():
+            if not existing.is_file():
+                continue
+            existing_stem = existing.stem.lower()
+            # 完全包含关系
+            if name_lower in existing_stem or existing_stem in name_lower:
+                return existing
+
+    # 策略4：大小写不敏感匹配
+    if fuzzy:
+        for existing in workspace.iterdir():
+            if not existing.is_file():
+                continue
+            if existing.stem.lower() == f.stem.lower():
+                return existing
+
+    # 默认返回不存在的路径，让调用方决定处理方式
+    return direct
 
 
 def ensure_dir(filepath: str) -> None:
