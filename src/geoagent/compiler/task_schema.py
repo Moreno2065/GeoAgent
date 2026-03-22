@@ -131,8 +131,8 @@ class BufferTask(BaseTask):
     缓冲区分析任务
 
     示例：
-        NL: "生成天安门500米缓冲区，输出为 result.shp"
-        Task: BufferTask(task="buffer", input_layer="tiananmen.shp", distance=500, unit="meters", output_file="result.shp")
+        NL: "生成天安门500米缓冲区"
+        Task: BufferTask(task="buffer", input_layer="tiananmen.shp", distance=500, unit="meters")
     """
     task: Literal["buffer"] = "buffer"
     input_layer: str = Field(description="输入矢量文件路径（workspace/ 相对路径）")
@@ -146,7 +146,6 @@ class BufferTask(BaseTask):
         default="round",
         description="端点样式：round（圆形，默认）/ square（方形）/ flat（平头）"
     )
-    output_file: Optional[str] = Field(default=None, description="输出文件路径（不填则自动生成）")
 
     @field_validator("input_layer")
     @classmethod

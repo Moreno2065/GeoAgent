@@ -552,8 +552,6 @@ class IntentClassifier:
             )
         # ==========================================
 
-        query_lower = query.lower()
-        
         # 🚀 下载前置拦截器（凡含"下载"均重定向至 FETCH_OSM）
         download_dictators = ["下载", "下载地图", "地图下载", "下载数据", "download",
                             "下载osm", "osm下载", "抓取地图", "下载路网", "下载建筑",
@@ -567,6 +565,8 @@ class IntentClassifier:
                 all_intents={Scenario.FETCH_OSM}
             )
         # ==========================================
+
+        query_lower = query.lower()
         matched: Dict[Scenario, List[str]] = {}
 
         # 精确匹配

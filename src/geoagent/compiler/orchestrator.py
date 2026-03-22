@@ -114,7 +114,7 @@ class ParameterExtractor:
         (r"(\d+(?:\.\d+)?)\s*(?:公里|km)\s*(?:范围|内|以外)", "kilometers"),
         # 米
         (r"(\d+(?:\.\d+)?)\s*(?:米|meters?)", "meters"),
-        (r"(\d+(?:\.\d+)?)\s*m(?![a-zA-Z0-9])", "meters"),  # buffer 500m/200m（兼容中文）
+        (r"(\d+(?:\.\d+)?)\s*m\b(?![a-zA-Z])", "meters"),  # buffer 200m (英文)
         (r"方圆\s*(\d+(?:\.\d+)?)\s*(?:米|m)", "meters"),
         # 独立数字（语境判断：周边/缓冲/方圆 + 数字）
         (r"(?:周边|方圆|半径|范围|距离|缓冲)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)?", "meters"),
@@ -227,35 +227,15 @@ class ParameterExtractor:
         return result
 
     def extract_file_references(self, query: str) -> List[str]:
-        """从查询中提取 GIS 文件引用（修复中文文件名识别）
-        
-        注意：此方法会提取查询中所有带扩展名的文件引用。
-        对于 buffer 等场景的输出文件名，应使用 extract_output_file 方法。
-        
-        改进：排除"输出为/保存为"等模式后面的文件名引用。
-        """
-        import re
-        from pathlib import Path
-        
+        """从查询中提取 GIS 文件引用（修复中文文件名识别）"""
         references = []
         query_lower = query.lower()
-
-        # 先检查是否有输出文件模式，如果有则标记
-        output_patterns = [
-            r"输出[为到文件]*\s*[\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+",
-            r"保存[为到]*\s*[\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+",
-            r"生成\s*[\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+",
-            r"另存为\s*[\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+",
-        ]
-        excluded_ranges = []
-        for pattern in output_patterns:
-            for match in re.finditer(pattern, query_lower):
-                excluded_ranges.append((match.start(), match.end()))
 
         for ext in self.GIS_EXTENSIONS:
             if ext.lower() not in query_lower:
                 continue
 
+            # 【修复点 🚀】加入中文字符范围 \u4e00-\u9fa5
             # 允许文件名包含：中文字符、字母、数字、下划线、连字符、点
             pattern = rf"([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+?{re.escape(ext)})"
 
@@ -263,13 +243,7 @@ class ParameterExtractor:
             for m in matches:
                 stripped = m.strip()
                 if 3 < len(stripped) < 200:
-                    # 检查是否在排除范围内
-                    # 找到这个匹配在原始字符串中的位置
-                    pos = query_lower.find(stripped.lower())
-                    if pos >= 0:
-                        is_excluded = any(start <= pos < end for start, end in excluded_ranges)
-                        if not is_excluded:
-                            references.append(stripped)
+                    references.append(stripped)
 
         # 去重
         seen = set()
@@ -279,38 +253,6 @@ class ParameterExtractor:
                 seen.add(r)
                 unique.append(r)
         return unique
-
-    def extract_output_file(self, query: str) -> Optional[str]:
-        """从查询中提取输出文件名（如'输出为 xxx.shp'）
-        
-        支持的模式：
-        - 输出为 xxx.shp
-        - 输出到 xxx.geojson
-        - 保存为 xxx.tif
-        - 输出文件 xxx.shp
-        """
-        from pathlib import Path
-        
-        # 输出为/输出到/保存为/输出文件 等模式（支持半角和全角空格）
-        patterns = [
-            r"输出(?:为|到|文件)\s*([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)",
-            r"保存(?:为|到)\s*([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)",
-            r"生成\s*([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)",
-            r"另存为\s*([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)",
-            # 更宽松的模式：允许"输出"和文件名之间有任意空白
-            r"输出[为到文件]*\s+([\u4e00-\u9fa5a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, query, re.IGNORECASE)
-            if match:
-                output_file = match.group(1).strip()
-                # 验证是有效的 GIS 文件扩展名
-                ext = Path(output_file).suffix.lower()
-                if ext in [e.lower() for e in self.GIS_EXTENSIONS]:
-                    return output_file
-        
-        return None
 
     def extract_value_field(self, query: str) -> Optional[str]:
         """从查询中提取数值字段名"""
@@ -465,28 +407,10 @@ class ParameterExtractor:
 
         # ── buffer 场景 ─────────────────────────────────────────────
         elif _scenario_str == "buffer":
-            # 提取输出文件名（如"输出为河流_缓冲区.shp"），需要先提取以过滤输入文件
-            output_file = self.extract_output_file(query)
-            if output_file:
-                params["output_file"] = output_file
-            
-            # 从文件名引用中提取图层名（排除输出文件名）
+            # 从文件名引用中提取图层名
             files = params.get("files", [])
             if files:
-                # 过滤掉输出文件名
-                input_files = [f for f in files if f != output_file]
-                if input_files:
-                    params["input_layer"] = input_files[0]
-                elif not output_file and files:
-                    params["input_layer"] = files[0]
-            
-            # 如果没有找到输入文件，尝试从工作区获取
-            if not params.get("input_layer"):
-                # 尝试从工作区获取 shp 文件
-                workspace_shp = self._get_default_shp_file()
-                if workspace_shp:
-                    params["input_layer"] = workspace_shp
-            
+                params["input_layer"] = files[0]
             # 距离已通过通用提取获取【安全访问】
             distance_info = params.get("distance_info")
             if distance_info:
@@ -593,37 +517,6 @@ class ParameterExtractor:
                 params["center"] = locations.get("start") or params.get("start")
 
         return params
-
-    def _get_default_shp_file(self) -> Optional[str]:
-        """从工作区获取默认的 shp 文件"""
-        import os
-        from pathlib import Path
-        
-        # 从多个可能的位置查找（相对于项目根目录）
-        base_paths = [
-            Path(__file__).resolve().parents[3] / "workspace" / "conversation_files",
-            Path(__file__).resolve().parents[3] / "workspace",
-        ]
-
-        for workspace_path in base_paths:
-            if not workspace_path.exists():
-                continue
-
-            shp_files = []
-            for root, dirs, files in os.walk(workspace_path):
-                for f in files:
-                    if f.endswith('.shp') and not f.startswith('.'):
-                        full_path = Path(root) / f
-                        try:
-                            rel_path = full_path.relative_to(workspace_path.parent)
-                            shp_files.append(str(rel_path).replace(os.sep, '/'))
-                        except ValueError:
-                            pass
-
-            if shp_files:
-                return shp_files[0]
-
-        return None
 
     def _extract_entity_name(self, query: str) -> Optional[str]:
         """从查询中提取实体名称（修复"半径"误判）"""
@@ -760,9 +653,7 @@ class ScenarioOrchestrator:
     """
 
     def __init__(self):
-        from geoagent.layers.layer2_intent import classify_intent, IntentResult
-        self._classify_intent = classify_intent
-        self._IntentResult = IntentResult
+        self.intent_classifier = IntentClassifier()
         self.clarification_engine = ClarificationEngine()
         self.parameter_extractor = ParameterExtractor()
         self._scenario_defaults = self._init_defaults()
@@ -840,9 +731,9 @@ class ScenarioOrchestrator:
         Returns:
             OrchestrationResult 对象
         """
-        # 1. 意图分类（使用 layer2_intent 的新版分类器）
-        intent_result = self._classify_intent(user_input)
-        scenario_str = intent_result.primary.value if hasattr(intent_result.primary, 'value') else str(intent_result.primary)
+        # 1. 意图分类
+        intent_result = self.intent_classifier.classify(user_input)
+        scenario_str = intent_result.primary
 
         # ==========================================
         # 🚨 哈基米强插机制：最高指令直接接管！ (Priority Override)
@@ -933,28 +824,10 @@ class ScenarioOrchestrator:
             parameters["city"] = params.get("city", "")
 
         elif scenario == "buffer":
-            # 提取输出文件名
-            output_file = params.get("output_file")
-            # 输入图层
-            files = params.get("files", [])
-            if files:
-                # 过滤掉输出文件名
-                input_files = [f for f in files if f != output_file]
-                inputs["input_layer"] = input_files[0] if input_files else (files[0] if not output_file else "")
-            else:
-                inputs["input_layer"] = params.get("input_layer", "")
-            
-            # 如果没有找到输入文件，尝试从工作区获取
-            if not inputs.get("input_layer"):
-                workspace_shp = self._get_default_shp_file()
-                if workspace_shp:
-                    inputs["input_layer"] = workspace_shp
-            
+            inputs["input_layer"] = params.get("input_layer", params.get("files", [""])[0] if params.get("files") else "")
             inputs["distance"] = params.get("distance", params.get("distance_info", {}).get("distance", 500) if params.get("distance_info") else 500)
             parameters["unit"] = params.get("unit", defaults.get("unit", "meters"))
             parameters["dissolve"] = False
-            if output_file:
-                parameters["output_file"] = output_file
 
         elif scenario == "overlay":
             files = params.get("files", [])
