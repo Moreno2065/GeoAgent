@@ -29,6 +29,28 @@ from geoagent.layers.architecture import Scenario, PipelineStatus
 
 
 # =============================================================================
+# 计算类关键词托底常量（用于 general → code_sandbox 自动提升）
+# =============================================================================
+
+_CALC_KEYWORDS: list[str] = [
+    # 中文
+    "生成", "随机", "面积", "距离", "长度", "算", "统计",
+    "算法", "拟合", "迭代", "公式", "加权", "坐标转换",
+    "随机点", "三角形", "多边形", "几何", "插值", "投影",
+    # 英文
+    "generate", "random", "area", "distance", "length", "compute",
+    "calculate", "statistic", "algorithm", "iteration", "formula",
+    "geometry", "polygon", "interpolate", "projection",
+]
+
+
+def _is_calc_intent(text: str) -> bool:
+    """检测文本是否包含隐性计算意图关键词。"""
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in _CALC_KEYWORDS)
+
+
+# =============================================================================
 # Pipeline 入场判断：任务类型枚举
 # =============================================================================
 
@@ -56,6 +78,9 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
     """
     扫描 workspace 目录，自动获取所有 GIS 文件的元数据
 
+    关键修复：必须使用 get_workspace_dir() 获取当前工作目录
+    （主 workspace 或对话目录），而不是硬编码主 workspace 路径。
+
     Returns:
         文件信息列表，每个文件包含：
         - file_name: 文件名
@@ -63,12 +88,46 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
         - geometry_type: 几何类型（点/线/面）
         - columns: 字段列表
         - numeric_columns: 数值字段列表
+        - crs: 坐标系字符串（如 EPSG:4326）
+        - dtypes: 字段类型映射
+        - column_types: 人类可读字段类型
+        - text_columns: 文本字段列表
+        - sample_data: 前2条记录的数据样本
     """
+    # 优先使用 data_profiler（带缓存的极速探针）
     try:
-        from geoagent.gis_tools.fixed_tools import list_workspace_files, get_data_info
+        from geoagent.gis_tools.data_profiler import sniff_workspace_dir_cached
+        # 关键修复：sniff_workspace_dir_cached 内部调用 get_workspace_dir()
+        # 所以它会自动扫描当前对话目录（如果已通过 set_conversation_workspace 切换）
+        profiles = sniff_workspace_dir_cached()
+        results = []
+        for p in profiles:
+            if p.get("success") is not False:
+                results.append({
+                    "file_name": p.get("file_name", ""),
+                    "file_type": p.get("file_type", "vector"),
+                    "geometry_type": [p.get("geometry_type", "Unknown")],
+                    "columns": p.get("columns", []),
+                    "numeric_columns": p.get("numeric_columns", []),
+                    "crs": p.get("crs", "Unknown"),
+                    "dtypes": p.get("dtypes", {}),
+                    "column_types": p.get("column_types", {}),
+                    "text_columns": p.get("text_columns", []),
+                    "sample_data": p.get("sample_data", []),
+                    "feature_count": p.get("feature_count", 0),
+                })
+        return results
+    except ImportError:
+        pass
+
+    # 降级：使用原始的 get_data_info 方式
+    try:
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir, list_workspace_files, get_data_info
     except ImportError:
         return []
 
+    # 关键修复：获取当前工作目录（主 workspace 或对话目录）
+    workspace = get_workspace_dir()
     files = list_workspace_files()
     if not files:
         return []
@@ -81,21 +140,42 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
             info = json.loads(info_json) if isinstance(info_json, str) else {}
             if info.get("success") is not False:
                 columns = info.get("columns", [])
-                # 提取数值字段
                 dtypes = info.get("dtypes", {})
                 numeric_cols = [c for c in columns if dtypes.get(c) in ("int64", "float64", "int32", "float32")]
+                text_cols = [c for c in columns if dtypes.get(c) in ("object", "string", "str")]
                 result.append({
                     "file_name": fname,
                     "file_type": info.get("file_type", "vector"),
                     "geometry_type": _detect_geometry_type(info),
                     "columns": columns,
                     "numeric_columns": numeric_cols,
+                    "text_columns": text_cols,
+                    "crs": f"EPSG:{info.get('crs', {}).get('epsg', 'Unknown')}" if info.get("crs") else "Unknown",
+                    "dtypes": dtypes,
+                    "column_types": {c: _dtype_to_label(dtypes.get(c, "")) for c in columns},
+                    "sample_data": [],  # 降级模式不提供样本数据
                     "feature_count": info.get("feature_count", 0),
                 })
         except Exception:
             continue
 
     return result
+
+
+def _dtype_to_label(dtype: str) -> str:
+    """将 dtype 字符串映射为人类可读的中文类型"""
+    dtype_lower = str(dtype).lower()
+    if dtype_lower in ("int64", "int32", "int16", "int8"):
+        return "整数"
+    if dtype_lower in ("float64", "float32"):
+        return "浮点数"
+    if dtype_lower in ("object", "string", "str"):
+        return "文本"
+    if dtype_lower in ("bool", "boolean"):
+        return "布尔"
+    if dtype_lower.startswith("datetime"):
+        return "日期时间"
+    return "未知"
 
 
 def _detect_geometry_type(info: Dict[str, Any]) -> List[str]:
@@ -106,6 +186,72 @@ def _detect_geometry_type(info: Dict[str, Any]) -> List[str]:
     elif isinstance(geom_type, str):
         return [geom_type]
     return []
+
+
+# =============================================================================
+# 数据探针 Profile Block 构建（用于 Prompt 注入）
+# =============================================================================
+
+def _build_workspace_profile_block(workspace_files: Optional[List[Dict[str, Any]]] = None) -> str:
+    """
+    构建工作区文件的 Profile Block，格式化后用于注入 Prompt。
+    让大模型在属性筛选/分类渲染时能精准使用真实字段名，不再瞎猜。
+
+    Args:
+        workspace_files: 文件列表（可选，默认自动扫描）
+
+    Returns:
+        格式化的文本块。示例：
+        【工作区文件详细情报】
+        - 📄 土地利用.shp
+          - 几何类型: Polygon
+          - 坐标系: EPSG:4326
+          - 属性字段:
+            - Id (整数)
+            - landuse (文本)
+            - Area (浮点数)
+          - 数据样例:
+            - {'Id': 1, 'landuse': '工业用地', 'Area': 1234.5}
+        ...
+        【铁律】：当你需要进行属性筛选(filter)或分类渲染时...
+    """
+    if workspace_files is None:
+        workspace_files = _scan_workspace_files()
+
+    if not workspace_files:
+        return ""
+
+    lines = ["【工作区文件详细情报】"]
+
+    for f in workspace_files:
+        fname = f.get("file_name", "未知文件")
+        lines.append(f"- 📄 {fname}")
+        lines.append(f"  - 几何类型: {', '.join(f.get('geometry_type', ['Unknown']))}")
+        lines.append(f"  - 坐标系: {f.get('crs', 'Unknown')}")
+
+        columns = f.get("columns", [])
+        column_types = f.get("column_types", {})
+        if columns:
+            lines.append("  - 属性字段:")
+            for col in columns:
+                type_label = column_types.get(col, "未知")
+                lines.append(f"    - {col} ({type_label})")
+
+        sample_data = f.get("sample_data", [])
+        if sample_data:
+            lines.append("  - 数据样例:")
+            for record in sample_data:
+                lines.append(f"    - {record}")
+
+        lines.append("")  # 空行分隔
+
+    # 铁律提醒
+    lines.append("【铁律】：当你需要进行属性筛选(filter)或分类渲染时，")
+    lines.append("必须严格使用上方情报中提供的【属性字段】名，")
+    lines.append("禁止瞎猜字段名（如 type、category、name 等），")
+    lines.append("必须对照上方的真实字段列表！")
+
+    return "\n".join(lines)
 
 
 def _auto_select_workspace_file(scenario: Scenario, workspace_files: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -191,9 +337,22 @@ def _auto_select_workspace_file(scenario: Scenario, workspace_files: List[Dict[s
                 return f
         return workspace_files[0] if workspace_files else None
 
-    # 按分数排序，返回最高的
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1]
+    # ── Tiebreaker：几何类型优先级（面>线>点，用于分数相同时）────────────
+    def _geom_score(gtypes):
+        for g in gtypes:
+            g_lower = g.lower()
+            if "polygon" in g_lower or "poly" in g_lower or "面" in g:
+                return 200
+            if "line" in g_lower or "线" in g:
+                return 100
+            if "point" in g_lower or "点" in g:
+                return 0
+        return -100  # 未知几何类型
+
+    # 复合分数 = 文件名匹配分(±30) + 几何类型分(200/100/0)
+    # 分数相同时，面 > 线 > 点
+    best = max(candidates, key=lambda x: x[0] * 1000 + _geom_score(x[1].get("geometry_type", [])))
+    return best[1]
 
 
 # 缓存 workspace 扫描结果（避免重复扫描）
@@ -802,10 +961,51 @@ class ParameterExtractor:
         return result
 
     def extract_file_references(self, query: str) -> List[str]:
-        """🚀 终极文件提取器：自动剥离介词，精准提取文件名"""
+        """🚀 终极文件提取器：自动剥离介词，精准提取文件名
+        
+        关键改进：对提取到的文件名引用进行工作区验证。
+        如果提取到的名称无法匹配到真实的工作区 .shp 文件，
+        则视为模糊短语（如"上传的文件""面要素"），不加入引用列表，
+        让 ClarificationEngine 有机会从工作区自动选择最合适的真实文件。
+        """
         references = []
         
-        # ── 模式1：标准 GIS 扩展名匹配 ────────────────────────────────
+        # ── 获取工作区真实 .shp 文件列表（用于验证过滤）────────────────────
+        try:
+            from geoagent.gis_tools.fixed_tools import list_workspace_files
+            ws_files = list_workspace_files()
+            # 只保留 .shp 文件，生成去扩展名的基准名集合
+            ws_basenames = set()
+            for fname in ws_files:
+                if fname.lower().endswith((".shp", ".geojson", ".json", ".kml", ".gml")):
+                    bn = fname.rsplit(".", 1)[0]  # 去掉扩展名
+                    ws_basenames.add(bn)
+                    ws_basenames.add(fname)  # 也保留带扩展名的
+        except Exception:
+            ws_basenames = set()
+        
+        # ── 辅助函数：判断引用是否指向真实工作区文件 ───────────────────────
+        def _is_valid_ws_reference(ref: str) -> bool:
+            """检查提取到的引用是否能匹配到工作区的真实文件"""
+            if not ws_basenames:
+                return True  # 无法验证时放行（保留原有行为）
+            ref_clean = ref.strip()
+            # 直接匹配（带扩展名或不带）
+            if ref_clean in ws_basenames or ref_clean.lower() in {b.lower() for b in ws_basenames}:
+                return True
+            # 匹配文件名核心部分（去掉可能的 .shp 后缀）
+            for ws_name in ws_basenames:
+                if ref_clean == ws_name or ref_clean.lower() == ws_name.lower():
+                    return True
+                # 部分匹配：提取的名称是工作区文件名的子串/超串
+                if len(ref_clean) >= 2 and len(ws_name) >= 2:
+                    if ref_clean in ws_name or ws_name in ref_clean:
+                        # 避免"面"匹配"河面"等误判
+                        if ref_clean in ws_name and len(ref_clean) >= max(3, len(ws_name) * 0.6):
+                            return True
+            return False
+        
+        # ── 模式1：标准 GIS 扩展名匹配 ───────────────────────────────────
         for ext in self.GIS_EXTENSIONS:
             if ext.lower() not in query.lower():
                 continue
@@ -817,9 +1017,15 @@ class ParameterExtractor:
             
             for m in matches:
                 if len(m) > 3:  # 过滤掉太短的错误匹配
-                    references.append(m.strip())
+                    ref = m.strip()
+                    # 🆕 验证：必须是真实工作区文件或是带扩展名的明确引用
+                    if ref.lower().endswith((".shp", ".geojson", ".json", ".kml", ".gml")):
+                        references.append(ref)
+                    elif _is_valid_ws_reference(ref):
+                        references.append(ref)
+                    # 否则丢弃（模糊短语如"面要素"会被过滤）
         
-        # ── 模式2：中文名 + 文件类型词（shp/SHP/图层/数据）──────────────
+        # ── 模式2：中文名 + 文件类型词（shp/SHP/图层/数据）───────────────
         # 处理 "土地利用点 shp" / "道路线 shp" / "河流数据 shp" 等情况
         gis_type_patterns = [
             r"(?:给|对|以|把|为)\s*([^\s,，。、]+?(?:点|线|面|区|数据|图层|文件))\s*(?:shp|SHP|\.shp)?",  # 介词 + 名称 + shp
@@ -841,7 +1047,10 @@ class ParameterExtractor:
                 if any(bad in cleaned.lower() for bad in ["缓冲", "半径", "距离", "增加", "生成", "分析"]):
                     continue
                 if len(cleaned) >= 3:
-                    references.append(cleaned)
+                    # 🆕 关键验证：模糊短语（如"面要素""上传的文件"）必须能匹配工作区真实文件
+                    if _is_valid_ws_reference(cleaned):
+                        references.append(cleaned)
+                    # 不匹配的丢弃，避免 ClarificationEngine 被虚假引用误导
         
         return list(set(references))
 
@@ -977,6 +1186,66 @@ class ParameterExtractor:
                 return entity
         return None
 
+    def _is_valid_ws_file_reference(self, ref: str) -> bool:
+        """
+        🛡️ 验证一个提取到的引用是否指向真实工作区文件。
+        
+        过滤掉：
+        - 模糊短语（如"我上传的文件""上传的文件""面要素""点要素""线要素"）
+        - 纯地名词（会触发地理编码的词）
+        - 不在工作区的任意名称
+        
+        只接受能在工作区找到对应 .shp 文件的名称。
+        """
+        if not ref:
+            return False
+        
+        ref_clean = ref.strip()
+        
+        # ── 已知模糊短语黑名单 ────────────────────────────────────────
+        vague_phrases = [
+            "上传的文件", "上传文件", "我上传的文件", "我上传的文件",
+            "面要素", "点要素", "线要素", "区要素",
+            "要素", "数据", "图层", "文件",
+        ]
+        for vague in vague_phrases:
+            if vague in ref_clean:
+                return False
+        
+        # ── 尝试在工作区查找匹配 ──────────────────────────────────────
+        try:
+            from geoagent.gis_tools.fixed_tools import list_workspace_files
+            ws_files = list_workspace_files()
+            ws_basenames = set()
+            for fname in ws_files:
+                if fname.lower().endswith((".shp", ".geojson", ".json", ".kml", ".gml")):
+                    bn = fname.rsplit(".", 1)[0]
+                    ws_basenames.add(bn)
+                    ws_basenames.add(fname)
+            
+            if ws_basenames:
+                # 精确匹配
+                if ref_clean in ws_basenames or ref_clean.lower() in {b.lower() for b in ws_basenames}:
+                    return True
+                # 部分匹配（有意义的匹配）
+                for ws_name in ws_basenames:
+                    if ref_clean == ws_name or ref_clean.lower() == ws_name.lower():
+                        return True
+                    # 部分包含：ref 是 ws_name 的子串，且 ref ≥ 3 字符
+                    if len(ref_clean) >= 3 and len(ws_name) >= 3:
+                        if ref_clean in ws_name or ws_name in ref_clean:
+                            return True
+                return False
+        except Exception:
+            pass
+        
+        # 无法验证时：过滤掉明显是泛指的短语
+        vague_indicators = ["上传", "要素", "文件", "图层", "数据"]
+        if any(ind in ref_clean for ind in vague_indicators):
+            return False
+        
+        return True
+
     def _extract_overlay_operation(self, query: str) -> str:
         """从查询中提取叠加操作类型"""
         q = query.lower()
@@ -1054,8 +1323,11 @@ class ParameterExtractor:
                 params["unit"] = distance_info.get("unit", "meters")
             # 尝试从 query 中提取图层名
             entity = self._extract_entity_name(query)
+            # 🆕 安全验证：entity 必须是真实工作区文件（防止"我上传的文件""面要素"等虚假引用）
             if entity and not params.get("input_layer"):
-                params["input_layer"] = entity
+                if self._is_valid_ws_file_reference(entity):
+                    params["input_layer"] = entity
+                # 不验证不通过则跳过，让后续 ClarificationEngine 从工作区自动选择
 
         # ── overlay 场景 ─────────────────────────────────────────────
         elif _scenario_str == "overlay":
@@ -1757,10 +2029,14 @@ class ScenarioOrchestrator:
             else str(intent_result.primary)
         )
 
-        # ── 安检门：如果是 "general" 场景，直接拒绝 ──────────────────────────
+        # ── 安检门：如果是 "general" 场景，尝试托底提升 ─────────────────────────
         if scenario_str == "general":
-            return (False, PipelineTaskType.NON_PIPELINE,
-                    "无法识别为有效 GIS 场景，输入不属于空间分析范畴。")
+            # 计算类关键词托底：general + 计算意图 → 强制提升为 code_sandbox
+            if _is_calc_intent(task_text):
+                scenario_str = "code_sandbox"
+            else:
+                return (False, PipelineTaskType.NON_PIPELINE,
+                        "无法识别为有效 GIS 场景，输入不属于空间分析范畴。")
 
         # 2. 自动提取参数（如果未提供）
         if extracted_params is None:
@@ -1793,6 +2069,9 @@ class ScenarioOrchestrator:
                 "插值", "interpolat", "视域", "viewshed", "选址", "适宜", "统计",
                 "热点", "hotspot", "阴影", "shadow", "可达", "accessibility",
                 "面积", "长度", "距离", "count", "范围",
+                # code_sandbox 隐性计算关键词
+                "生成", "随机", "拟合", "算", "迭代", "公式", "加权",
+                "generate", "calculate", "compute", "statistic", "iteration",
             ]
             has_operation = any(kw in task_text.lower() for kw in operation_keywords)
             if not has_operation:
@@ -1926,17 +2205,19 @@ class ScenarioOrchestrator:
         scenario = intent_result.primary
 
         # ==========================================
-        # 🚨 哈基米防幻觉安检门：拦截无法分类为 GIS 场景的输入
+        # 🤖 LLM 智能路由安检门：接管 "general" 场景的二次判断
         # ==========================================
         scenario_str = scenario.value if hasattr(scenario, 'value') else str(scenario)
         if scenario_str == "general":
-            return OrchestrationResult(
-                status=PipelineStatus.PENDING,
-                scenario=Scenario.ROUTE,  # 占位，满足类型注解；上游会将其转字符串处理
-                needs_clarification=False,
-                error="本哈基米是一个严肃的🌍空间智能引擎！只接受 GIS 地理指令（如：帮我查一下从芜湖南站到方特的步行路线，或分析芜湖市的缓冲区）。请发送明确的地理分析请求～",
-                intent_result=intent_result,
-            )
+            # 交给大模型做二次路由判断：
+            # - 闲聊 → 直接回复
+            # - 偏门计算 → 构建 sandbox 任务
+            # - 垃圾输入 → 友好拒绝
+            # 注意：_is_calc_intent 托底逻辑已在 can_enter_pipeline 中处理，
+            #       这里只处理 LLM 无法判断的情况
+            from geoagent.layers.llm_router import get_llm_router
+            router = get_llm_router()
+            return router.route(text, event_callback)
         # ==========================================
 
         if event_callback:
@@ -1974,6 +2255,10 @@ class ScenarioOrchestrator:
                 extracted_params=extracted_params,
                 intent_result=intent_result,
             )
+
+        # 🆕 将 auto_filled 合并回 extracted_params，确保自动选择的工作区文件生效
+        if clarification.auto_filled:
+            extracted_params.update(clarification.auto_filled)
 
         return OrchestrationResult(
             status=PipelineStatus.ORCHESTRATED,

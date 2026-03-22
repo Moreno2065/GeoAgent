@@ -130,6 +130,31 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
         "line of sight", "los", "viewpoint", "visual impact",
         "observer point", "tower placement", "telecom coverage",
     ],
+    # ── 🟣 代码沙盒（受限代码执行）────────────────────────────────
+    "code_sandbox": [
+        # 中文 — 显式触发
+        "写一段代码", "写python", "python代码", "写脚本",
+        "生成测试数据", "代码实现", "计算面积", "编程", "用代码",
+        "写代码", "帮我写", "python实现", "写个脚本",
+        "生成数据", "用python", "script", "compute",
+        "写个函数", "代码计算", "脚本", "计算一下",
+        "代码生成", "python编程", "写段代码",
+        # 中文 — 隐式/计算类触发（空间数学疑难杂症）
+        "生成", "随机生成", "随机点", "面积计算", "长度计算", "距离计算",
+        "统计", "算法", "提取坐标", "自定义公式", "加权", "加权求和",
+        "坐标转换", "数学公式", "自定义逻辑", "迭代计算",
+        "拟合", "插值自定义", "算一下", "帮我算", "帮我生成",
+        "帮我统计", "批量处理", "循环处理", "得分",
+        # 英文 — 显式触发
+        "write code", "python code", "write script", "generate test data",
+        "code implementation", "compute area", "programming",
+        "custom calculation", "custom logic",
+        # 英文 — 隐式/计算类触发
+        "generate random points", "random geometry", "compute area",
+        "calculate distance", "custom formula", "custom algorithm",
+        "iterative", "statistical analysis", "coordinate transformation",
+        "run python", "execute code", "script execution",
+    ],
 }
 
 

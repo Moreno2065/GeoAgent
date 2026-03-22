@@ -53,6 +53,14 @@ def set_conversation_workspace(conv_id: str | None) -> None:
             conv_dir.mkdir(parents=True, exist_ok=True)
             _current_workspace_dir = conv_dir
 
+    # 关键修复：切换对话目录时，必须清除 data_profiler 的缓存
+    # 否则旧缓存会导致新对话的文件扫描不到
+    try:
+        from geoagent.gis_tools.data_profiler import clear_profiler_cache
+        clear_profiler_cache()
+    except ImportError:
+        pass
+
 
 def get_data_info(file_name: str) -> str:
     """
@@ -265,3 +273,54 @@ def list_workspace_files() -> list:
             files.append(f.name)
 
     return sorted(files)
+
+
+# =============================================================================
+# 数据探针工具（Data Profiler）
+# =============================================================================
+
+def sniff_workspace_profiler() -> str:
+    """
+    扫描 workspace 目录下的所有空间文件，提取 Schema 和样本数据，
+    用于在构建 Prompt 时注入，让大模型精准知道真实字段名。
+
+    Returns:
+        格式化的探针情报文本（可直接注入 Prompt）
+    """
+    try:
+        from geoagent.layers.layer3_orchestrate import _build_workspace_profile_block
+        result = _build_workspace_profile_block()
+        return result if result else "(workspace 中暂无空间文件)"
+    except ImportError:
+        return "(数据探针模块不可用，请安装 geopandas)"
+
+
+def sniff_workspace_profiler_raw() -> str:
+    """
+    扫描 workspace 目录，返回每个文件的探针元数据（JSON 格式）。
+
+    Returns:
+        每个文件的探针结果（JSON 字符串列表）
+    """
+    try:
+        from geoagent.gis_tools.data_profiler import sniff_workspace_dir_cached
+        import json
+        profiles = sniff_workspace_dir_cached()
+        return json.dumps(profiles, ensure_ascii=False, indent=2)
+    except ImportError:
+        return "[]"
+
+
+def clear_workspace_cache() -> str:
+    """
+    清除 workspace 扫描缓存（工作区文件更新后调用）。
+
+    Returns:
+        成功消息
+    """
+    try:
+        from geoagent.gis_tools.data_profiler import clear_profiler_cache
+        clear_profiler_cache()
+        return "workspace 缓存已清除"
+    except ImportError:
+        return "数据探针模块不可用"

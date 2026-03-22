@@ -453,6 +453,25 @@ class GeoAgentReasoner:
             self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         return self._client
 
+    def _build_system_prompt(self, scenario: Optional[Scenario] = None) -> str:
+        """构建带工作区情报的 system prompt"""
+        system_msg = REASONER_SYSTEM_PROMPT
+
+        # 注入工作区数据详细情报
+        try:
+            from geoagent.layers.layer3_orchestrate import _build_workspace_profile_block
+            workspace_profile = _build_workspace_profile_block()
+            if workspace_profile:
+                system_msg += "\n\n## 工作区数据详细情报（字段名/类型/样本）\n" + workspace_profile
+        except Exception:
+            pass
+
+        if scenario is not None:
+            scenario_hint = f"\n场景提示：用户意图已识别为 '{scenario.value}'。"
+            system_msg += scenario_hint
+
+        return system_msg
+
     def translate(self, user_input: str, scenario: Optional[Scenario] = None) -> Dict[str, Any]:
         """
         翻译自然语言 → GeoDSL 字典
@@ -468,11 +487,7 @@ class GeoAgentReasoner:
             ReasonerError: LLM 输出格式错误或调用失败
         """
         user_msg = REASONER_USER_TEMPLATE.format(user_input=user_input)
-        system_msg = REASONER_SYSTEM_PROMPT
-
-        if scenario is not None:
-            scenario_hint = f"\nHint: the user intent is already classified as scenario '{scenario.value}'."
-            system_msg += scenario_hint
+        system_msg = self._build_system_prompt(scenario)
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -530,11 +545,7 @@ class GeoAgentReasoner:
             ReasonerError: LLM 输出格式错误或调用失败
         """
         user_msg = REASONER_WORKFLOW_USER_TEMPLATE.format(user_input=user_input)
-        system_msg = REASONER_SYSTEM_PROMPT
-
-        if scenario is not None:
-            scenario_hint = f"\n场景提示：用户意图已识别为 '{scenario.value}'。"
-            system_msg += scenario_hint
+        system_msg = self._build_system_prompt(scenario)
 
         for attempt in range(1, self.max_retries + 1):
             try:

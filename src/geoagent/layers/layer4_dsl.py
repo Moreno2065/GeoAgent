@@ -573,7 +573,7 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
             "description": "中心地点（地址或地标名，用于 Geocode 转经纬度）",
             "examples": ["上海静安寺", "北京天安门", "浦东陆家嘴"],
         },
-        "keyword": {
+        "keywords": {
             "type": "string",
             "required": True,
             "description": "POI 搜索关键词（如商家名、品牌名、设施类型）",
@@ -738,6 +738,14 @@ class DSLBuilder:
                 scenario = Scenario(str(scenario))
             except Exception:
                 scenario = Scenario.ROUTE
+
+        # ── POI_SEARCH 特殊处理：normalize `keyword` → `keywords` ────────────
+        # LLM 提取器返回 `keyword`，Schema/PoiSearchTask 用 `keywords`
+        extracted_params = dict(extracted_params)
+        scenario_val = scenario.value if hasattr(scenario, "value") else str(scenario)
+        if scenario_val == "poi_search":
+            if extracted_params.get("keyword") and not extracted_params.get("keywords"):
+                extracted_params["keywords"] = extracted_params.pop("keyword")
 
         # 分离 inputs 和 parameters
         inputs, parameters = self._separate_params(scenario, extracted_params)

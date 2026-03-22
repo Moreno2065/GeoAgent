@@ -141,23 +141,45 @@ class BufferExecutor(BaseExecutor):
             cap = cap_map.get(cap_style_str, CAP_STYLE.round)
 
             # ── 核心修复：判断 input_layer 是文件还是地名词 ──────────────────
-            input_path = self._resolve_path(input_layer)
-            resolved = Path(input_path)
+            input_layer_val = input_layer
 
-            # 如果原始路径不存在，尝试加 .shp 扩展名
-            if not resolved.exists() and not input_layer.lower().endswith(".shp"):
-                shp_path = self._resolve_path(f"{input_layer}.shp")
-                if Path(shp_path).exists():
-                    input_path = shp_path
-                    resolved = Path(input_path)
+            def _find_file(name: str) -> Path | None:
+                """在当前 workspace 和主 workspace 中查找文件，支持 .shp 后缀自动补全"""
+                # 1. 优先在主 workspace 中查找（无条件，.shp 文件主要存于此）
+                base_ws = Path(__file__).resolve().parents[3] / "workspace"
+                candidates = [
+                    base_ws / name,
+                    base_ws / f"{name}.shp",
+                ]
+                for p in candidates:
+                    if p.exists():
+                        return p
 
-            if not resolved.exists():
+                # 2. 在当前 workspace（可能是对话目录）中查找
+                curr_ws = self._resolve_path(name)
+                curr = Path(curr_ws)
+                if curr.exists():
+                    return curr
+
+                # 3. 当前 workspace + .shp 后缀
+                if not name.lower().endswith(".shp"):
+                    shp_curr = self._resolve_path(f"{name}.shp")
+                    if Path(shp_curr).exists():
+                        return Path(shp_curr)
+
+                return None
+
+            found_path = _find_file(input_layer_val)
+
+            if found_path is None:
                 # 不是文件 → 视为地名词，先通过高德 API 获取坐标
-                gdf = self._build_point_from_place(input_layer)
-                source_label = f"地名词「{input_layer}」"
+                gdf = self._build_point_from_place(input_layer_val)
+                source_label = f"地名词「{input_layer_val}」"
             else:
+                input_path = str(found_path)
+                print(f"[DEBUG] _run_geopandas: input_layer_val={input_layer_val!r}, found_path={input_path!r}, exists={Path(input_path).exists()}")
                 gdf = gpd.read_file(input_path)
-                source_label = input_layer
+                source_label = input_layer_val
 
             # 确定坐标系：优先使用投影坐标系
             crs = gdf.crs
@@ -260,19 +282,39 @@ class BufferExecutor(BaseExecutor):
             import arcpy
 
             input_layer_val = task["input_layer"]
-            input_path = self._resolve_path(input_layer_val)
-            resolved = Path(input_path)
-
-            # 如果原始路径不存在，尝试加 .shp 扩展名
-            if not resolved.exists() and not input_layer_val.lower().endswith(".shp"):
-                shp_path = self._resolve_path(f"{input_layer_val}.shp")
-                if Path(shp_path).exists():
-                    input_path = shp_path
-                    resolved = Path(input_path)
-
             distance = float(task["distance"])
             dissolve = bool(task.get("dissolve", False))
-            output_path = self._resolve_output(task["input_layer"], task.get("output_file"))
+            output_path = self._resolve_output(input_layer_val, task.get("output_file"))
+
+            # ── 主 workspace 回退搜索（与 _run_geopandas 一致）─────────────
+            def _find_file(name: str) -> Path | None:
+                """在主 workspace 和当前 workspace 中查找文件"""
+                base_ws = Path(__file__).resolve().parents[3] / "workspace"
+                candidates = [
+                    base_ws / name,
+                    base_ws / f"{name}.shp",
+                ]
+                for p in candidates:
+                    if p.exists():
+                        return p
+                curr_ws = self._resolve_path(name)
+                curr = Path(curr_ws)
+                if curr.exists():
+                    return curr
+                if not name.lower().endswith(".shp"):
+                    shp_curr = self._resolve_path(f"{name}.shp")
+                    if Path(shp_curr).exists():
+                        return Path(shp_curr)
+                return None
+
+            found_path = _find_file(input_layer_val)
+            if found_path is None:
+                return ExecutorResult.err(
+                    self.task_type,
+                    f"无法找到输入文件: {input_layer_val}（请确认文件已上传到工作区）",
+                    engine="arcpy"
+                )
+            input_path = str(found_path)
 
             # ArcPy 单位后缀
             unit = task.get("unit", "meters")

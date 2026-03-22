@@ -148,7 +148,7 @@ class TestVariableResolution:
     """测试中间变量引用解析"""
 
     def test_resolve_literal_value(self):
-        """测试字面量（文件名）直接使用"""
+        """测试字面量（文件名）解析后返回完整路径"""
         engine = WorkflowEngine()
         step = WorkflowStep(
             step_id="step1",
@@ -158,7 +158,8 @@ class TestVariableResolution:
         )
 
         resolved = engine._resolve_inputs(step)
-        assert resolved["layer"] == "roads.shp"
+        # 新行为：返回解析后的完整路径（增强后的功能）
+        assert "roads.shp" in resolved["layer"]
         assert resolved["distance"] == 100
 
     def test_resolve_variable_reference(self):

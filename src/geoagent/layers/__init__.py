@@ -105,6 +105,15 @@ from geoagent.layers.async_pipeline import (
     create_async_pipeline,
 )
 
+from geoagent.layers.llm_router import (
+    RouteDecision,
+    LLMJudgement,
+    LLMRouter,
+    get_llm_router,
+    llm_route,
+    llm_judge,
+)
+
 __all__ = [
     # architecture
     "Scenario",
@@ -185,4 +194,11 @@ __all__ = [
     "AsyncLLMClient",
     "ConcurrentTaskRunner",
     "create_async_pipeline",
+    # LLM 路由
+    "RouteDecision",
+    "LLMJudgement",
+    "LLMRouter",
+    "get_llm_router",
+    "llm_route",
+    "llm_judge",
 ]

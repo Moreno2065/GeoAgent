@@ -305,34 +305,94 @@ class AmapExecutor(BaseExecutor):
         return self._ok("input_tips", result, meta={"keywords": keywords, "city": city})
 
     def _run_poi_search(self, task: Dict[str, Any]) -> ExecutorResult:
-        """POI 搜索"""
+        """POI 搜索（支持周边搜索：先 Geocode 中心点，再调用 place/around）"""
         err = self._check_api_key()
         if err:
             return err
 
         try:
-            from geoagent.plugins.amap_plugin import search_poi
+            from geoagent.plugins.amap_plugin import search_poi, geocode
         except ImportError:
             return self._err("poi_search", "无法导入 search_poi 函数")
 
-        keywords = task.get("keywords", "")
+        # LLM 提取时用 `keyword`，Schema 用 `keywords`，两者取其一即可
+        keywords = task.get("keywords", "") or task.get("keyword", "")
         types = task.get("types", "")
-        city = task.get("city", "")
-        location = task.get("location", "")
-        radius = task.get("radius", 3000)
+        # city 支持 Optional[str]，Schema 变更后可能为 None
+        city = task.get("city") or ""
+        radius = int(task.get("radius", 3000))
         extensions = task.get("extensions", "all")
 
-        if not keywords and not types:
-            return self._err("poi_search", "POI 搜索需要提供 keywords 或 types 参数")
+        # ── Step 1：处理 center_point（文本地址 → 经纬度） ──────────────
+        center_point = task.get("center_point", "")
+        location = task.get("location", "")  # 已有坐标时的兜底
+
+        if center_point and not location:
+            # 🛰️ 用 Geocode 把 "上海静安寺" 这种文本地址转成经纬度
+            print(f"🛰️ [高德雷达] 正在定位中心点：「{center_point}」...")
+            geo_result = geocode(address=center_point, city=city)
+            if geo_result is None:
+                return self._err(
+                    "poi_search",
+                    f"无法定位中心点「{center_point}」，请检查地址是否正确。"
+                )
+            # location 格式: "121.445,31.223"
+            location = f"{geo_result['lon']},{geo_result['lat']}"
+            # 如果 city 未指定，用 geocode 返回的城市
+            resolved_city = geo_result.get("city", city)
+            if not city and resolved_city:
+                city = resolved_city
+            print(f"🛰️ [高德雷达] 中心点「{center_point}」定位成功：{location}")
+
+        # ── Step 2：执行 POI 搜索 ───────────────────────────────────
+        if not keywords and not types and not location:
+            return self._err(
+                "poi_search",
+                "POI 搜索至少需要提供 keywords（或 center_point 触发周边搜索）"
+            )
 
         result = search_poi(
             keywords=keywords, types=types, city=city,
             location=location, radius=radius, extensions=extensions
         )
         if result is None:
-            return self._err("poi_search", f"POI 搜索失败：无法搜索「{keywords}」")
+            return self._err("poi_search", f"POI 搜索失败：无法搜索「{keywords or center_point}」")
 
-        return self._ok("poi_search", result, meta={"keywords": keywords, "city": city})
+        # ── Step 3：构建友好的返回结果 ─────────────────────────────
+        count = result.get("count", 0)
+        pois = result.get("pois", [])
+
+        # 提取前5个名字作为展示
+        top_names = [p.get("name", "") for p in pois[:5] if p.get("name")]
+
+        enriched_result = {
+            "success": True,
+            "count": count,
+            "center_point": center_point or location or keywords,
+            "keywords": keywords,
+            "city": city,
+            "radius": radius,
+            "location": location,
+            "top_results": top_names,
+            "all_pois": pois,
+        }
+
+        # 打印摘要日志
+        if location:
+            print(
+                f"🛰️ [高德雷达] {center_point or location} 周边 {radius}m 内"
+                f"「{keywords}」共找到 {count} 个结果。"
+                f"Top 5: {', '.join(top_names[:3])}{'...' if len(top_names) > 3 else ''}"
+            )
+        else:
+            print(f"🛰️ [高德雷达] 搜索「{keywords}」共找到 {count} 个结果。")
+
+        return self._ok("poi_search", enriched_result, meta={
+            "keywords": keywords,
+            "city": city,
+            "center_point": center_point,
+            "radius": radius,
+        })
 
     def _run_traffic_status(self, task: Dict[str, Any]) -> ExecutorResult:
         """交通态势"""

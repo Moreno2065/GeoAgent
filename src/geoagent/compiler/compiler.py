@@ -281,15 +281,32 @@ class GISCompiler:
         """
         构建 LLM 调用消息
 
-        动态注入当前任务相关的 schema。
+        动态注入当前任务相关的 schema + 工作区详细情报。
         """
         task_desc = get_task_description(intent)
+
+        # 注入工作区数据详细情报
+        workspace_profile_block = ""
+        try:
+            from geoagent.layers.layer3_orchestrate import _build_workspace_profile_block
+            workspace_profile_block = _build_workspace_profile_block()
+        except Exception:
+            pass
 
         system_prompt = COMPILER_SYSTEM_PROMPT + f"""
 
 **当前任务类型：{intent}**
 **任务描述：{task_desc}**
 
+"""
+        if workspace_profile_block:
+            system_prompt += f"""\
+**工作区数据详细情报（字段名/类型/样本）：**
+{workspace_profile_block}
+
+"""
+
+        system_prompt += f"""\
 **参数 Schema：**
 ```json
 {json.dumps(schema, ensure_ascii=False, indent=2)}

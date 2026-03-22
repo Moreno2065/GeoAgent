@@ -50,6 +50,7 @@ class TaskType(str, Enum):
     TRANSIT_INFO = "transit_info"
     IP_LOCATION = "ip_location"
     WEATHER = "weather"
+    CODE_SANDBOX = "code_sandbox"
 
     @classmethod
     def values(cls) -> list[str]:
@@ -701,7 +702,7 @@ class PoiSearchTask(BaseTask):
         )
     )
     types: Optional[str] = Field(default=None, description="POI 分类编码或名称，如 '餐饮服务|050000'")
-    city: str = Field(default="", description="指定城市（adcode 或城市名）")
+    city: Optional[str] = Field(default=None, description="指定城市（adcode 或城市名），用于辅助定位同名地点")
     center_point: str = Field(
         default="",
         description=(
@@ -829,6 +830,44 @@ class WeatherTask(BaseTask):
     )
 
 
+class CodeSandboxTask(BaseTask):
+    """
+    代码沙盒任务：在受限 Python 执行环境中运行空间分析代码。
+
+    当用户请求包含【数学计算、几何图形生成、自定义公式加权、偏门数据处理】
+    且标准工具（route, buffer, overlay 等）无法直接满足时，自动路由至此任务。
+
+    示例：
+        NL: "生成3个随机经纬度点并计算它们组成的三角形面积"
+        Task: CodeSandboxTask(
+            task="code_sandbox",
+            instruction="生成3个随机经纬度点并计算它们组成的三角形面积",
+            context_data=None,
+            timeout_seconds=60.0,
+            mode="exec"
+        )
+    """
+    task: Literal["code_sandbox"] = "code_sandbox"
+    instruction: str = Field(
+        ...,
+        description="自然语言指令，描述沙盒需要执行的 Python 代码逻辑"
+    )
+    context_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="传给沙盒的上下文数据（GeoJSON、坐标列表等）"
+    )
+    timeout_seconds: float = Field(
+        default=60.0,
+        ge=1,
+        le=300,
+        description="执行超时时间（秒）"
+    )
+    mode: Literal["exec", "interactive", "notebook"] = Field(
+        default="exec",
+        description="'exec' 批量执行，'interactive' 交互式，'notebook' Jupyter 笔记本模式"
+    )
+
+
 # =============================================================================
 # 联合模型（任务解析入口）
 # =============================================================================
@@ -862,6 +901,7 @@ TaskModel = Union[
     TransitInfoTask,
     IpLocationTask,
     WeatherTask,
+    CodeSandboxTask,
 ]
 
 # 任务模型映射表（用于动态路由）
@@ -895,6 +935,7 @@ TASK_MODEL_MAP: Dict[str, type[BaseModel]] = {
     "transit_info": TransitInfoTask,
     "ip_location": IpLocationTask,
     "weather": WeatherTask,
+    "code_sandbox": CodeSandboxTask,
 }
 
 
@@ -949,6 +990,7 @@ def get_task_description(intent: str) -> str:
         "transit_info": "公交信息：查询公交线路或站点详情",
         "ip_location": "IP 定位：根据 IP 地址返回地理位置",
         "weather": "天气查询：获取实时天气或未来预报",
+        "code_sandbox": "代码沙盒：在受限 Python 环境中执行空间数学计算和自定义分析",
     }
     return descriptions.get(intent, "未知任务类型")
 
