@@ -55,7 +55,7 @@ LLM_PROVIDER_OPTIONS = {
         "label": "DeepSeek",
     },
     "glm": {
-        "model": "glm-4v",
+        "model": "glm-4",
         "label": "GLM",
     },
 }
@@ -637,7 +637,7 @@ def _render_sidebar():
                         primary_api_key=dk,
                         primary_model=primary_model,
                         fallback_api_key=gk.strip() if gk else None,
-                        fallback_model="glm-4v" if gk else None,
+                        fallback_model="glm-4" if gk else None,
                     )
                     st.session_state["agent"] = None
 

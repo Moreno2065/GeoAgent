@@ -36,6 +36,8 @@ class TaskType(str, Enum):
     # 🟢 高德基础服务
     GEOCODE = "geocode"
     REGEOCODE = "regeocode"
+    # 🌍 OSM 在线下载
+    FETCH_OSM = "fetch_osm"
     DISTRICT = "district"
     STATIC_MAP = "static_map"
     COORD_CONVERT = "coord_convert"
@@ -577,6 +579,35 @@ class RegeocodeTask(BaseTask):
     poitype: Optional[str] = Field(default=None, description="返回附近 POI 类型")
 
 
+class FetchOSMTask(BaseTask):
+    """
+    OSM 在线下载任务：连接 OpenStreetMap 动态下载指定区域的路网/建筑数据。
+
+    🚨 【高德限制令补充】本任务专为"工作区无本地文件"时自动插入的先置步骤。
+    当用户提到地标名（如"天安门"）但工作区无相关文件时，
+    编排顺序必须是：geocode → fetch_osm → buffer/overlay → render。
+
+    示例：
+        NL: "画天安门500米缓冲区"
+        Task: FetchOSMTask(task="fetch_osm", center_point="tiananmen_pt", radius=500, data_type="network")
+        （center_point 为前序 geocode 步骤的输出变量名，或直接的 "lng,lat" 字符串）
+    """
+    task: Literal["fetch_osm"] = "fetch_osm"
+    center_point: str = Field(
+        description="中心点：可以是前序步骤的变量名（如 'tiananmen_pt'），"
+                    "也可以是直接的 'lng,lat' 字符串（如 '116.397,39.908'）"
+    )
+    radius: int = Field(default=500, ge=100, le=5000, description="下载半径（米）")
+    data_type: Literal["network", "building", "all"] = Field(
+        default="network",
+        description="'network'=路网街道, 'building'=建筑物轮廓, 'all'=路网+建筑"
+    )
+    network_type: Literal["drive", "walk", "bike", "all"] = Field(
+        default="drive",
+        description="路网类型：'drive'=驾车路网, 'walk'=步行路网, 'bike'=骑行路网, 'all'=所有"
+    )
+
+
 class DistrictTask(BaseTask):
     """
     行政区域查询任务：获取省市区县的行政区划及边界坐标。
@@ -833,6 +864,8 @@ TASK_MODEL_MAP: Dict[str, type[BaseModel]] = {
     # 🟢 高德基础服务
     "geocode": GeocodeTask,
     "regeocode": RegeocodeTask,
+    # 🌍 OSM 在线下载
+    "fetch_osm": FetchOSMTask,
     "district": DistrictTask,
     "static_map": StaticMapTask,
     "coord_convert": CoordConvertTask,
@@ -886,6 +919,7 @@ def get_task_description(intent: str) -> str:
         # 🟢 高德基础服务
         "geocode": "地理编码：将地址转换为经纬度坐标",
         "regeocode": "逆地理编码：将经纬度转换为详细地址及周边信息",
+        "fetch_osm": "OSM在线下载：根据坐标在线抓取OpenStreetMap路网/建筑数据",
         "district": "行政区域查询：获取省市区县的行政区划及边界",
         "static_map": "静态地图：生成带标记的地图图片 URL",
         "coord_convert": "坐标转换：将其他坐标系转换为高德 GCJ-02 坐标",

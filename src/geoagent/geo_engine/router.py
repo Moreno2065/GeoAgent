@@ -45,6 +45,9 @@ ENGINE_MAP: Dict[str, str] = {
     "buffer zone": "vector",
     "buffering": "vector",
     "within": "vector",
+
+    # ── OSM 在线下载 ─────────────────────────────────────────────────
+    "fetch_osm": "vector",    # OSM 在线下载 → 矢量引擎（返回 GeoDataFrame）
     "around": "vector",
     "nearby": "vector",
 
@@ -336,6 +339,8 @@ TASK_EXECUTOR_KEY: Dict[str, str] = {
     "surface":          "interpolation",
     "spatial join":     "overlay",
     "spatial_join":     "overlay",
+    # OSM 在线下载
+    "fetch_osm":       "fetch_osm",
 }
 
 

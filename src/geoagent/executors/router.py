@@ -80,6 +80,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "gdal":          lambda: __import__(
                               "geoagent.executors.gdal_executor",
                               fromlist=["GDALExecutor"]).GDALExecutor,
+        # OSM 在线下载
+        "fetch_osm":     lambda: __import__(
+                              "geoagent.executors.osm_executor",
+                              fromlist=["OSMExecutor"]).OSMExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -122,6 +126,8 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "vector_buffer":    "gdal",
     "vector_clip":      "gdal",
     "vector_intersect": "gdal",
+    # OSM 在线下载
+    "fetch_osm":       "fetch_osm",
 }
 
 
@@ -159,6 +165,8 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "vector_buffer":    "gdal",
     "vector_clip":      "gdal",
     "vector_intersect": "gdal",
+    # OSM 在线下载
+    "fetch_osm":       "fetch_osm",
 }
 
 

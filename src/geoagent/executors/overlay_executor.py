@@ -6,6 +6,7 @@ OverlayExecutor - 空间叠置分析执行器
 设计原则：
 - 叠置分析用 GeoPandas 就够了，没必要全走 ArcPy
 - 全部 → 通过 Executor 调用，不让库互相调用
+- 地名词兜底：layer 为非文件路径时自动 geocode 解析为点要素
 """
 
 from __future__ import annotations
@@ -114,14 +115,24 @@ class OverlayExecutor(BaseExecutor):
         try:
             import geopandas as gpd
 
-            path1 = self._resolve_path(task["layer1"])
-            path2 = self._resolve_path(task["layer2"])
+            # ── layer1：文件 or 地名词？───────────────────────────────────
+            raw1 = task["layer1"]
+            path1 = self._resolve_path(raw1)
+            if Path(path1).exists():
+                gdf1 = gpd.read_file(path1)
+            else:
+                gdf1 = self._build_point_from_place(raw1)
+
+            # ── layer2：文件 or 地名词？───────────────────────────────────
+            raw2 = task["layer2"]
+            path2 = self._resolve_path(raw2)
+            if Path(path2).exists():
+                gdf2 = gpd.read_file(path2)
+            else:
+                gdf2 = self._build_point_from_place(raw2)
+
             operation = task["operation"]
             output_path = self._resolve_output(operation, task.get("output_file"))
-
-            # 读取数据
-            gdf1 = gpd.read_file(path1)
-            gdf2 = gpd.read_file(path2)
 
             # CRS 统一
             if gdf1.crs != gdf2.crs:

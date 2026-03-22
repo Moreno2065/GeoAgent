@@ -163,6 +163,63 @@ class BaseExecutor(ABC):
         """
         return task.get("engine") or task.get("provider") or None
 
+    def _build_point_from_place(self, place_name: str) -> "gpd.GeoDataFrame":
+        """
+        将地名词转换为单点 GeoDataFrame（用于直接做缓冲区或叠置）。
+
+        优先级：
+        1. 高德 API（AMAP_API_KEY）→ 精确经纬度
+        2. Nominatim（OSM 免费 API）→ 兜底备选
+
+        Raises:
+            FileNotFoundError: 两个 API 都无法解析该地名
+        """
+        # 延迟导入，避免顶层 ImportError
+        import geopandas as gpd  # type: ignore
+        from shapely.geometry import Point
+
+        # ── 方案1：高德 API ──────────────────────────────────────────
+        try:
+            from geoagent.plugins.amap_plugin import geocode as amap_geocode
+
+            result = amap_geocode(place_name)
+            if result:
+                lon, lat = result["lon"], result["lat"]
+                point = Point(lon, lat)
+                return gpd.GeoDataFrame(
+                    {"name": [place_name], "address": [result.get("formatted_address", "")]},
+                    geometry=[point],
+                    crs="EPSG:4326",
+                )
+        except Exception:
+            pass  # 高德不可用，继续尝试备选方案
+
+        # ── 方案2：Nominatim（OSM 免费 API，兜底）─────────────────────
+        try:
+            from geopy.geocoders import Nominatim
+            from geopy.extra.rate_limiter import RateLimiter
+
+            geolocator = Nominatim(user_agent="GeoAgent-GIS-v2")
+            geocode_fn = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+            location = geocode_fn(place_name, language="zh")
+            if location:
+                point = Point(location.longitude, location.latitude)
+                return gpd.GeoDataFrame(
+                    {"name": [place_name], "address": [location.address]},
+                    geometry=[point],
+                    crs="EPSG:4326",
+                )
+        except ImportError:
+            pass  # geopy 未安装
+        except Exception:
+            pass  # 网络错误或其他异常
+
+        # ── 全都失败 ──────────────────────────────────────────────────
+        raise FileNotFoundError(
+            f"无法将地名词「{place_name}」解析为坐标。"
+            f"请确保 AMAP_API_KEY 已配置，或检查网络连接。"
+        )
+
 
 # =============================================================================
 # 导出

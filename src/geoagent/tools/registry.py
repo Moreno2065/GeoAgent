@@ -86,6 +86,28 @@ def _osm_impl(action: str, **kwargs) -> str:
     return plugin.execute(params)
 
 
+def _fetch_osm_impl(
+    center_point: str = "",
+    radius: int = 500,
+    data_type: str = "network",
+    network_type: str = "drive",
+) -> str:
+    """
+    fetch_osm 工具：使用 OSMnx 在线抓取 OpenStreetMap 数据。
+
+    【高德限制令补充】本工具专用于工作区无本地文件时自动插入的先置步骤。
+    """
+    from geoagent.executors.osm_executor import OSMExecutor
+    executor = OSMExecutor()
+    result = executor.run({
+        "center_point": center_point,
+        "radius": radius,
+        "data_type": data_type,
+        "network_type": network_type,
+    })
+    return result.to_json()
+
+
 def _osmnx_routing_impl(
     city_name: str = "Wuhu, China",
     origin_address: str = "",
@@ -452,6 +474,9 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
         elif tool_name == "osm":
             action = arguments.pop("action", "")
             raw_result = _osm_impl(action, **arguments)
+
+        elif tool_name == "fetch_osm":
+            raw_result = _fetch_osm_impl(**arguments)
 
         elif tool_name == "deepseek_search":
             raw_result = _deepseek_search_impl(

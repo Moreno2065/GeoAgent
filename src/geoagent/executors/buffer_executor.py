@@ -124,13 +124,14 @@ class BufferExecutor(BaseExecutor):
 
         try:
             import geopandas as gpd
-            from shapely.geometry import CAP_STYLE, JOIN_STYLE
+            from shapely.geometry import CAP_STYLE, JOIN_STYLE, Point
 
-            input_path = self._resolve_path(task["input_layer"])
+            input_layer = task["input_layer"]
             distance = float(task["distance"])
             dissolve = bool(task.get("dissolve", False))
             cap_style_str = task.get("cap_style", "round")
-            output_path = self._resolve_output(task["input_layer"], task.get("output_file"))
+            output_path = self._resolve_output(input_layer, task.get("output_file"))
+            unit = task.get("unit", "meters")
 
             cap_map = {
                 "round": CAP_STYLE.round,
@@ -139,11 +140,17 @@ class BufferExecutor(BaseExecutor):
             }
             cap = cap_map.get(cap_style_str, CAP_STYLE.round)
 
-            # 读取数据
-            gdf = gpd.read_file(input_path)
+            # ── 核心修复：判断 input_layer 是文件还是地名词 ──────────────
+            input_path = self._resolve_path(input_layer)
+            if not Path(input_path).exists():
+                # 不是文件 → 视为地名词，先通过高德 API 获取坐标
+                gdf = self._build_point_from_place(input_layer)
+                source_label = f"地名词「{input_layer}」"
+            else:
+                gdf = gpd.read_file(input_path)
+                source_label = input_layer
 
             # 确定坐标系：优先使用投影坐标系
-            unit = task.get("unit", "meters")
             crs = gdf.crs
 
             # 单位转换
@@ -181,7 +188,8 @@ class BufferExecutor(BaseExecutor):
                 result_gdf["geometry"] = result_gdf.geometry.buffer(buffer_dist, cap_style=cap)
 
             # 转换回原始 CRS
-            result_gdf = result_gdf.to_crs(gdf.crs)
+            crs = gdf.crs
+            result_gdf = result_gdf.to_crs(crs) if crs else result_gdf
 
             # 保存
             driver = "ESRI Shapefile"
@@ -197,13 +205,14 @@ class BufferExecutor(BaseExecutor):
                 "geopandas",
                 {
                     "input_layer": task["input_layer"],
+                    "input_source": source_label,
                     "output_file": output_path,
                     "distance": distance,
                     "unit": unit,
                     "dissolve": dissolve,
                     "cap_style": cap_style_str,
                     "feature_count": len(result_gdf),
-                    "crs": str(gdf.crs) if gdf.crs else "unknown",
+                    "crs": str(crs) if crs else "unknown",
                     "output_path": output_path,
                 },
                 meta={
