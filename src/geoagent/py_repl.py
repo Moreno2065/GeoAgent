@@ -316,10 +316,248 @@ def is_code_safe(code: str) -> bool:
     return len(check_code_safety(code)) == 0
 
 
+# =============================================================================
+# 代码执行器（本地沙盒）
+# =============================================================================
+
+import json as _json
+import io as _io
+import time as _time
+import traceback as _traceback
+import sys as _sys
+from pathlib import Path as _Path
+from typing import Optional, Dict, Any
+
+
+# 全局 session 存储（跨调用持久化变量）
+_CODE_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+
+def run_python_code(
+    code: str,
+    mode: str = "exec",
+    reset_session: bool = False,
+    session_id: Optional[str] = None,
+    workspace: Optional[str] = None,
+    get_state_only: bool = False,
+) -> str:
+    """
+    在受控 Python 沙盒中执行 LLM 生成的代码。
+
+    Features:
+    - AST 安全检查（拦截危险函数/导入）
+    - Session 变量持久化
+    - 工作目录隔离
+    - 文件创建追踪（防止幽灵文件）
+    - 优雅错误报告
+
+    Args:
+        code: 要执行的 Python 代码
+        mode: "exec" | "eval"
+        reset_session: True = 重置该 session 的变量
+        session_id: session 标识符（用于变量持久化）
+        workspace: 工作目录路径（None=默认 workspace/）
+        get_state_only: True = 仅返回当前 session 的变量快照，不执行代码
+
+    Returns:
+        JSON 字符串，包含执行结果
+
+    Raises:
+        无直接异常——所有错误都包装在返回的 JSON 中
+    """
+    # 解析 session
+    sid = session_id or "default"
+    if reset_session or sid not in _CODE_SESSIONS:
+        _CODE_SESSIONS[sid] = {
+            "globals": {"__builtins__": __builtins__},
+            "locals": {},
+        }
+
+    session = _CODE_SESSIONS[sid]
+
+    # 仅返回状态（不执行）
+    if get_state_only:
+        safe_vars = {
+            k: v for k, v in session["locals"].items()
+            if not k.startswith("_") and not callable(v)
+        }
+        return _json.dumps(
+            {
+                "success": True,
+                "stdout": "",
+                "stderr": "",
+                "variables": {k: str(v) for k, v in safe_vars.items()},
+                "files_created": [],
+                "elapsed_ms": 0,
+            },
+            ensure_ascii=False,
+        )
+
+    # 工作目录
+    if workspace is None:
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        ws_path = get_workspace_dir()
+    else:
+        ws_path = _Path(workspace)
+    ws_path.mkdir(exist_ok=True, parents=True)
+
+    # AST 安全检查
+    violations = check_code_safety(code)
+    if violations:
+        err_report = format_safety_violations(violations)
+        return _json.dumps(
+            {
+                "success": False,
+                "stdout": "",
+                "stderr": err_report,
+                "error_type": "SandboxBlocked",
+                "error_summary": f"沙盒拦截了 {len(violations)} 个危险操作",
+                "variables": {},
+                "files_created": [],
+                "elapsed_ms": 0,
+            },
+            ensure_ascii=False,
+        )
+
+    # 预加载 GIS 库到 globals
+    _PRELOAD_LIBS = [
+        "geopandas", "gpd", "shapely", "sp",
+        "numpy", "np", "pandas", "pd",
+        "rasterio", "rio", "rioxarray",
+        "xarray", "xr",
+        "pyproj", "pp",
+        "fiona", "fio",
+        "libpysal", "esda",
+        "matplotlib", "plt",
+        "folium",
+        "scipy",
+        "sklearn",
+        "networkx", "nx",
+        "osmnx", "ox",
+        "math", "re", "datetime", "time",
+        "pathlib", "json", "csv",
+        "itertools", "collections",
+    ]
+    sandbox_globals = session["globals"]
+    for lib_name in _PRELOAD_LIBS:
+        if lib_name not in sandbox_globals:
+            try:
+                import importlib as _importlib
+                mod = _importlib.import_module(lib_name)
+                sandbox_globals[lib_name] = mod
+            except ImportError:
+                pass
+
+    # 注入内置工具函数
+    def _ls(path: str = ".") -> list:
+        """列出工作目录中的文件"""
+        p = ws_path / path if path != "." else ws_path
+        return sorted([f.name for f in p.iterdir() if f.is_file()])
+
+    def _show(obj: Any, max_rows: int = 20) -> str:
+        """友好地显示 GIS 对象摘要"""
+        import geopandas
+        if isinstance(obj, geopandas.GeoDataFrame):
+            lines = [f"GeoDataFrame ({len(obj)} rows, columns: {list(obj.columns)})"]
+            if not obj.empty:
+                preview = obj.head(max_rows).to_string()
+                lines.append(preview)
+                if len(obj) > max_rows:
+                    lines.append(f"... ({len(obj) - max_rows} more rows)")
+            else:
+                lines.append("  (empty)")
+            return "\n".join(lines)
+        elif hasattr(obj, "shape"):
+            return f"ndarray shape={obj.shape}, dtype={obj.dtype}"
+        else:
+            return repr(obj)
+
+    sandbox_globals["ls"] = _ls
+    sandbox_globals["show"] = _show
+    sandbox_globals["WORKSPACE"] = ws_path
+
+    # 记录执行前文件状态
+    files_before: set = set(ws_path.rglob("*"))
+
+    # 重定向 stdout/stderr
+    old_out = _sys.stdout
+    old_err = _sys.stderr
+    stdout_c = _io.StringIO()
+    stderr_c = _io.StringIO()
+    _sys.stdout = stdout_c
+    _sys.stderr = stderr_c
+
+    start_ms = _time.perf_counter()
+    success = False
+    error_type: Optional[str] = None
+    error_summary: Optional[str] = None
+    result_val: Any = None
+
+    try:
+        if mode == "eval":
+            result_val = eval(code, sandbox_globals, session["locals"])
+            success = True
+        else:
+            exec(code, sandbox_globals, session["locals"])
+            success = True
+    except Exception as e:
+        error_type = type(e).__name__
+        error_summary = str(e)
+    finally:
+        elapsed_ms = (_time.perf_counter() - start_ms) * 1000
+        _sys.stdout = old_out
+        _sys.stderr = old_err
+
+    # 追踪创建的文件
+    files_after: set = set(ws_path.rglob("*"))
+    files_created: list = [
+        str(p.relative_to(ws_path))
+        for p in files_after - files_before
+        if p.is_file() and p.stat().st_size > 0  # 忽略 0 字节文件
+    ]
+
+    # 如果没有任何输出（stdout 和变量都没有），说明代码可能无声失败
+    stdout_text = stdout_c.getvalue()
+    stderr_text = stderr_c.getvalue()
+
+    # 如果代码成功执行但没有任何 stdout，且创建了文件但文件为空——主动警告
+    phantom_warnings = []
+    if success and not stdout_text.strip() and files_created:
+        small_files = [
+            f for f in files_created
+            if (ws_path / f).stat().st_size < 100  # 小于 100 字节可能是幽灵
+        ]
+        if small_files:
+            phantom_warnings.append(
+                f"⚠️ 注意：创建的文件可能为空或几乎为空: {small_files}"
+            )
+
+    response: Dict[str, Any] = {
+        "success": success,
+        "stdout": stdout_text,
+        "stderr": (
+            f"[{error_type}] {error_summary}\n{_traceback.format_exc()}\n"
+            if not success else "\n".join(phantom_warnings)
+        ),
+        "error_type": error_type if not success else None,
+        "error_summary": error_summary if not success else None,
+        "variables": {},  # 不暴露变量（安全考虑）
+        "files_created": files_created,
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+
+    # 如果有 phantom warnings，放在 stderr 中
+    if phantom_warnings and success:
+        response["stderr"] = "\n".join(phantom_warnings)
+
+    return _json.dumps(response, ensure_ascii=False)
+
+
 __all__ = [
     "check_code_safety",
     "format_safety_violations",
     "is_code_safe",
+    "run_python_code",
     "ALLOWED_IMPORTS",
     "BLOCKED_IMPORTS",
     "BLOCKED_FUNCTIONS",

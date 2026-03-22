@@ -22,7 +22,8 @@ from typing import Optional, List
 # =============================================================================
 
 def _ws() -> Path:
-    return Path(__file__).parent.parent.parent / "workspace"
+    from geoagent.gis_tools.fixed_tools import get_workspace_dir
+    return get_workspace_dir()
 
 
 def _resolve(file_name: str) -> Path:
@@ -30,8 +31,33 @@ def _resolve(file_name: str) -> Path:
     return f if f.is_absolute() else _ws() / file_name
 
 
+def _ensure_dir(filepath: Path) -> None:
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _check_input_file(file_name: str) -> None:
+    """检查输入文件是否存在，不存在则抛出 FileNotFoundError"""
+    path = _resolve(file_name)
+    if not path.exists():
+        raise FileNotFoundError(f"输入文件不存在: {file_name} (resolved: {path})")
+
+
 def _ok(result: dict) -> str:
+    """通用成功响应"""
     return json.dumps({"success": True, **result}, ensure_ascii=False, indent=2)
+
+
+def _map_ok(result: dict) -> str:
+    """地图任务成功响应 - 打印文件路径供用户查看"""
+    output_path = result.get("output_path", result.get("output_file", ""))
+    if output_path:
+        # 转换为绝对路径
+        abs_path = str(_resolve(output_path) if not Path(output_path).is_absolute() else output_path)
+        print(f"\n{'='*60}")
+        print(f"📍 交互式地图已生成，请用浏览器打开查看:")
+        print(f"   {abs_path}")
+        print(f"{'='*60}\n")
+    return _ok(result)
 
 
 def _err(msg: str) -> str:
@@ -141,18 +167,29 @@ def vector_buffer(input_file: str, output_file: str,
         return _err("geopandas 未安装，请运行: pip install geopandas")
 
     try:
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
-        
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可做缓冲区分析")
+
         if gdf.crs and gdf.crs.to_epsg() != 3857:
             gdf_proj = gdf.to_crs(epsg=3857)
         else:
             gdf_proj = gdf
         gdf_proj["geometry"] = gdf_proj.geometry.buffer(distance)
+
+        if gdf_proj.empty:
+            return _err("缓冲区分析结果为空（可能输入几何无效或距离值异常）")
+
         if dissolved:
             gdf_proj = gdf_proj.dissolve()
-        result = gdf_proj.to_crs(gdf.crs).to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        gdf_proj.to_crs(gdf.crs).to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_buffer",
             "input": input_file,
@@ -160,8 +197,10 @@ def vector_buffer(input_file: str, output_file: str,
             "distance_unit": "meters (projected)",
             "dissolved": dissolved,
             "feature_count": len(gdf_proj),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Buffer失败: {str(e)}")
 
@@ -176,24 +215,39 @@ def vector_clip(input_file: str, clip_file: str, output_file: str) -> str:
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(clip_file)
         source = _gpd.read_file(_resolve(input_file))
         clipper = _gpd.read_file(_resolve(clip_file))
         # 确保有 CRS
         source = _ensure_crs(source, input_file)
         clipper = _ensure_crs(clipper, clip_file)
-        
+
+        if source.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可裁剪")
+        if clipper.empty:
+            return _err(f"裁剪文件 '{clip_file}' 读取后为空，无有效裁剪范围")
+
         if source.crs != clipper.crs:
             clipper = clipper.to_crs(source.crs)
         clipped = _gpd.overlay(source, clipper, how="intersection")
-        clipped.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if clipped.empty:
+            return _err("裁剪结果为空——输入图层与裁剪图层无重叠区域")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        clipped.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_clip",
             "input": input_file,
             "clip_layer": clip_file,
             "output": output_file,
             "feature_count": len(clipped),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Clip失败: {str(e)}")
 
@@ -209,25 +263,40 @@ def vector_intersect(input_file: str, intersect_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(intersect_file)
         gdf1 = _gpd.read_file(_resolve(input_file))
         gdf2 = _gpd.read_file(_resolve(intersect_file))
         # 确保有 CRS
         gdf1 = _ensure_crs(gdf1, input_file)
         gdf2 = _ensure_crs(gdf2, intersect_file)
-        
+
+        if gdf1.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空")
+        if gdf2.empty:
+            return _err(f"交集文件 '{intersect_file}' 读取后为空")
+
         if gdf1.crs != gdf2.crs:
             gdf2 = gdf2.to_crs(gdf1.crs)
         how = "union" if keep_all else "intersection"
         result = _gpd.overlay(gdf1, gdf2, how=how)
-        result.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if result.empty:
+            return _err("交集分析结果为空——两图层无重叠区域")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        result.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_intersect",
             "input": input_file,
             "intersect_layer": intersect_file,
             "output": output_file,
             "feature_count": len(result),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Intersect失败: {str(e)}")
 
@@ -242,24 +311,39 @@ def vector_union(input_file: str, union_file: str, output_file: str) -> str:
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(union_file)
         gdf1 = _gpd.read_file(_resolve(input_file))
         gdf2 = _gpd.read_file(_resolve(union_file))
         # 确保有 CRS
         gdf1 = _ensure_crs(gdf1, input_file)
         gdf2 = _ensure_crs(gdf2, union_file)
-        
+
+        if gdf1.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空")
+        if gdf2.empty:
+            return _err(f"合并文件 '{union_file}' 读取后为空")
+
         if gdf1.crs != gdf2.crs:
             gdf2 = gdf2.to_crs(gdf1.crs)
         result = _gpd.overlay(gdf1, gdf2, how="union")
-        result.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if result.empty:
+            return _err("Union 合并结果为空")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        result.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_union",
             "input": input_file,
             "union_layer": union_file,
             "output": output_file,
             "feature_count": len(result),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Union失败: {str(e)}")
 
@@ -278,18 +362,31 @@ def vector_spatial_join(target_file: str, join_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(target_file)
+        _check_input_file(join_file)
         target = _gpd.read_file(_resolve(target_file))
         join_src = _gpd.read_file(_resolve(join_file))
         # 确保有 CRS
         target = _ensure_crs(target, target_file)
         join_src = _ensure_crs(join_src, join_file)
-        
+
+        if target.empty:
+            return _err(f"目标图层 '{target_file}' 读取后为空")
+        if join_src.empty:
+            return _err(f"连接图层 '{join_file}' 读取后为空")
+
         if target.crs != join_src.crs:
             join_src = join_src.to_crs(target.crs)
         suffix_l = "_target"; suffix_r = "_join"
         result = _gpd.sjoin(target, join_src, how=how, predicate=predicate, lsuffix=suffix_l, rsuffix=suffix_r)
         result = result.drop(columns=["index_right"], errors="ignore")
-        result.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if result.empty:
+            return _err("空间连接结果为空——两图层无满足条件的空间关系")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        result.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_spatial_join",
             "target": target_file,
@@ -299,8 +396,10 @@ def vector_spatial_join(target_file: str, join_file: str,
             "predicate": predicate,
             "feature_count": len(result),
             "fields": list(result.columns),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Spatial Join失败: {str(e)}")
 
@@ -316,17 +415,30 @@ def vector_dissolve(input_file: str, output_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可融合")
+
         dissolved = gdf.dissolve(by=dissolve_field)
-        dissolved.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if dissolved.empty:
+            return _err("融合结果为空")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        dissolved.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_dissolve",
             "input": input_file,
             "dissolve_field": dissolve_field or "(全图层融合)",
             "output": output_file,
             "feature_count": len(dissolved),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Dissolve失败: {str(e)}")
 
@@ -342,15 +454,26 @@ def vector_simplify(input_file: str, output_file: str,
         return _err("shapely 未安装，请运行: pip install shapely")
 
     try:
+        _check_input_file(input_file)
         import geopandas as gpd
         if algorithm == "rcm":
             from shapely.simplify import simplify
         else:
             from shapely.simplify import simplify
         gdf = gpd.read_file(_resolve(input_file))
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可简化")
+
         simplified = gdf.copy()
         simplified["geometry"] = simplified.geometry.simplify(tolerance, preserve_topology=True)
-        simplified.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if simplified.empty:
+            return _err("简化结果为空")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        simplified.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_simplify",
             "input": input_file,
@@ -358,8 +481,10 @@ def vector_simplify(input_file: str, output_file: str,
             "tolerance": tolerance,
             "algorithm": algorithm,
             "feature_count": len(simplified),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Simplify失败: {str(e)}")
 
@@ -374,24 +499,39 @@ def vector_erase(input_file: str, erase_file: str, output_file: str) -> str:
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(erase_file)
         source = _gpd.read_file(_resolve(input_file))
         eraser = _gpd.read_file(_resolve(erase_file))
         # 确保有 CRS
         source = _ensure_crs(source, input_file)
         eraser = _ensure_crs(eraser, erase_file)
-        
+
+        if source.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空")
+        if eraser.empty:
+            return _err(f"擦除文件 '{erase_file}' 读取后为空")
+
         if source.crs != eraser.crs:
             eraser = eraser.to_crs(source.crs)
         result = _gpd.overlay(source, eraser, how="difference")
-        result.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if result.empty:
+            return _err("擦除结果为空——输入图层与擦除图层无重叠可移除区域")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        result.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "vector_erase",
             "input": input_file,
             "erase_layer": erase_file,
             "output": output_file,
             "feature_count": len(result),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"Erase失败: {str(e)}")
 
@@ -558,9 +698,12 @@ def raster_calculate_index(input_file: str, band_math_expr: str,
         return _err("rasterio 或 numpy 未安装")
 
     try:
+        _check_input_file(input_file)
         inp = _resolve(input_file)
         out = _resolve(output_file)
         with _rio.open(inp) as src:
+            if src.count < 1:
+                return _err(f"栅格文件 '{input_file}' 无有效波段")
             bands = [src.read(i + 1) for i in range(src.count)]
             meta = src.meta.copy()
 
@@ -569,9 +712,17 @@ def raster_calculate_index(input_file: str, band_math_expr: str,
             arr[arr == src.nodata] = _np.nan
 
         result_arr = eval(band_math_expr, {"np": _np}, b_vars)
+
+        if not isinstance(result_arr, _np.ndarray):
+            return _err("波段表达式计算结果不是有效的数组")
+
+        if result_arr.size == 0 or _np.all(_np.isnan(result_arr)):
+            return _err("波段表达式计算结果全为 NoData，计算无效")
+
         result_arr = result_arr.astype(_np.float32)
 
         meta.update({"count": 1, "dtype": "float32", "nodata": _np.nan})
+        _ensure_dir(out)
         with _rio.open(out, "w", **meta) as dst:
             dst.write(result_arr, 1)
         return _ok({
@@ -583,6 +734,8 @@ def raster_calculate_index(input_file: str, band_math_expr: str,
             "min": float(_np.nanmin(result_arr)),
             "max": float(_np.nanmax(result_arr))
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"raster_calculate_index失败: {str(e)}")
 
@@ -602,6 +755,7 @@ def raster_reclassify(input_file: str, output_file: str,
         return _err("rasterio 或 numpy 未安装")
 
     try:
+        _check_input_file(input_file)
         inp = _resolve(input_file)
         out = _resolve(output_file)
         with _rio.open(inp) as src:
@@ -615,6 +769,9 @@ def raster_reclassify(input_file: str, output_file: str,
             mask = (data >= old_min) & (data < old_max)
             classified[mask] = new_val
 
+        if _np.all(_np.isnan(classified)):
+            return _err("重分类后结果全为 NoData，请检查 remap_table 取值范围是否覆盖了输入栅格的实际值范围")
+
         if nodata_value is not None:
             classified[_np.isnan(classified)] = nodata_value
             meta["nodata"] = nodata_value
@@ -622,6 +779,7 @@ def raster_reclassify(input_file: str, output_file: str,
             classified[_np.isnan(classified)] = meta.get("nodata", -9999)
 
         meta.update({"count": 1, "dtype": "float32"})
+        _ensure_dir(out)
         with _rio.open(out, "w", **meta) as dst:
             dst.write(classified.astype(_np.float32), 1)
 
@@ -633,6 +791,8 @@ def raster_reclassify(input_file: str, output_file: str,
             "output_path": str(out),
             "unique_values": sorted(list(set(classified[~_np.isnan(classified)])))
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"raster_reclassify失败: {str(e)}")
 
@@ -806,12 +966,19 @@ def spatial_hotspot(input_file: str, output_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         from esda.getisord import G_Local
         import libpysal as _lps
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
-        
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可做热点分析")
+
+        if field not in gdf.columns:
+            return _err(f"字段 '{field}' 不存在于输入文件，可用字段: {list(gdf.columns)}")
+
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf_proj = gdf.to_crs(epsg=4326)
         else:
@@ -857,12 +1024,19 @@ def spatial_morans_i(input_file: str, field: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         from esda.moran import Moran
         import libpysal as _lps
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
-        
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空")
+
+        if field not in gdf.columns:
+            return _err(f"字段 '{field}' 不存在于输入文件，可用字段: {list(gdf.columns)}")
+
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs(epsg=4326)
         w_type = "Queen" if queen else "Rook"
@@ -899,11 +1073,15 @@ def spatial_kernel_density(input_file: str, output_file: str,
         return _err("geopandas 或 numpy 未安装")
 
     try:
+        _check_input_file(input_file)
         from scipy.stats import gaussian_kde
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
-        
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无点要素可做核密度分析")
+
         if gdf.crs and gdf.crs.to_epsg() != 3857:
             gdf = gdf.to_crs(epsg=3857)
         bounds = gdf.total_bounds
@@ -954,7 +1132,13 @@ def spatial_zonal_stats(input_file: str, raster_file: str,
         return _err("rasterio、numpy 或 geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(raster_file)
         zones = _gpd.read_file(_resolve(input_file))
+
+        if zones.empty:
+            return _err(f"分区矢量文件 '{input_file}' 读取后为空")
+
         with _rio.open(_resolve(raster_file)) as raster:
             raster_data = raster.read(1).astype(_np.float32)
             raster_data[raster_data == raster.nodata] = _np.nan
@@ -990,7 +1174,13 @@ def spatial_zonal_stats(input_file: str, raster_file: str,
 
         result_gdf = _gpd.GeoDataFrame(results, crs=zones.crs)
         result_gdf = result_gdf.drop(columns=["geometry"], errors="ignore")
-        result_gdf.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if result_gdf.empty:
+            return _err("分区统计结果为空——所有分区均无有效栅格值覆盖")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        result_gdf.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "spatial_zonal_stats",
             "zone_file": input_file,
@@ -998,8 +1188,10 @@ def spatial_zonal_stats(input_file: str, raster_file: str,
             "output": output_file,
             "stats": stats,
             "zone_count": len(zones),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"spatial_zonal_stats失败: {str(e)}")
 
@@ -1016,6 +1208,8 @@ def hydrology_watershed(input_file: str, output_file: str,
         return _err("whitebox 未安装，请运行: pip install whitebox")
 
     try:
+        _check_input_file(input_file)
+        _check_input_file(flow_direction_raster)
         wbt = _wb.WhiteboxTools()
         wbt.work_dir = str(_ws())
         inp = _resolve(input_file)
@@ -1030,6 +1224,8 @@ def hydrology_watershed(input_file: str, output_file: str,
             "output": output_file,
             "output_path": str(out)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"hydrology_watershed失败: {str(e)}")
 
@@ -1105,6 +1301,7 @@ def crs_define(input_file: str, crs_string: str) -> str:
     底层库: GeoPandas / Rasterio + PyProj
     """
     try:
+        _check_input_file(input_file)
         suffix = _resolve(input_file).suffix.lower()
         if suffix in ['.shp', '.geojson', '.gpkg', '.json']:
             gdf = _gpd.read_file(_resolve(input_file))
@@ -1126,6 +1323,8 @@ def crs_define(input_file: str, crs_string: str) -> str:
             })
         else:
             return _err(f"不支持的文件格式: {suffix}")
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"crs_define失败: {str(e)}")
 
@@ -1141,12 +1340,19 @@ def crs_transform(input_file: str, output_file: str,
         return _err("pyproj 未安装")
 
     try:
+        _check_input_file(input_file)
         suffix = _resolve(input_file).suffix.lower()
         transformer = _pp.Transformer.from_crs(source_crs, target_crs, always_xy=True)
         if suffix in ['.shp', '.geojson', '.gpkg', '.json']:
             gdf = _gpd.read_file(_resolve(input_file))
             gdf_proj = gdf.to_crs(target_crs)
-            gdf_proj.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+            if gdf_proj.empty:
+                return _err("投影转换结果为空")
+
+            out_path = _resolve(output_file)
+            _ensure_dir(out_path)
+            gdf_proj.to_file(out_path, driver="ESRI Shapefile")
             return _ok({
                 "task": "crs_transform",
                 "input": input_file,
@@ -1154,7 +1360,7 @@ def crs_transform(input_file: str, output_file: str,
                 "source_crs": source_crs,
                 "target_crs": target_crs,
                 "transform_method": "GeoPandas.to_crs()",
-                "output_path": str(_resolve(output_file))
+                "output_path": str(out_path)
             })
         elif suffix in ['.tif', '.tiff', '.img']:
             inp = _resolve(input_file)
@@ -1164,6 +1370,7 @@ def crs_transform(input_file: str, output_file: str,
                     src.crs, target_crs, src.width, src.height, *src.bounds)
                 meta = src.meta.copy()
                 meta.update({"crs": target_crs, "transform": transform, "width": width, "height": height})
+                _ensure_dir(out)
                 with _rio.open(out, "w", **meta) as dst:
                     for i in range(1, src.count + 1):
                         reproject(source=_rio.band(src, i),
@@ -1183,6 +1390,8 @@ def crs_transform(input_file: str, output_file: str,
             })
         else:
             return _err(f"不支持的文件格式: {suffix}")
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"crs_transform失败: {str(e)}")
 
@@ -1327,6 +1536,10 @@ def map_folium_interactive(input_files: List[str],
 
         names = layer_names or [f"Layer {i+1}" for i in range(len(input_files))]
         for fname, name in zip(input_files, names):
+            try:
+                _check_input_file(fname)
+            except FileNotFoundError:
+                return _err(f"图层文件不存在: {fname}")
             gdf = _gpd.read_file(_resolve(fname))
             # 确保有 CRS
             gdf = _ensure_crs(gdf, fname)
@@ -1374,7 +1587,7 @@ def map_folium_interactive(input_files: List[str],
 
         out = _resolve(output_file)
         m.save(str(out))
-        return _ok({
+        return _map_ok({
             "task": "map_folium_interactive",
             "inputs": input_files,
             "output": output_file,
@@ -1403,9 +1616,13 @@ def map_static_plot(input_file: str, output_file: str,
         return _err("matplotlib 或 geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可渲染")
         
         fig, ax = _plt.subplots(figsize=figsize or [10, 8])
         if column:
@@ -1449,6 +1666,7 @@ def map_raster_plot(input_file: str, output_file: str,
         return _err("matplotlib 或 rasterio 未安装")
 
     try:
+        _check_input_file(input_file)
         with _rio.open(_resolve(input_file)) as src:
             data = src.read(band).astype(_np.float32)
             data[data == src.nodata] = _np.nan
@@ -1489,6 +1707,8 @@ def map_multi_layer(input_files: List[str],
         return _err("matplotlib 或 geopandas 未安装")
 
     try:
+        for fname in input_files:
+            _check_input_file(fname)
         fig, ax = _plt.subplots(figsize=figsize or [12, 10])
         default_colors = ["steelblue", "coral", "lightgreen", "orchid", "gold"]
         cs = colors or default_colors
@@ -1535,8 +1755,14 @@ def db_convert_format(input_file: str, output_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可转换")
+
         out = _resolve(output_file)
+        _ensure_dir(out)
         drivers = {
             "shp": "ESRI Shapefile", "gpkg": "GPKG",
             "geojson": "GeoJSON", "json": "GeoJSON",
@@ -1553,6 +1779,8 @@ def db_convert_format(input_file: str, output_file: str,
             "feature_count": len(gdf),
             "output_path": str(out)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"db_convert_format失败: {str(e)}")
 
@@ -1574,13 +1802,19 @@ def db_read_postgis(connection_string: str,
         conn = psycopg2.connect(connection_string)
         gdf = _gpd.read_postgis(query, conn, geom_col=geom_column)
         conn.close()
-        gdf.to_file(_resolve(output_file), driver="ESRI Shapefile")
+
+        if gdf.empty:
+            return _err(f"PostGIS 查询结果为空，SQL: {query}")
+
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        gdf.to_file(out_path, driver="ESRI Shapefile")
         return _ok({
             "task": "db_read_postgis",
             "query": query,
             "output": output_file,
             "feature_count": len(gdf),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out_path)
         })
     except ImportError:
         return _err("psycopg2 未安装，请运行: pip install psycopg2-binary")
@@ -1601,11 +1835,14 @@ def db_write_postgis(input_file: str,
         return _err("geopandas 未安装")
 
     try:
-        import psycopg2
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
         # 确保有 CRS
         gdf = _ensure_crs(gdf, input_file)
-        
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可写入数据库")
+
         if gdf.crs and gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs(epsg=4326)
         engine_url = connection_string.replace("postgresql://", "postgresql+psycopg2://")
@@ -1622,6 +1859,8 @@ def db_write_postgis(input_file: str,
             "if_exists": if_exists,
             "feature_count": len(gdf)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except ImportError:
         return _err("psycopg2 未安装")
     except Exception as e:
@@ -1640,22 +1879,31 @@ def db_geojson_to_features(input_file: str,
         return _err("geopandas 未安装")
 
     try:
+        _check_input_file(input_file)
         gdf = _gpd.read_file(_resolve(input_file))
+
+        if gdf.empty:
+            return _err(f"输入文件 '{input_file}' 读取后为空，无要素可转换")
+
+        out = _resolve(output_file)
+        _ensure_dir(out)
         drivers = {
             "esri shapefile": "ESRI Shapefile", "shp": "ESRI Shapefile",
             "gpkg": "GPKG", "geopackage": "GPKG",
             "geojson": "GeoJSON", "json": "GeoJSON",
         }
         driver = drivers.get(target_format.lower(), target_format)
-        gdf.to_file(_resolve(output_file), driver=driver)
+        gdf.to_file(out, driver=driver)
         return _ok({
             "task": "db_geojson_to_features",
             "input": input_file,
             "output": output_file,
             "target_format": target_format,
             "feature_count": len(gdf),
-            "output_path": str(_resolve(output_file))
+            "output_path": str(out)
         })
+    except FileNotFoundError as e:
+        return _err(str(e))
     except Exception as e:
         return _err(f"db_geojson_to_features失败: {str(e)}")
 
@@ -1697,14 +1945,23 @@ def db_batch_convert(folder: str, output_format: str,
     try:
         import glob, os
         inp_folder = _resolve(folder)
+        if not inp_folder.exists() or not inp_folder.is_dir():
+            return _err(f"输入文件夹不存在或不是目录: {folder}")
+
         out_folder = _resolve(output_folder)
         out_folder.mkdir(parents=True, exist_ok=True)
         files = glob.glob(str(inp_folder / "*.shp")) + glob.glob(str(inp_folder / "*.gpkg")) + glob.glob(str(inp_folder / "*.geojson"))
+        if not files:
+            return _err(f"文件夹 '{folder}' 中未找到 .shp / .gpkg / .geojson 文件")
+
         drivers = {"shp": "ESRI Shapefile", "gpkg": "GPKG", "geojson": "GeoJSON"}
         results = []
         for f in files:
             try:
                 gdf = _gpd.read_file(f)
+                if gdf.empty:
+                    results.append({"file": Path(f).name, "status": "skipped", "reason": "文件为空"})
+                    continue
                 basename = Path(f).stem
                 ext_map = {"GPKG": "gpkg", "GeoJSON": "geojson", "ESRI Shapefile": "shp"}
                 ext = ext_map.get(output_format, "gpkg")
@@ -1719,6 +1976,7 @@ def db_batch_convert(folder: str, output_format: str,
             "output_format": output_format,
             "total_files": len(files),
             "converted": len([r for r in results if r["status"] == "success"]),
+            "skipped": len([r for r in results if r["status"] == "skipped"]),
             "errors": len([r for r in results if r["status"] == "error"]),
             "details": results
         })

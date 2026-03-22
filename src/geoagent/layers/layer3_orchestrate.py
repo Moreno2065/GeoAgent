@@ -1396,6 +1396,60 @@ class ScenarioOrchestrator:
                 "mode": "exec",
                 "outputs": {"map": False, "summary": True},
             },
+            # ── Amap 高德 Web 服务 ──────────────────────────────────
+            Scenario.INPUT_TIPS: {
+                "datatype": "all",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.POI_SEARCH: {
+                "extensions": "all",
+                "radius": 3000,
+                "outputs": {"map": True, "summary": True},
+            },
+            Scenario.GEOCODE: {
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.REGEOCODE: {
+                "radius": 1000,
+                "extensions": "base",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.DISTRICT: {
+                "subdistrict": 1,
+                "extensions": "base",
+                "outputs": {"map": True, "summary": True},
+            },
+            Scenario.WEATHER: {
+                "extensions": "base",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.TRAFFIC_STATUS: {
+                "level": 5,
+                "outputs": {"map": True, "summary": True},
+            },
+            Scenario.TRAFFIC_EVENTS: {
+                "event_type": 0,
+                "outputs": {"map": True, "summary": True},
+            },
+            Scenario.TRANSIT_INFO: {
+                "info_type": "line",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.IP_LOCATION: {
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.STATIC_MAP: {
+                "zoom": 15,
+                "size": "400*400",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.COORD_CONVERT: {
+                "coordsys": "gps",
+                "outputs": {"map": False, "summary": True},
+            },
+            Scenario.GRASP_ROAD: {
+                "outputs": {"map": False, "summary": True},
+            },
         }
 
     def can_enter_pipeline(
@@ -1533,7 +1587,12 @@ class ScenarioOrchestrator:
                         "interpolation", "hotspot", "statistics",
                         "viewshed", "shadow_analysis", "ndvi", "raster",
                         "suitability", "poi_search", "geocode",
-                        "regeocode", "visualization", "code_sandbox"):
+                        "regeocode", "visualization", "code_sandbox",
+                        # Amap 高德 Web 服务
+                        "input_tips", "district", "static_map",
+                        "coord_convert", "grasp_road", "traffic_status",
+                        "traffic_events", "transit_info", "ip_location",
+                        "weather"):
             return True
         return False
 
@@ -1544,6 +1603,10 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+            # Amap 高德 Web 服务
+            "input_tips", "static_map", "coord_convert", "grasp_road",
+            "traffic_status", "traffic_events", "transit_info",
+            "ip_location", "weather",
         }
         if scenario in standard:
             return True
@@ -1575,6 +1638,10 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+            # Amap 高德 Web 服务
+            "input_tips", "static_map", "coord_convert", "grasp_road",
+            "traffic_status", "traffic_events", "transit_info",
+            "ip_location", "weather",
         }
         return scenario in standard
 

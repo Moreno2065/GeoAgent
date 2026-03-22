@@ -54,6 +54,20 @@ SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
     "raster": "ndvi",
     "suitability": "suitability",  # MCDA 适宜性选址分析
     "code_sandbox": "code_sandbox",  # 受限代码执行（补丁层）
+    # ── Amap 高德 Web 服务 ────────────────────────────────────────
+    "geocode": "amap",
+    "regeocode": "amap",
+    "district": "amap",
+    "static_map": "amap",
+    "coord_convert": "amap",
+    "grasp_road": "amap",
+    "input_tips": "amap",
+    "poi_search": "amap",
+    "traffic_status": "amap",
+    "traffic_events": "amap",
+    "transit_info": "amap",
+    "ip_location": "amap",
+    "weather": "amap",
 }
 
 

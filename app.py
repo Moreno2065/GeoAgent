@@ -44,6 +44,26 @@ from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files, 
 DEFAULT_LLM_MODEL = "deepseek-chat"
 _KEY_DIR = Path.home() / ".geoagent"
 _KEY_DIR.mkdir(exist_ok=True)
+_DEBUG_LOG_PATH = Path(__file__).parent / "debug-3db927.log"
+
+def _debug_log(hypothesis_id: str, location: str, message: str, data: dict):
+    import json, datetime
+    line = json.dumps({
+        "sessionId": "3db927",
+        "id": f"log_{int(datetime.datetime.now().timestamp()*1000)}",
+        "timestamp": int(datetime.datetime.now().timestamp() * 1000),
+        "location": location,
+        "message": message,
+        "data": data,
+        "runId": "initial",
+        "hypothesisId": hypothesis_id,
+    }, ensure_ascii=False)
+    try:
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 _WORKSPACE_DIR = _ROOT / "workspace"
 _WORKSPACE_DIR.mkdir(exist_ok=True)
 _OUTPUTS_DIR = _WORKSPACE_DIR / "outputs"
@@ -145,7 +165,12 @@ def _render_data_table_tab():
                     try:
                         import geopandas as gpd
                         gdf = gpd.read_file(conv_dir / fname)
-                        st.dataframe(gdf.head(20), use_container_width=True, hide_index=False)
+                        display_df = gdf.copy()
+                        if display_df.geometry.name == 'geometry':
+                            geo_strs = display_df.geometry.values.astype(str)
+                            display_df = display_df.drop(columns=['geometry'])
+                            display_df['geometry'] = geo_strs
+                        st.dataframe(display_df.head(20), width='stretch', hide_index=False)
                     except Exception as e:
                         st.warning(f"属性表预览失败: {e}")
             elif info.get("file_type") == "raster":
@@ -563,6 +588,36 @@ def _get_active_messages():
     )
 
 
+def _build_llm_messages(cid: str, system_prompt: str, current_user_message: str, max_chars: int = 3000) -> list[dict]:
+    """
+    从当前对话历史构建 LLM messages 列表（含历史 + 当前输入）。
+    返回格式符合 OpenAI chat API: [{"role": ..., "content": ...}, ...]
+    自动裁剪超长历史，保留最近 max_chars 个字符。
+    """
+    messages = [{"role": "system", "content": system_prompt}]
+    if not cid:
+        messages.append({"role": "user", "content": current_user_message})
+        return messages
+
+    raw_msgs = st.session_state.get("conversations", {}).get(cid, {}).get("messages", [])
+
+    history_msgs = []
+    total_chars = 0
+    for msg in reversed(raw_msgs[-20:]):
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content or role not in ("user", "assistant"):
+            continue
+        if total_chars + len(content) > max_chars:
+            break
+        history_msgs.insert(0, {"role": role, "content": content})
+        total_chars += len(content)
+
+    messages.extend(history_msgs)
+    messages.append({"role": "user", "content": current_user_message})
+    return messages
+
+
 def _format_click_context(clicked: dict) -> str:
     if not clicked:
         return ""
@@ -789,7 +844,11 @@ def _render_sidebar():
                 key=f"conv_file_uploader_{cid}_{st.session_state.get('_file_upload_key', 0)}",
                 help="上传的文件仅供当前对话使用",
             )
-            if uploaded:
+            # 防止 file_uploader + rerun 死循环：用标志位跳过已处理的文件
+            _upload_key = "_last_upload_check"
+            _last_sig = st.session_state.get(_upload_key, "")
+            _curr_sig = ",".join([f.name for f in (uploaded if isinstance(uploaded, list) else [uploaded])]) if uploaded else ""
+            if uploaded and _curr_sig != _last_sig:
                 new_uploads = 0
                 conv_dir = _get_conv_workspace_dir(cid)
                 files = uploaded if isinstance(uploaded, list) else [uploaded]
@@ -797,6 +856,7 @@ def _render_sidebar():
                     file_path = conv_dir / f.name
                     file_path.write_bytes(f.getbuffer())
                     new_uploads += 1
+                st.session_state[_upload_key] = _curr_sig
                 if new_uploads > 0:
                     st.success(f"✅ {new_uploads} 个文件已上传到当前对话！")
                     st.rerun()
@@ -1541,19 +1601,7 @@ def main():
             )
         st.markdown(status_html, unsafe_allow_html=True)
 
-        # ── 聊天输入框（在消息上方）────────────────────────────
-        # 优先使用 V2 agent_v2，降级到 V1 agent
-        agent_for_input = st.session_state.get("agent_v2") or st.session_state.get("agent")
-        placeholder = "向 GeoAgent 发布空间分析指令..." if agent_for_input else "请先启动 Agent"
-        prompt = st.chat_input(
-            placeholder
-            if not st.session_state.get("pending_click")
-            else "📍 已捕获地图点击，继续分析...",
-            disabled=not agent_for_input,
-            key="main_chat_input",
-        )
-
-        # ── 历史消息（在输入框下方）────────────────────────────
+        # ── 历史消息（在输入框上方）────────────────────────────
         st.markdown('<div class="chat-scroll-area">', unsafe_allow_html=True)
         msgs = _get_active_messages()
         if msgs:
@@ -1575,6 +1623,18 @@ def main():
                         if content:
                             st.markdown(content)
         st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── 聊天输入框（在消息下方）────────────────────────────
+        # 优先使用 V2 agent_v2，降级到 V1 agent
+        agent_for_input = st.session_state.get("agent_v2") or st.session_state.get("agent")
+        placeholder = "向 GeoAgent 发布空间分析指令..." if agent_for_input else "请先启动 Agent"
+        prompt = st.chat_input(
+            placeholder
+            if not st.session_state.get("pending_click")
+            else "📍 已捕获地图点击，继续分析...",
+            disabled=not agent_for_input,
+            key="main_chat_input",
+        )
 
         if prompt:
             # 两阶段：先把 prompt 存起来，rerun 一次更新状态灯，再真正执行
@@ -1684,8 +1744,12 @@ def _render_workspace_browser():
                     else:
                         import geopandas as gpd
                         gdf = gpd.read_file(f)
-                        df = gdf
-                    st.dataframe(df.head(20), use_container_width=True, hide_index=False)
+                        df = gdf.copy()
+                        if df.geometry.name == 'geometry':
+                            geo_strs = df.geometry.values.astype(str)
+                            df = df.drop(columns=['geometry'])
+                            df['geometry'] = geo_strs
+                    st.dataframe(df.head(20), width='stretch', hide_index=False)
                 except Exception as e:
                     st.warning(f"预览失败: {e}")
 
@@ -2071,12 +2135,17 @@ def _handle_user_message(prompt: str, agent):
                         st.session_state["llm_current_node"] = "LLM 输出中"
 
                         _log("debug", f"🔍 准备调用 LLM 流式输出: model={llm_model}")
+                        llm_messages = _build_llm_messages(cid, system_prompt, user_message)
+                        _debug_log("H2", "app.py:2140", f"LLM 调用参数: model={llm_model}, base_url={getattr(llm_client, '_base_url', 'N/A')}, msgs_count={len(llm_messages)}", {
+                            "model": llm_model,
+                            "base_url": str(getattr(llm_client, '_base_url', 'N/A')),
+                            "temperature": 0.7,
+                            "max_tokens": 500,
+                            "stream": True,
+                        })
                         stream = llm_client.chat.completions.create(
                             model=llm_model,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_message},
-                            ],
+                            messages=llm_messages,
                             temperature=0.7,
                             max_tokens=500,
                             stream=True,
@@ -2084,75 +2153,86 @@ def _handle_user_message(prompt: str, agent):
 
                         _log("debug", "🔍 开始遍历 LLM 流...")
                         chunk_count = 0
-                        empty_chunks = 0
+                        streamed_chars = 0
                         try:
-                            import threading
-                            import queue
-
-                            result_queue: queue.Queue = queue.Queue()
-                            stop_event = threading.Event()
-
-                            def stream_reader():
-                                try:
-                                    for chunk in stream:
-                                        result_queue.put(("chunk", chunk))
-                                        if stop_event.is_set():
-                                            break
-                                    result_queue.put(("done", None))
-                                except Exception as e:
-                                    result_queue.put(("error", str(e)))
-
-                            reader_thread = threading.Thread(target=stream_reader, daemon=True)
-                            reader_thread.start()
-                            reader_thread.join(timeout=30.0)
-
-                            if reader_thread.is_alive():
-                                stop_event.set()
-                                _log("error", "⚠️ LLM 流式响应超时（30秒），强制终止")
-                            else:
-                                while True:
-                                    try:
-                                        msg_type, data = result_queue.get_nowait()
-                                        if msg_type == "done":
-                                            break
-                                        elif msg_type == "error":
-                                            raise Exception(data)
-                                        chunk_count += 1
-                                        # 尝试多种可能的 delta 字段名
-                                        content = None
-                                        for choice in (data.choices or []):
-                                            delta = choice.delta or {}
-                                            # 标准 OpenAI: delta.content
-                                            if hasattr(delta, "content") and delta.content:
-                                                content = delta.content
-                                                break
-                                            # GLM 可能: delta.get("content") or delta.choices[0].delta["content"]
-                                            # 兼容 dict-like
-                                            if isinstance(delta, dict):
-                                                content = delta.get("content")
-                                                if content:
-                                                    break
-                                        if content:
-                                            empty_chunks = 0
-                                            full_text += content
-                                            stream_state["text"] = full_text
-                                            _update_stream(full_text)
-                                        else:
-                                            empty_chunks += 1
-                                        # 调试：记录前5个 chunk 的结构
-                                        if chunk_count <= 5:
-                                            chunk_repr = repr(data)[:150]
-                                            _log("debug", f"  chunk[{chunk_count}]: {chunk_repr}")
-                                    except queue.Empty:
+                            for chunk in stream:
+                                chunk_count += 1
+                                content = None
+                                # H2: Log first 5 chunks to see actual GLM response structure
+                                if chunk_count <= 5:
+                                    _debug_log("H2", "app.py:2158_chunk", f"GLM chunk[{chunk_count}] raw type: {type(chunk).__name__}", {
+                                        "chunk_type": type(chunk).__name__,
+                                        "chunk_attrs": list(chunk.__dict__.keys()) if hasattr(chunk, '__dict__') else [],
+                                        "choices_count": len(chunk.choices) if hasattr(chunk, 'choices') and chunk.choices else 0,
+                                        "choices": [{"delta_type": type(c.delta).__name__, "delta_attrs": list(c.delta.__dict__.keys()) if hasattr(c.delta, '__dict__') else [], "delta__data": c.delta._data if hasattr(c.delta, '_data') else None} for c in (chunk.choices or [])],
+                                    })
+                                # 尝试多种可能的内容字段格式
+                                for choice in (chunk.choices or []):
+                                    delta = choice.delta
+                                    if delta is None:
+                                        continue
+                                    # 情况1：标准 OpenAI SDK (delta.content)
+                                    if hasattr(delta, "content") and delta.content:
+                                        content = delta.content
                                         break
-
+                                    # 情况2：dict-like 对象 (GLM 等兼容库)
+                                    if isinstance(delta, dict):
+                                        for key in ("content", "text", "c"):
+                                            content = delta.get(key)
+                                            if content:
+                                                break
+                                        if content:
+                                            break
+                                    # 情况3：openai.ObjectWith fallback 字段
+                                    if hasattr(delta, "_data"):
+                                        for key in ("content", "text", "c"):
+                                            content = delta._data.get(key) if isinstance(delta._data, dict) else None
+                                            if content:
+                                                break
+                                        if content:
+                                            break
+                                if content:
+                                    streamed_chars += len(content)
+                                    full_text += content
+                                    stream_state["text"] = full_text
+                                    _update_stream(full_text)
+                                if chunk_count <= 5:
+                                    _log("debug", f"  chunk[{chunk_count}]: delta_keys={list(vars(delta).keys()) if hasattr(delta,'__dict__') else type(delta)}, content={repr(content)[:80]}")
                         except Exception as e:
-                            _log("error", f"LLM 流式输出失败: {str(e)}")
+                            _log("error", f"LLM 流遍历异常: {e}")
                             import traceback as tb
-                            _log("error", f"LLM 异常堆栈:\n{tb.format_exc()}")
-                            final_content = None
+                            _log("error", f"堆栈:\n{tb.format_exc()}")
 
-                        _log("debug", f"🔍 LLM 流结束，共 {chunk_count} 个 chunks（{chunk_count - empty_chunks} 个含内容），text 长度={len(full_text)}")
+                        _log("debug", f"LLM 流结束，共 {chunk_count} 个 chunks，streaming 内容长度={streamed_chars}")
+                        _debug_log("H2", "app.py:2206", f"流式结果: chunk_count={chunk_count}, streamed_chars={streamed_chars}", {
+                            "chunk_count": chunk_count,
+                            "streamed_chars": streamed_chars,
+                            "model": llm_model,
+                        })
+
+                        # 流式为空时非流式降级
+                        if streamed_chars == 0:
+                            _log("debug", "⚠️ 流式内容为空，尝试非流式降级...")
+                            _debug_log("H2", "app.py:2213", "流式为空，执行非流式降级", {"model": llm_model, "chunk_count": chunk_count})
+                            try:
+                                resp = llm_client.chat.completions.create(
+                                    model=llm_model,
+                                    messages=llm_messages,
+                                    temperature=0.7,
+                                    max_tokens=500,
+                                    stream=False,
+                                )
+                                non_stream = resp.choices[0].message.content if resp.choices else ""
+                                _debug_log("H2", "app.py:2224", f"非流式响应: content_len={len(non_stream) if non_stream else 0}", {"non_stream_len": len(non_stream) if non_stream else 0})
+                                if non_stream:
+                                    full_text = non_stream
+                                    stream_state["text"] = full_text
+                                    _update_stream(full_text)
+                                    _log("debug", f"✅ 非流式降级成功，文本长度={len(full_text)}")
+                                else:
+                                    _log("debug", "⚠️ 非流式也返回空内容")
+                            except Exception as e2:
+                                _log("error", f"⚠️ 非流式降级失败: {e2}")
 
                         if result.metrics:
                             metrics_lines = ["\n\n📈 **关键指标**:"]
@@ -2232,6 +2312,15 @@ def _handle_user_message(prompt: str, agent):
                                     lines.append("\n🔍 **分析结果**:")
                                     for f in findings[:5]:
                                         lines.append(f"  - {f}")
+
+                        # 检测是否有新生成的地图文件
+                        if _OUTPUTS_DIR.exists():
+                            new_maps = list(_OUTPUTS_DIR.glob("*.html"))
+                            if new_maps:
+                                latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
+                                lines.append(f"\n🗺️ **交互式地图已生成**: `{latest_map.name}`")
+                                lines.append(f"   📁 路径: `{latest_map}`")
+                                lines.append("\n   💡 请用浏览器打开上述文件查看地图")
 
                         final_content = "\n".join(lines)
                     else:

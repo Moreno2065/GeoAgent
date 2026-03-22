@@ -302,8 +302,9 @@ class GDALEngine:
         p = Path(path)
         if p.is_absolute():
             return str(p)
-        # 相对路径转换为 workspace 下的绝对路径
-        ws = Path(__file__).parent.parent.parent.parent / "workspace"
+        # 相对路径转换为 workspace 下的绝对路径（优先使用对话目录）
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        ws = get_workspace_dir()
         return str(ws / path)
 
     def _ensure_dir(self, path: str) -> None:

@@ -24,17 +24,18 @@ from typing import Optional, List, Dict, Any, Tuple
 
 def _ensure_dir(filepath: str):
     """确保输出目录存在"""
-    p = Path(filepath)
+    p = _resolve(filepath)
     p.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _resolve(file_name: str) -> Path:
-    """解析文件路径（相对路径 → workspace/）"""
+    """解析文件路径（相对路径 → 项目根目录的 workspace/）"""
     f = Path(file_name)
     if f.is_absolute():
         return f
-    ws = Path(__file__).parent.parent.parent / "workspace"
-    return ws / file_name
+    # 向上找到项目根目录（包含 workspace 文件夹的位置）
+    project_root = Path(__file__).parent.parent.parent.parent
+    return project_root / "workspace" / file_name
 
 
 # =============================================================================
@@ -70,6 +71,8 @@ class Vector:
             raise FileNotFoundError(f"输入文件不存在: {fpath}")
 
         gdf = gpd.read_file(fpath)
+        if gdf.empty:
+            raise ValueError(f"输入文件 '{input_file}' 读取后为空，无要素可做缓冲区分析")
 
         # 自动检测 CRS 单位（度 → 需转换， 米 → 直接用）
         crs = gdf.crs
@@ -89,9 +92,12 @@ class Vector:
             else:
                 buffered_m = gpd.GeoDataFrame(geometry=buffered_m, crs=gdf.crs)
 
+        if buffered_m.empty:
+            raise ValueError("缓冲区分析结果为空（可能输入几何无效或距离值异常）")
+
         _ensure_dir(str(_resolve(output_file)))
         buffered_m.to_file(_resolve(output_file))
-        print(f"✅ [Vector] 已生成 {distance}m 缓冲区，保存至 {output_file}")
+        print(f"✅ [Vector] 已生成 {distance}m 缓冲区，{len(buffered_m)} 个结果要素，保存至 {output_file}")
 
     @staticmethod
     def overlay(file1: str, file2: str, output_file: str, how: str = 'intersection'):
@@ -115,11 +121,20 @@ class Vector:
         gdf1 = gpd.read_file(f1)
         gdf2 = gpd.read_file(f2)
 
+        if gdf1.empty:
+            raise ValueError(f"file1 '{file1}' 读取后为空")
+        if gdf2.empty:
+            raise ValueError(f"file2 '{file2}' 读取后为空")
+
         if gdf1.crs != gdf2.crs:
             print(f"⚠️ [Vector] CRS 不一致，自动转换 file2 的 CRS → {gdf1.crs}")
             gdf2 = gdf2.to_crs(gdf1.crs)
 
         result = gdf1.overlay(gdf2, how=how)
+
+        if result.empty:
+            raise ValueError(f"叠置分析 ({how}) 结果为空——两图层无重叠区域")
+
         _ensure_dir(str(_resolve(output_file)))
         result.to_file(_resolve(output_file))
         print(f"✅ [Vector] 叠置分析 ({how}) 完成，{len(result)} 个结果要素，保存至 {output_file}")
@@ -139,6 +154,10 @@ class Vector:
             raise ValueError(f"融合字段 '{by_field}' 不存在于数据中，可用字段: {list(gdf.columns)}")
 
         dissolved = gdf.dissolve(by=by_field)
+
+        if dissolved.empty:
+            raise ValueError("融合结果为空")
+
         _ensure_dir(str(_resolve(output_file)))
         dissolved.to_file(_resolve(output_file))
         label = f"字段 '{by_field}'" if by_field else "全部"
@@ -158,11 +177,20 @@ class Vector:
         gdf = gpd.read_file(f1)
         clip_gdf = gpd.read_file(f2)
 
+        if gdf.empty:
+            raise ValueError(f"input_file '{input_file}' 读取后为空")
+        if clip_gdf.empty:
+            raise ValueError(f"clip_file '{clip_file}' 读取后为空")
+
         if gdf.crs != clip_gdf.crs:
             print(f"⚠️ [Vector] CRS 不一致，自动转换 clip_file 的 CRS → {gdf.crs}")
             clip_gdf = clip_gdf.to_crs(gdf.crs)
 
         result = gdf.clip(clip_gdf)
+
+        if result.empty:
+            raise ValueError("裁剪结果为空——输入图层与裁剪图层无重叠区域")
+
         _ensure_dir(str(_resolve(output_file)))
         result.to_file(_resolve(output_file))
         print(f"✅ [Vector] 矢量裁剪完成，{len(result)} 个要素落在裁剪区域内，保存至 {output_file}")
@@ -192,6 +220,10 @@ class Vector:
             join = join.to_crs(target.crs)
 
         result = gpd.sjoin(target, join, how=how, predicate=predicate, lsuffix='target', rsuffix='join')
+
+        if result.empty:
+            raise ValueError("空间连接结果为空——两图层无满足条件的空间关系")
+
         _ensure_dir(str(_resolve(output_file)))
         result.to_file(_resolve(output_file))
         print(f"✅ [Vector] 空间连接 ({how}/{predicate}) 完成，{len(result)} 个结果，保存至 {output_file}")
@@ -241,6 +273,9 @@ class Vector:
             raise FileNotFoundError(f"输入文件不存在: {fpath}")
 
         gdf = gpd.read_file(fpath)
+        if gdf.empty:
+            raise ValueError(f"输入文件 '{input_file}' 读取后为空，无要素可做质心计算")
+
         centroids = gdf.geometry.centroid
 
         result = gpd.GeoDataFrame(gdf.drop(columns=["geometry"]).reset_index(drop=True), geometry=centroids, crs=gdf.crs)
@@ -259,6 +294,9 @@ class Vector:
             raise FileNotFoundError(f"输入文件不存在: {fpath}")
 
         gdf = gpd.read_file(fpath)
+        if gdf.empty:
+            raise ValueError(f"输入文件 '{input_file}' 读取后为空，无要素可简化")
+
         if preserve_topology:
             gdf["geometry"] = gdf.geometry.simplify(tolerance, preserve_topology=True)
         else:
@@ -266,7 +304,7 @@ class Vector:
 
         _ensure_dir(str(_resolve(output_file)))
         gdf.to_file(_resolve(output_file))
-        print(f"✅ [Vector] 简化完成 (tolerance={tolerance}), 保存至 {output_file}")
+        print(f"✅ [Vector] 简化完成 (tolerance={tolerance}), {len(gdf)} 个要素，保存至 {output_file}")
 
     @staticmethod
     def erase(input_file: str, erase_file: str, output_file: str):
@@ -286,6 +324,10 @@ class Vector:
             gdf2 = gdf2.to_crs(gdf1.crs)
 
         result = gdf1.overlay(gdf2, how="difference")
+
+        if result.empty:
+            raise ValueError("擦除结果为空——输入图层与擦除图层无重叠可移除区域")
+
         _ensure_dir(str(_resolve(output_file)))
         result.to_file(_resolve(output_file))
         print(f"✅ [Vector] 擦除完成，{len(result)} 个结果要素，保存至 {output_file}")
@@ -334,9 +376,12 @@ class Vector:
             raise FileNotFoundError(f"输入文件不存在: {fpath}")
 
         gdf = gpd.read_file(fpath)
+        if gdf.empty:
+            raise ValueError(f"输入文件 '{input_file}' 读取后为空，无要素可转换")
+
         _ensure_dir(str(_resolve(output_file)))
         gdf.to_file(_resolve(output_file), driver=driver)
-        print(f"✅ [Vector] 格式转换完成 ({driver})，保存至 {output_file}")
+        print(f"✅ [Vector] 格式转换完成 ({driver})，{len(gdf)} 个要素，保存至 {output_file}")
 
 
 # =============================================================================

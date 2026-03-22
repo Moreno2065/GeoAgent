@@ -101,6 +101,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "datasource_executor": lambda: __import__(
                               "geoagent.executors.datasource_executor",
                               fromlist=["DatasourceExecutor"]).DatasourceExecutor,
+        # Amap 高德 Web 服务（输入提示/POI/地理编码/天气等）
+        "amap":          lambda: __import__(
+                              "geoagent.executors.amap_executor",
+                              fromlist=["AmapExecutor"]).AmapExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -153,6 +157,20 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "choropleth":      "choropleth_executor",  # 分级设色
     "data_source":     "datasource_executor",  # 数据源加载
     "dissolve":       "overlay_executor",  # dissolve 复用 overlay
+    # ── Amap 高德 Web 服务 ────────────────────────────────────────────
+    "geocode":       "amap",      # 地理编码
+    "regeocode":     "amap",      # 逆地理编码
+    "district":      "amap",      # 行政区域查询
+    "static_map":    "amap",      # 静态地图
+    "coord_convert":  "amap",      # 坐标转换
+    "grasp_road":    "amap",      # 轨迹纠偏
+    "input_tips":    "amap",      # 输入提示
+    "poi_search":    "amap",      # POI 搜索
+    "traffic_status": "amap",      # 交通态势
+    "traffic_events": "amap",      # 交通事件
+    "transit_info":  "amap",      # 公交信息
+    "ip_location":   "amap",      # IP 定位
+    "weather":       "amap",      # 天气查询
 }
 
 
@@ -200,6 +218,20 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "choropleth":       "choropleth",
     "data_source":      "data_source",
     "dissolve":         "dissolve",
+    # ── Amap 高德 Web 服务 ────────────────────────────────────────
+    "geocode":         "geocode",
+    "regeocode":       "regeocode",
+    "district":        "district",
+    "static_map":      "static_map",
+    "coord_convert":   "coord_convert",
+    "grasp_road":      "grasp_road",
+    "input_tips":      "input_tips",
+    "poi_search":      "poi_search",
+    "traffic_status":  "traffic_status",
+    "traffic_events":  "traffic_events",
+    "transit_info":    "transit_info",
+    "ip_location":     "ip_location",
+    "weather":         "weather",
 }
 
 

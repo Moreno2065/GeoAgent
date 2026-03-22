@@ -130,9 +130,10 @@ class BaseExecutor(ABC):
     # ── 通用辅助方法 ────────────────────────────────────────────────────────
 
     def _workspace_path(self, relative_path: str) -> str:
-        """将相对路径转换为 workspace 下的绝对路径"""
+        """将相对路径转换为 workspace 下的绝对路径（优先使用对话目录）"""
         from pathlib import Path
-        ws = Path(__file__).parent.parent.parent.parent / "workspace"
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        ws = get_workspace_dir()
         return str(ws / relative_path)
 
     def _resolve_path(self, file_path: str) -> str:

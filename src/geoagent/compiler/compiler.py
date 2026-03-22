@@ -218,13 +218,34 @@ class GISCompiler:
 
         if fallback_api_key:
             try:
+                _dl_path = Path(__file__).parent.parent.parent / "debug-3db927.log"
+                def _dl2(hid, loc, msg, dat):
+                    import json, datetime as _dt
+                    line = json.dumps({
+                        "sessionId": "3db927",
+                        "id": f"log_{int(_dt.datetime.now().timestamp()*1000)}",
+                        "timestamp": int(_dt.datetime.now().timestamp()*1000),
+                        "location": loc,
+                        "message": msg,
+                        "data": dat,
+                        "runId": "initial",
+                        "hypothesisId": hid,
+                    }, ensure_ascii=False)
+                    try:
+                        with open(_dl_path, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+                _dl2("H4", "compiler.py:219_init", f"GLM fallback init: base_url={fallback_base_url}, key_prefix={fallback_api_key[:6] if fallback_api_key else 'None'}...", {"key_len": len(fallback_api_key) if fallback_api_key else 0, "base_url": fallback_base_url, "model": fallback_model})
                 self.fallback_client = OpenAI(
                     api_key=fallback_api_key,
                     base_url=fallback_base_url,
                 )
                 self.fallback_model = fallback_model
                 self.fallback_available = True
-            except Exception:
+                _dl2("H4", "compiler.py:226_init", "GLM fallback client initialized successfully", {"fallback_available": True})
+            except Exception as e2:
+                _dl2("H4", "compiler.py:227_init", f"GLM fallback init failed: {type(e2).__name__}: {str(e2)}", {"error": str(e2)})
                 self.fallback_client = None
                 self.fallback_model = None
                 self.fallback_available = False
@@ -333,6 +354,35 @@ class GISCompiler:
 
         for attempt in range(self.max_retries):
             try:
+                # H1/H3: Log GLM API call parameters and base_url
+                import logging as _compiler_log, datetime as _compiler_dt
+                _log_path = Path(__file__).parent.parent.parent / "debug-3db927.log"
+                def _dl(hid, loc, msg, dat):
+                    import json
+                    line = json.dumps({
+                        "sessionId": "3db927",
+                        "id": f"log_{int(_compiler_dt.datetime.now().timestamp()*1000)}",
+                        "timestamp": int(_compiler_dt.datetime.now().timestamp()*1000),
+                        "location": loc,
+                        "message": msg,
+                        "data": dat,
+                        "runId": "initial",
+                        "hypothesisId": hid,
+                    }, ensure_ascii=False)
+                    try:
+                        with open(_log_path, "a", encoding="utf-8") as f:
+                            f.write(line + "\n")
+                    except Exception:
+                        pass
+                _dl("H1-H4", "compiler.py:336", f"LLM API call: model={model}, base_url={getattr(client, '_base_url', 'N/A')}, attempt={attempt}", {
+                    "model": model,
+                    "base_url": str(getattr(client, '_base_url', 'N/A')),
+                    "temperature": self.temperature,
+                    "max_tokens": 2048,
+                    "response_format": "json_object",
+                    "attempt": attempt,
+                    "use_fallback": use_fallback,
+                })
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -342,9 +392,11 @@ class GISCompiler:
                     response_format={"type": "json_object"},
                 )
                 content = response.choices[0].message.content or ""
+                _dl("H1-H4", "compiler.py:344", f"LLM API success: content_len={len(content) if content else 0}", {"content_len": len(content) if content else 0})
                 return content
 
             except Exception as e:
+                _dl("H1-H4", "compiler.py:347", f"LLM API exception: {type(e).__name__}: {str(e)}", {"error_type": type(e).__name__, "error_msg": str(e), "model": model})
                 error_str = str(e).lower()
                 is_retryable = any(code in error_str for code in [
                     "429", "500", "502", "503", "504",  # HTTP 错误码
