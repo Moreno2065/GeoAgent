@@ -2032,8 +2032,9 @@ class ScenarioOrchestrator:
     """
 
     def __init__(self):
-        from geoagent.layers.layer2_intent import IntentClassifier
-        self.intent_classifier = IntentClassifier()
+        from geoagent.layers.layer2_intent import classify_intent, IntentResult
+        self._classify_intent = classify_intent
+        self._IntentResult = IntentResult
         self.clarification_engine = ClarificationEngine()
         self.parameter_extractor = ParameterExtractor()
         self._scenario_defaults = self._init_defaults()
@@ -2388,13 +2389,9 @@ class ScenarioOrchestrator:
         编排用户输入
         """
         if intent_result is None:
-            intent_result = self.intent_classifier.classify(text)
+            intent_result = self._classify_intent(text)
 
         scenario = intent_result.primary
-
-        # ==========================================
-        # 🤖 LLM 智能路由安检门：接管 "general" 场景的二次判断
-        # ==========================================
         scenario_str = scenario.value if hasattr(scenario, 'value') else str(scenario)
 
         # ==========================================

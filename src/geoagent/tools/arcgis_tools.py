@@ -1,4 +1,4 @@
-﻿"""
+"""
 ArcGIS Online 数据访问工具封装
 为 GeoAgent 提供统一的 ArcGIS 在线数据查询、下载和管理接口
 """
@@ -142,7 +142,7 @@ def access_layer_info(layer_url: str) -> str:
 def download_features(
     layer_url: str,
     where: str = "1=1",
-    out_file: str = "workspace/arcgis_download.geojson",
+    out_file: str = "workspace/outputs/arcgis_download.geojson",
     max_records: int = 1000
 ) -> str:
     """

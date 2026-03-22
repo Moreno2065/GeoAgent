@@ -19,6 +19,7 @@ MultiCriteriaSearchExecutor - 多条件综合搜索执行器
 from __future__ import annotations
 
 import math
+import os
 import re
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -62,11 +63,24 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         criteria = task.get("criteria", {})
         search_radius = int(task.get("search_radius", 3000))
 
+        # 预检查 API Key
+        if not os.getenv("AMAP_API_KEY", "").strip():
+            return ExecutorResult.err(
+                "multi_criteria_search",
+                "AMAP_API_KEY 未配置，请在环境变量中设置高德 Web API Key",
+                engine="amap"
+            )
+
         if not user_input and not center:
             return ExecutorResult.err(
                 "multi_criteria_search",
-                "缺少必要参数：user_input 或 center"
+                "缺少必要参数：user_input 或 center",
+                engine="amap"
             )
+
+        # 如果没有 center，尝试从 user_input 中提取中心点
+        if not center and user_input:
+            center = self._extract_center_from_query(user_input)
 
         try:
             # 1. 解析用户输入，提取搜索条件
@@ -77,7 +91,8 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             if not center_coords:
                 return ExecutorResult.err(
                     "multi_criteria_search",
-                    f"无法解析中心位置：{parsed.get('center', center)}"
+                    f"无法解析中心位置：{parsed.get('center', center)}，请检查地点名称是否正确",
+                    engine="amap"
                 )
 
             # 3. 联网搜索 POI
@@ -92,7 +107,8 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         except Exception as e:
             return ExecutorResult.err(
                 "multi_criteria_search",
-                f"多条件搜索执行失败: {str(e)}"
+                f"多条件搜索执行失败: {str(e)}",
+                engine="amap"
             )
 
     def _parse_user_input(
@@ -114,9 +130,9 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         """
         parsed = dict(criteria) if criteria else {}
 
-        # 确保有 center
+        # 确保有 center（支持从 criteria.center_point 获取）
         if not parsed.get("center"):
-            parsed["center"] = center
+            parsed["center"] = criteria.get("center_point") if criteria else "" or center
 
         # 如果没有条件，尝试从 user_input 中解析
         if not parsed.get("distance_conditions"):
@@ -134,6 +150,47 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             parsed["poi_types"] = list(poi_types)
 
         return parsed
+
+    def _extract_center_from_query(self, query: str) -> Optional[str]:
+        """
+        从用户查询中提取中心点位置
+
+        Args:
+            query: 用户原始输入
+
+        Returns:
+            提取的中心点位置字符串
+        """
+        # 清理前缀
+        for prefix in ["找一个", "找", "帮我找", "请找", "查一下", "查询", "搜索"]:
+            if query.startswith(prefix):
+                query = query[len(prefix):].strip()
+
+        # 提取 "XXX周围" 或 "XXX附近" 模式
+        patterns = [
+            r"在(.+?)(?:周围|附近|周边|方圆)",
+            r"(.+?)(?:周围|附近|周边)\s*\d",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query)
+            if match:
+                center = match.group(1).strip()
+                if len(center) >= 2:
+                    return center
+
+        # 尝试提取 "在广州体育中心" 模式
+        city_district_patterns = [
+            r"在(.+?)(?:周围|附近|周边|方圆|内)",
+            r"(.+?)(?:周围|附近|周边|方圆|内)\s*\d",
+        ]
+        for pattern in city_district_patterns:
+            match = re.search(pattern, query)
+            if match:
+                center = match.group(1).strip()
+                if len(center) >= 2 and not any(c in center for c in ["小于", "大于", "以内", "以外"]):
+                    return center
+
+        return None
 
     def _extract_conditions(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -285,6 +342,10 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             if pois:
                 results[poi_type] = pois
 
+        # 调试日志：如果没有找到任何 POI
+        if not results:
+            print(f"[MultiCriteriaSearch] 警告：在 {center_coords} 附近 {radius}m 范围内未找到任何 POI，请检查 API Key 权限和搜索关键词")
+
         return results
 
     def _get_poi_types(self, parsed: Dict[str, Any]) -> List[str]:
@@ -340,10 +401,10 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         """
         try:
             from geoagent.plugins.amap_plugin import search_poi
-            import os
 
             api_key = os.getenv("AMAP_API_KEY", "").strip()
             if not api_key:
+                print(f"[MultiCriteriaSearch] 警告：AMAP_API_KEY 未配置")
                 return []
 
             result = search_poi(
@@ -365,9 +426,11 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                         "type": poi_type,
                     })
                 return pois
+            else:
+                print(f"[MultiCriteriaSearch] 搜索 '{keywords}' 返回空结果 (location={location}, radius={radius})")
 
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[MultiCriteriaSearch] 搜索 POI 时出错: {str(e)}")
 
         return []
 
@@ -380,6 +443,12 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         """
         根据距离条件筛选 POI
 
+        核心逻辑：
+        1. 找到所有距离条件中涉及的 POI 类型
+        2. 确定候选点（作为"摸鱼地点"的 POI，如公园、咖啡厅等）
+        3. 计算每个候选点到各目标 POI 的距离
+        4. 按条件筛选返回最优候选点
+
         Args:
             poi_results: 按类型分组的 POI 搜索结果
             center_coords: 中心点坐标
@@ -388,62 +457,108 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         Returns:
             符合条件的候选点列表
         """
-        candidates = []
-
-        # 获取所有符合条件的 POI 位置作为候选点
-        all_pois = []
-        for poi_type, pois in poi_results.items():
-            for poi in pois:
-                if poi.get("lon") and poi.get("lat"):
-                    poi["calc_distance"] = self._haversine_distance(
-                        center_coords,
-                        (poi["lon"], poi["lat"])
-                    )
-                    all_pois.append(poi)
-
-        # 如果有距离条件，按条件筛选
         conditions = parsed.get("distance_conditions", [])
 
         if not conditions:
-            # 没有明确条件，返回最近的几个
+            # 没有明确条件，返回所有 POI
+            all_pois = []
+            for poi_type, pois in poi_results.items():
+                for poi in pois:
+                    if poi.get("lon") and poi.get("lat"):
+                        poi["calc_distance"] = self._haversine_distance(
+                            center_coords, (poi["lon"], poi["lat"])
+                        )
+                        all_pois.append(poi)
             all_pois.sort(key=lambda x: x.get("calc_distance", float("inf")))
             return all_pois[:10]
 
+        # 提取所有涉及的目标 POI 类型
+        target_types = set()
+        for cond in conditions:
+            poi_type = cond.get("poi_type", "")
+            if "星巴克" in poi_type or "咖啡" in poi_type:
+                target_types.add("星巴克")
+            elif "地铁" in poi_type or "地铁站" in poi_type:
+                target_types.add("地铁站")
+
+        # 确定候选点来源（可能同时有多个来源）
+        # 优先使用非目标类型的 POI（如公园），如果没有则以目标类型为候选
+        candidate_pois = []
+        other_types = [t for t in poi_results.keys() if t not in target_types]
+
+        if other_types:
+            # 有其他类型的 POI，用它们作为候选点
+            for poi_type in other_types:
+                for poi in poi_results.get(poi_type, []):
+                    if poi.get("lon") and poi.get("lat"):
+                        candidate_pois.append(poi)
+        else:
+            # 没有其他类型，用所有 POI 作为候选点
+            for poi_type, pois in poi_results.items():
+                for poi in pois:
+                    if poi.get("lon") and poi.get("lat"):
+                        candidate_pois.append(poi)
+
+        # 计算每个候选点到各目标 POI 的距离
+        for candidate in candidate_pois:
+            candidate_coords = (candidate["lon"], candidate["lat"])
+
+            # 计算到中心点的距离
+            candidate["calc_distance"] = self._haversine_distance(
+                center_coords, candidate_coords
+            )
+
+            # 计算到各目标 POI 类型的距离
+            for target_type in target_types:
+                target_pois = poi_results.get(target_type, [])
+                if target_pois:
+                    min_dist = float("inf")
+                    for target in target_pois:
+                        if target.get("lon") and target.get("lat"):
+                            dist = self._haversine_distance(
+                                candidate_coords,
+                                (target["lon"], target["lat"])
+                            )
+                            min_dist = min(min_dist, dist)
+                    candidate[f"dist_to_{target_type}"] = min_dist
+
         # 按条件筛选
-        for poi in all_pois:
+        valid_candidates = []
+        for candidate in candidate_pois:
             meets_all = True
             for cond in conditions:
                 poi_type = cond.get("poi_type", "")
                 threshold = cond.get("threshold", 0)
                 operator = cond.get("operator", "<")
 
-                # 找到该类型的其他 POI
-                target_pois = poi_results.get(poi_type, [])
+                # 确定目标类型
+                target_type = None
+                if "星巴克" in poi_type or "咖啡" in poi_type:
+                    target_type = "星巴克"
+                elif "地铁" in poi_type or "地铁站" in poi_type:
+                    target_type = "地铁站"
 
-                # 计算到该类型最近 POI 的距离
-                min_dist = float("inf")
-                for target in target_pois:
-                    if target.get("lon") and target.get("lat"):
-                        dist = self._haversine_distance(
-                            (poi["lon"], poi["lat"]),
-                            (target["lon"], target["lat"])
-                        )
-                        min_dist = min(min_dist, dist)
+                if not target_type:
+                    continue
+
+                dist = candidate.get(f"dist_to_{target_type}", float("inf"))
 
                 # 检查是否满足条件
-                if operator == "<":
-                    if min_dist >= threshold:
+                if operator == "<" or operator == "<=":
+                    if dist > threshold:
                         meets_all = False
                         break
-                else:  # ">"
-                    if min_dist <= threshold:
+                else:  # ">" 或 ">="
+                    if dist < threshold:
                         meets_all = False
                         break
 
             if meets_all:
-                candidates.append(poi)
+                valid_candidates.append(candidate)
 
-        return candidates
+        # 按到中心点的距离排序
+        valid_candidates.sort(key=lambda x: x.get("calc_distance", float("inf")))
+        return valid_candidates
 
     def _haversine_distance(
         self,
@@ -507,9 +622,9 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                     "candidates": [],
                     "message": "在指定范围内没有找到同时满足所有条件的地点。",
                     "suggestion": "可以尝试：1) 扩大搜索范围；2) 放宽距离条件；3) 更换中心位置。",
-                },
-                summary=f"在 {parsed.get('center', '指定区域')} 3公里范围内没有找到符合条件的地点",
-                explanation=self._generate_explanation(filtered, parsed, user_input)
+                    "summary": f"在 {parsed.get('center', '指定区域')} 3公里范围内没有找到符合条件的地点",
+                    "explanation": self._generate_explanation(filtered, parsed, user_input),
+                }
             )
 
         # 生成地图（保存到 outputs）
@@ -536,9 +651,9 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                 "candidates": candidates_data,
                 "total_found": len(filtered),
                 "map_file": str(map_path) if map_path else None,
-            },
-            summary=self._generate_summary(filtered, parsed),
-            explanation=self._generate_explanation(filtered, parsed, user_input)
+                "summary": self._generate_summary(filtered, parsed),
+                "explanation": self._generate_explanation(filtered, parsed, user_input),
+            }
         )
 
     def _generate_summary(

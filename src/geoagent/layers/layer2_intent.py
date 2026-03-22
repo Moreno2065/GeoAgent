@@ -330,6 +330,11 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "坐标转换", "数学公式", "自定义逻辑", "迭代计算",
         "拟合", "插值自定义", "算一下", "帮我算", "帮我生成",
         "帮我统计", "批量处理", "循环处理",
+        # 中文 — 几何计算类（圆、矩形、三角形等纯数学计算）
+        "圆心", "半径", "交集面积", "并集面积", "弧长", "弦长",
+        "三角形", "矩形", "正方形", "多边形", "椭圆",
+        "周长", "对角线", "夹角", "相距", "重叠",
+        "求解", "几何计算", "数学计算",
         # 英文 — 显式触发
         "write code", "python code", "write script", "generate test data",
         "code implementation", "compute area", "programming",
@@ -343,15 +348,25 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
 
     # ── 🟣 OSM 地图下载 ────────────────────────────────────────────────
     Scenario.FETCH_OSM: [
-        # 中文
-        "osm下载", "用osm", "osm抓取", "下载地图", "抓取地图",
-        "下载osm", "osm数据", "osm地图", "openstreetmap下载",
-        "获取osm", "获取地图数据", "下载路网", "下载建筑",
-        "周边地图", "周围地图", "地图下载",
-        # 英文
+        # 中文 — 显式 OSM 关键词
+        "osm下载", "用osm", "osm抓取", "下载osm", "osm数据", "osm地图",
+        "openstreetmap下载", "获取osm", "下载路网", "下载建筑",
+        "周边地图", "周围地图",
+        # 中文 — 通用下载关键词（🚀 凡含"下载"均重定向此处）
+        "下载", "下载地图", "地图下载", "下载数据", "下载文件",
+        "下载区域", "下载该区域", "下载这个区域", "下载范围",
+        "下载矢量", "下载矢量数据", "下载shp", "下载geojson",
+        "下载图层", "导出数据", "导出地图", "导出shp", "导出geojson",
+        "把地图下载", "把数据下载", "把区域下载",
+        # 英文 — 显式 OSM 关键词
         "osm download", "osm fetch", "fetch osm", "download osm",
-        "osm data", "openstreetmap", "download map", "fetch map",
-        "download buildings", "download network", "download roads",
+        "osm data", "openstreetmap", "download buildings", "download network",
+        "download roads",
+        # 英文 — 通用下载关键词（🚀 凡含"download"均重定向此处）
+        "download", "download map", "download data", "download file",
+        "download area", "download region", "download this area",
+        "download the area", "download vector", "download shp", "download geojson",
+        "download layer", "export data", "export map", "export shp", "export geojson",
     ],
 }
 
@@ -538,6 +553,20 @@ class IntentClassifier:
         # ==========================================
 
         query_lower = query.lower()
+        
+        # 🚀 下载前置拦截器（凡含"下载"均重定向至 FETCH_OSM）
+        download_dictators = ["下载", "下载地图", "地图下载", "下载数据", "download",
+                            "下载osm", "osm下载", "抓取地图", "下载路网", "下载建筑",
+                            "下载区域", "下载矢量", "导出数据", "导出地图"]
+
+        if any(trigger in query_lower for trigger in download_dictators):
+            return IntentResult(
+                primary=Scenario.FETCH_OSM,
+                confidence=1.0,
+                matched_keywords=["下载触发词"],
+                all_intents={Scenario.FETCH_OSM}
+            )
+        # ==========================================
         matched: Dict[Scenario, List[str]] = {}
 
         # 精确匹配
@@ -588,7 +617,36 @@ class IntentClassifier:
             all_kws = self._intent_keywords.get(intent, [])
             char_score = total_kw_chars / max(sum(len(k) for k in all_kws), 1)
             count_score = n_matched / max(len(all_kws), 1)
-            scores[intent] = char_score * 0.6 + count_score * 0.4
+            base_score = char_score * 0.6 + count_score * 0.4
+
+            # 🟣 CODE_SANDBOX 优先级加成
+            if intent == Scenario.CODE_SANDBOX:
+                # 明确的编程意图关键词
+                explicit_keywords = ['python', '代码', '写', 'script', '编程',
+                                   '用python', '用代码', '写代码', '帮我算', '算一下',
+                                   '帮我计算', '执行', '运行代码']
+                if any(kw in query.lower() for kw in explicit_keywords):
+                    base_score *= 3.0  # 明确的编程意图，加权 3 倍
+
+            scores[intent] = base_score
+
+        # 🔵 检查是否没有匹配到 GIS 关键词，但有"计算"类关键词
+        # 如果只有"交集"、"叠加"等模糊词，没有图层引用，则走 code_sandbox
+        query_lower = query.lower()
+        has_gis_layer_keywords = any(kw in query_lower for kw in [
+            '图层', 'shp', 'geojson', '矢量', '缓冲区', '道路', '建筑',
+            '范围内', '以内的', '圆内', '方形', '多边形', '500米', '1公里', '半径'
+        ])
+
+        if not has_gis_layer_keywords:
+            # 没有 GIS 图层引用，检查是否有计算关键词
+            has_calc_keywords = any(kw in query_lower for kw in [
+                '计算', '求', '面积', '周长', '距离', '长度', '角度',
+                '弧度', '体积', '容积', '坐标', '交集', '并集', '差集'
+            ])
+            if has_calc_keywords:
+                # 没有 GIS 图层但有计算意图，优先走 code_sandbox
+                scores[Scenario.CODE_SANDBOX] = max(scores.get(Scenario.CODE_SANDBOX, 0), 0.8)
 
         # 按得分排序
         sorted_intents = sorted(scores.items(), key=lambda x: x[1], reverse=True)

@@ -18,7 +18,6 @@ GIS Compiler - 任务编译器主入口
 鲁棒性增强（P0-P1）：
 - 使用 json_repair 智能修复破损 JSON
 - Tenacity 指数退避重试机制
-- 多模型 Fallback（主 DeepSeek + 备用 GLM）
 - response_format=json_object 强制结构化输出
 """
 
@@ -122,10 +121,6 @@ class GISCompiler:
         max_retries: int = 3,
         temperature: float = 0.1,
         enable_fallback: bool = True,
-        # 备用模型配置 (GLM)
-        fallback_api_key: str = None,
-        fallback_model: str = "glm-4.6v",
-        fallback_base_url: str = "https://open.bigmodel.com/api/paas/v4",
         # 重试配置
         retry_multiplier: float = 1.0,
         retry_min_wait: float = 2.0,
@@ -141,9 +136,6 @@ class GISCompiler:
             max_retries: 最大重试次数
             temperature: 生成温度（越低越确定性）
             enable_fallback: 是否启用 fallback（解析失败时提示用户）
-            fallback_api_key: 备用模型 API Key（GLM）
-            fallback_model: 备用模型名称 (glm-4 / glm-4-plus)
-            fallback_base_url: 备用模型 API 地址 (GLM)
             retry_multiplier: 指数退避乘数
             retry_min_wait: 最小等待秒数
             retry_max_wait: 最大等待秒数
@@ -170,68 +162,19 @@ class GISCompiler:
         self.retry_min_wait = retry_min_wait
         self.retry_max_wait = retry_max_wait
 
-        # 初始化主客户端
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-
-        # 初始化备用客户端 (GLM)
-        self._init_fallback_client(fallback_api_key, fallback_model, fallback_base_url)
-
         # 初始化意图分类器
         self.intent_classifier = IntentClassifier()
 
         # 初始化场景编排器
         self.orchestrator = ScenarioOrchestrator()
 
-        # 统计（增强）
+        # 统计
         self.stats = {
             "total_requests": 0,
             "successful": 0,
             "failed": 0,
             "retries": 0,
-            "fallback_triggered": 0,  # 记录 fallback 触发次数
         }
-
-    def _init_fallback_client(
-        self,
-        fallback_api_key: str = None,
-        fallback_model: str = "glm-4.6v",
-        fallback_base_url: str = "https://open.bigmodel.com/api/paas/v4",
-    ) -> None:
-        """
-        初始化备用 LLM 客户端 (GLM)
-
-        多模型 Fallback 机制 - 主模型失败时自动切换到 GLM
-        """
-        # 尝试加载备用 API Key
-        if not fallback_api_key:
-            import os
-            fallback_api_key = os.getenv("GLM_API_KEY")
-
-        # 也尝试从本地文件加载 GLM Key
-        if not fallback_api_key:
-            try:
-                glm_key_file = Path(__file__).parent.parent.parent / ".glm_api_key"
-                if glm_key_file.exists():
-                    fallback_api_key = glm_key_file.read_text(encoding="utf-8").strip()
-            except Exception:
-                pass
-
-        if fallback_api_key:
-            try:
-                self.fallback_client = OpenAI(
-                    api_key=fallback_api_key,
-                    base_url=fallback_base_url,
-                )
-                self.fallback_model = fallback_model
-                self.fallback_available = True
-            except Exception:
-                self.fallback_client = None
-                self.fallback_model = None
-                self.fallback_available = False
-        else:
-            self.fallback_client = None
-            self.fallback_model = None
-            self.fallback_available = False
 
     # ── API Key 管理 ────────────────────────────────────────────────────────
 
@@ -324,34 +267,24 @@ class GISCompiler:
 
     # ── 第三层：LLM 调用 + Pydantic 校验 ────────────────────────────────────
 
-    def _call_llm(self, messages: list, use_fallback: bool = False) -> str:
+    def _call_llm(self, messages: list) -> str:
         """
         调用 LLM 获取 JSON 响应
 
-        增强版特性：
+        特性：
         - response_format=json_object 强制结构化输出
         - 内置重试逻辑（指数退避）
-        - P1: Fallback 自动切换备用模型
 
         Args:
             messages: 消息列表
-            use_fallback: 是否使用备用模型
 
         Returns:
             LLM 响应内容
         """
-        client = self.fallback_client if use_fallback else self.client
-        model = self.fallback_model if use_fallback else self.model
-
-        if not client:
-            if not use_fallback and self.fallback_available:
-                return self._call_llm(messages, use_fallback=True)
-            raise RuntimeError("无可用的 LLM 客户端")
-
         for attempt in range(self.max_retries):
             try:
-                response = client.chat.completions.create(
-                    model=model,
+                response = self.client.chat.completions.create(
+                    model=self.model,
                     messages=messages,
                     temperature=self.temperature,
                     max_tokens=2048,
@@ -368,7 +301,6 @@ class GISCompiler:
                 ])
 
                 if is_retryable and attempt < self.max_retries - 1:
-                    # 指数退避等待
                     wait_time = min(
                         self.retry_min_wait * (self.retry_multiplier ** attempt),
                         self.retry_max_wait,
@@ -377,10 +309,6 @@ class GISCompiler:
                     time.sleep(wait_time)
                     continue
                 else:
-                    # P1: 尝试切换到备用模型
-                    if not use_fallback and self.fallback_available:
-                        self.stats["fallback_triggered"] += 1
-                        return self._call_llm(messages, use_fallback=True)
                     raise RuntimeError(f"LLM 调用失败: {str(e)}")
 
         raise RuntimeError("LLM 调用重试次数耗尽")
@@ -971,7 +899,6 @@ class GISCompiler:
             "successful": 0,
             "failed": 0,
             "retries": 0,
-            "fallback_triggered": 0,
         }
 
 

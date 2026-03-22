@@ -225,15 +225,11 @@ class OSMExecutor(BaseExecutor):
         combined = gpd.GeoDataFrame(pd.concat(geometries, ignore_index=True))
         combined = combined.to_crs("EPSG:4326")
 
-        # 保存 GeoJSON 到 conversation_files
-        output_dir = Path("workspace/conversation_files")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        geojson_path = output_dir / f"osm_fetch_{lng:.4f}_{lat:.4f}.geojson"
-        combined.to_file(geojson_path, driver="GeoJSON")
-
-        # ── 自动生成交互式 HTML 地图（保存到 outputs 目录，Streamlit 会自动展示）──
+        # 保存 GeoJSON 和交互式 HTML 地图到 outputs 目录
         outputs_dir = Path("workspace/outputs")
         outputs_dir.mkdir(parents=True, exist_ok=True)
+        geojson_path = outputs_dir / f"osm_fetch_{lng:.4f}_{lat:.4f}.geojson"
+        combined.to_file(geojson_path, driver="GeoJSON")
         html_path = self._generate_interactive_map(combined, center_tuple, radius, outputs_dir)
         messages.append(f"  🗺️ 交互地图已生成：{html_path.name}")
 

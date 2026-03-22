@@ -207,7 +207,7 @@ def network_k_shortest_paths(inputs: Dict[str, Any], params: Dict[str, Any]) -> 
 
     Args:
         inputs: {"start": "芜湖南站", "end": "方特欢乐世界"}
-        params: {"city": "芜湖", "mode": "walk", "k": 3, "output_dir": "workspace/k_routes/"}
+        params: {"city": "芜湖", "mode": "walk", "k": 3, "output_dir": "workspace/outputs/k_routes/"}
 
     Returns:
         标准结果

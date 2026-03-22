@@ -486,7 +486,7 @@ def vector_split(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, An
 
     Args:
         inputs: {"layer": "input.shp"}
-        params: {"by_field": "landuse", "output_dir": "workspace/split/"}
+        params: {"by_field": "landuse", "output_dir": "workspace/outputs/split/"}
 
     Returns:
         标准结果

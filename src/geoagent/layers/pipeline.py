@@ -493,15 +493,22 @@ class SixLayerPipeline:
             )
 
             rendered["success"] = executor_result.success
+            rendered["engine"] = executor_result.engine
             if not executor_result.success:
                 rendered["error"] = executor_result.error
 
             result.rendered_result = rendered
-            result.status = PipelineStatus.COMPLETED
+            # 如果 executor 执行失败，整个 pipeline 也标记为失败
+            if not executor_result.success:
+                result.status = PipelineStatus.FAILED
+                result.error = executor_result.error
+            else:
+                result.status = PipelineStatus.COMPLETED
 
             self._record(6, "layer6_completed", {
                 "scenario": scenario,
                 "summary": rendered.get("summary", ""),
+                "success": executor_result.success,
             })
 
             return rendered, result

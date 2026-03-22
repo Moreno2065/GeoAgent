@@ -584,11 +584,6 @@ def search_poi(keywords: str = "", types: str = "", city: str = "",
         url = POI_TEXT_URL
 
     data = _http_get(url, params)
-    # === DEBUG: 检查 API 返回 ===
-    print(f"[POI_DEBUG] 高德API返回: count={data.get('count') if data else 'None'}, info={data.get('info') if data else 'None'}")
-    if data and data.get('pois'):
-        print(f"[POI_DEBUG] 前3个POI: {[p.get('name') for p in data.get('pois', [])[:3]]}")
-    # === DEBUG END ===
     if not data:
         return None
 

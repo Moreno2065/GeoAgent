@@ -25,7 +25,7 @@ def _access_layer_info_impl(layer_url: str) -> str:
 
 
 def _download_features_impl(layer_url: str, where: str = "1=1",
-                             out_file: str = "workspace/arcgis_download.geojson",
+                             out_file: str = "workspace/outputs/arcgis_download.geojson",
                              max_records: int = 1000) -> str:
     """download_features 的实际实现"""
     from geoagent.tools import arcgis_tools as ags
@@ -113,7 +113,7 @@ def _osmnx_routing_impl(
     origin_address: str = "",
     destination_address: str = "",
     mode: str = "drive",
-    output_map_file: str = "workspace/osmnx_route_map.html",
+    output_map_file: str = "workspace/outputs/osmnx_route_map.html",
     plot_type: str = "folium",
 ) -> str:
     """osmnx_routing 工具"""
@@ -283,7 +283,7 @@ def _osmnx_routing_impl(
                 "route_length_m": round(route_length, 1),
                 "route_node_count": len(route),
                 "map_saved": str(output_path),
-                "map_url": f"workspace/{output_path.name}",
+                "map_url": f"workspace/outputs/{output_path.name}",
             }
 
         return json.dumps({
@@ -416,7 +416,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             raw_result = _download_features_impl(
                 arguments["layer_url"],
                 arguments.get("where", "1=1"),
-                arguments.get("out_file", "workspace/arcgis_download.geojson"),
+                arguments.get("out_file", "workspace/outputs/arcgis_download.geojson"),
                 arguments.get("max_records", 1000),
             )
 
@@ -490,7 +490,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
                 origin_address=arguments.get("origin_address", ""),
                 destination_address=arguments.get("destination_address", ""),
                 mode=arguments.get("mode", "drive"),
-                output_map_file=arguments.get("output_map_file", "workspace/osmnx_route_map.html"),
+                output_map_file=arguments.get("output_map_file", "workspace/outputs/osmnx_route_map.html"),
                 plot_type=arguments.get("plot_type", "folium"),
             )
 
@@ -515,7 +515,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             raw_result = spatial_autocorrelation_analysis(
                 vector_file=arguments.get("vector_file", ""),
                 value_column=arguments.get("value_column", ""),
-                output_file=arguments.get("output_file", "workspace/autocorrelation.geojson"),
+                output_file=arguments.get("output_file", "workspace/outputs/autocorrelation.geojson"),
                 method=arguments.get("method", "moran"),
             )
 
@@ -523,7 +523,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             from geoagent.gis_tools.advanced_tools import geotiff_to_cog_tool
             raw_result = geotiff_to_cog_tool(
                 input_tif=arguments.get("input_tif", ""),
-                output_cog=arguments.get("output_cog", "workspace/output.cog.tif"),
+                output_cog=arguments.get("output_cog", "workspace/outputs/output.cog.tif"),
                 compression=arguments.get("compression", "LZW"),
             )
 
@@ -531,7 +531,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             from geoagent.gis_tools.advanced_tools import compute_all_vegetation_indices
             raw_result = compute_all_vegetation_indices(
                 input_file=arguments.get("input_file", ""),
-                output_dir=arguments.get("output_dir", "workspace"),
+                output_dir=arguments.get("output_dir", "workspace/outputs"),
                 indices=arguments.get("indices", "all"),
             )
 
@@ -560,7 +560,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             raw_result = facility_accessibility_analysis(
                 demand_file=arguments.get("demand_file", ""),
                 facilities_file=arguments.get("facilities_file", ""),
-                output_file=arguments.get("output_file", "workspace/accessibility.geojson"),
+                output_file=arguments.get("output_file", "workspace/outputs/accessibility.geojson"),
                 max_travel_time=arguments.get("max_travel_time", 30.0),
                 beta=arguments.get("beta", 2.0),
             )
@@ -569,7 +569,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             from geoagent.gis_tools.advanced_tools import terrain_analysis_dem
             raw_result = terrain_analysis_dem(
                 dem_file=arguments.get("dem_file", ""),
-                output_dir=arguments.get("output_dir", "workspace"),
+                output_dir=arguments.get("output_dir", "workspace/outputs"),
                 analyses=arguments.get("analyses", "slope,aspect,hillshade"),
             )
 
@@ -577,7 +577,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             from geoagent.gis_tools.advanced_tools import vector_to_geoparquet
             raw_result = vector_to_geoparquet(
                 input_file=arguments.get("input_file", ""),
-                output_file=arguments.get("output_file", "workspace/output.parquet"),
+                output_file=arguments.get("output_file", "workspace/outputs/output.parquet"),
                 target_crs=arguments.get("target_crs", "EPSG:4326"),
                 compression=arguments.get("compression", "zstd"),
             )
@@ -586,7 +586,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             from geoagent.gis_tools.advanced_tools import render_3d_map
             raw_result = render_3d_map(
                 vector_file=arguments.get("vector_file", ""),
-                output_html=arguments.get("output_html", "workspace/3d_map.html"),
+                output_html=arguments.get("output_html", "workspace/outputs/3d_map.html"),
                 height_column=arguments.get("height_column"),
                 color_column=arguments.get("color_column"),
                 map_style=arguments.get("map_style", "dark"),
@@ -614,7 +614,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             raw_result = geospatial_hotspot_analysis(
                 vector_file=arguments.get("vector_file", ""),
                 value_column=arguments.get("value_column", ""),
-                output_file=arguments.get("output_file", "workspace/hotspot_results.geojson"),
+                output_file=arguments.get("output_file", "workspace/outputs/hotspot_results.geojson"),
                 analysis_type=arguments.get("analysis_type", "auto"),
                 neighbor_strategy=arguments.get("neighbor_strategy", "queen"),
                 k_neighbors=arguments.get("k_neighbors", 8),
@@ -631,7 +631,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
                 criteria_weights=arguments.get("criteria_weights", {}),
                 aoi_bbox=arguments.get("aoi_bbox"),
                 candidate_count=arguments.get("candidate_count", 10),
-                output_file=arguments.get("output_file", "workspace/site_selection_results.geojson"),
+                output_file=arguments.get("output_file", "workspace/outputs/site_selection_results.geojson"),
                 use_amap=arguments.get("use_amap", True),
                 use_osm=arguments.get("use_osm", True),
                 use_stac=arguments.get("use_stac", False),
@@ -642,7 +642,7 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
             raw_result = render_accessibility_map(
                 demand_file=arguments.get("demand_file", ""),
                 facilities_file=arguments.get("facilities_file", ""),
-                output_html=arguments.get("output_html", "workspace/accessibility_3d_map.html"),
+                output_html=arguments.get("output_html", "workspace/outputs/accessibility_3d_map.html"),
                 max_travel_time=arguments.get("max_travel_time", 30.0),
                 travel_mode=arguments.get("travel_mode", "drive"),
                 weight_column=arguments.get("weight_column"),
@@ -658,9 +658,9 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
                 end_date=arguments.get("end_date", "2024-01-31"),
                 cloud_cover_max=arguments.get("cloud_cover_max", 10),
                 bands=arguments.get("bands"),
-                output_dir=arguments.get("output_dir", "workspace"),
+                output_dir=arguments.get("output_dir", "workspace/outputs"),
                 render_type=arguments.get("render_type", "natural_color"),
-                output_html=arguments.get("output_html", "workspace/stac_visualization.html"),
+                output_html=arguments.get("output_html", "workspace/outputs/stac_visualization.html"),
             )
 
         else:

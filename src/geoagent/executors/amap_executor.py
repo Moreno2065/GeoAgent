@@ -355,9 +355,6 @@ class AmapExecutor(BaseExecutor):
             keywords=keywords, types=types, city=city,
             location=location, radius=radius, extensions=extensions
         )
-        # === DEBUG: 检查 search_poi 返回 ===
-        print(f"[POI_DEBUG] amap_executor 收到 search_poi 返回: count={result.get('count') if result else 'None'}")
-        # === DEBUG END ===
         if result is None:
             return self._err("poi_search", f"POI 搜索失败：无法搜索「{keywords or center_point}」")
 

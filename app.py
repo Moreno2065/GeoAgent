@@ -49,16 +49,11 @@ _WORKSPACE_DIR.mkdir(exist_ok=True)
 _OUTPUTS_DIR = _WORKSPACE_DIR / "outputs"
 _OUTPUTS_DIR.mkdir(exist_ok=True)
 
-# LLM 模型选项（简化版：仅提供商选择）
+# LLM 模型选项
 LLM_PROVIDER_OPTIONS = {
     "deepseek": {
         "model": "deepseek-chat",
         "label": "DeepSeek",
-    },
-    "glm": {
-        "model": "glm-4.6v",
-        "label": "GLM",
-        "base_url": "https://open.bigmodel.com/api/paas/v4",
     },
 }
 
@@ -361,7 +356,6 @@ def _init_session_state():
         "active_conv_id": None,
         "agent_contexts": {},
         "deepseek_key": _read_key(".api_key"),
-        "glm_key": _read_key(".glm_api_key"),
         "amap_key": _read_key(".amap_key"),
         "last_map_file": None,
         "pending_click": None,
@@ -471,7 +465,7 @@ def _render_llm_status():
         )
 
     # 模型简称
-    main_short = main_model.replace("deepseek-", "DS-").replace("glm-", "GLM-") if main_model else ""
+    main_short = main_model.replace("deepseek-", "DS-") if main_model else ""
     # 沙盒模型固定显示（沙盒用 DeepSeek）
     sandbox_model_short = "DS-Genie"
 
@@ -652,23 +646,8 @@ def _render_sidebar():
         # ── LLM 模型选择 ────────────────────────────────────────────
         st.subheader("🤖 LLM 配置")
 
-        # 主模型选择（仅提供商级别）
-        provider_options = ["deepseek", "glm"]
-        provider_labels = {
-            "deepseek": "🔵 DeepSeek",
-            "glm": "🟢 GLM",
-        }
-
-        selected_provider = st.selectbox(
-            "主模型提供商",
-            options=provider_options,
-            format_func=lambda x: provider_labels.get(x, x),
-            index=0,
-            key="provider_select",
-        )
-
-        # 根据选择的提供商获取对应模型
-        primary_model = LLM_PROVIDER_OPTIONS[selected_provider]["model"]
+        # 主模型选择（仅 DeepSeek）
+        selected_provider = "deepseek"
 
         # ── API Key 配置 ────────────────────────────────────────
         st.caption("API Key 配置")
@@ -680,15 +659,6 @@ def _render_sidebar():
             type="password",
             key="deepseek_key_input",
             help="以 sk- 开头的 DeepSeek API Key",
-        )
-
-        # GLM Key
-        gk = st.text_input(
-            "🟢 GLM API Key（可选，备用模型）",
-            value=st.session_state["glm_key"],
-            type="password",
-            key="glm_key_input",
-            help="GLM API Key，主模型失败时自动切换",
         )
 
         # 高德 Key
@@ -705,59 +675,25 @@ def _render_sidebar():
         # ── 启动 Agent ────────────────────────────────────────────
         if st.button("🚀 启动 Agent", use_container_width=True, type="primary"):
             dk = dk.strip()
-            gk = gk.strip() if gk else ""
 
-            # 验证 DeepSeek Key（仅在 DeepSeek 作为主模型或存在时才必须）
-            if selected_provider == "deepseek" and not dk.startswith("sk-"):
+            # 验证 DeepSeek Key
+            if not dk.startswith("sk-"):
                 st.error("❌ DeepSeek Key 格式错误，应以 sk- 开头")
-            elif selected_provider == "glm" and not gk:
-                st.error("❌ 请输入 GLM API Key")
             else:
                 # 保存 Key
                 _write_key(".api_key", dk)
-                if gk:
-                    _write_key(".glm_api_key", gk)
                 if ak:
                     _write_key(".amap_key", ak.strip())
                 st.session_state["deepseek_key"] = dk
-                st.session_state["glm_key"] = gk
-
-                # ── 主模型选择 ───────────────────────────────────────────
-                if selected_provider == "glm":
-                    # 主模型 = GLM
-                    primary_api_key = gk
-                    primary_model = "glm-4.6v"
-                    primary_base_url = "https://open.bigmodel.com/api/paas/v4"
-                    # 备用 = DeepSeek（如果有）
-                    fallback_api_key = dk if dk.startswith("sk-") else None
-                    fallback_model = "deepseek-chat"
-                    fallback_base_url = "https://api.deepseek.com"
-                else:
-                    # 主模型 = DeepSeek（默认）
-                    primary_api_key = dk
-                    primary_model = "deepseek-chat"
-                    primary_base_url = "https://api.deepseek.com"
-                    # 备用 = GLM（如果有）
-                    fallback_api_key = gk if gk else None
-                    fallback_model = "glm-4.6v"
-                    fallback_base_url = "https://open.bigmodel.com/api/paas/v4"
 
                 try:
-                    st.session_state["agent_v2"] = create_agent_v2(
-                        primary_api_key=primary_api_key,
-                        primary_model=primary_model,
-                        primary_base_url=primary_base_url,
-                        fallback_api_key=fallback_api_key,
-                        fallback_model=fallback_model,
-                        fallback_base_url=fallback_base_url,
-                    )
+                    st.session_state["agent_v2"] = create_agent_v2(api_key=dk)
                     st.session_state["agent"] = None
 
                     model_info = st.session_state["agent_v2"].get_current_model_info()
                     st.success(
                         f"✅ Agent 已启动\n"
-                        f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
-                        f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
+                        f"• 模型: {model_info['provider']}/{model_info['model']}"
                     )
                 except Exception as e:
                     st.error(f"❌ 初始化失败：{e}")
@@ -772,9 +708,7 @@ def _render_sidebar():
             model_info = agent_v2.get_current_model_info() if agent_online_v2 else {}
             status_text = f"🟢 Agent 在线"
             if model_info:
-                status_text += f"\n• 主: {model_info.get('provider', '')}/{model_info.get('model', '')}"
-                if model_info.get('has_fallback'):
-                    status_text += f"\n• 备: {model_info.get('fallback_model', '')}"
+                status_text += f"\n• 模型: {model_info.get('provider', '')}/{model_info.get('model', '')}"
             st.success(status_text)
         else:
             st.error("🔴 Agent 离线 — 请先启动")
@@ -2128,7 +2062,7 @@ def _handle_user_message(prompt: str, agent):
                         def _extract_delta_content(delta) -> str | None:
                             """
                             跨模型兼容的 delta.content 提取。
-                            支持：标准 OpenAI SDK / GLM 兼容格式 / 自定义 _data 属性。
+                            支持：标准 OpenAI SDK / 自定义 _data 属性。
                             """
                             if delta is None:
                                 return None
@@ -2147,13 +2081,6 @@ def _handle_user_message(prompt: str, agent):
                                     val = delta._data.get(key)
                                     if val:
                                         return val
-                            # GLM StreamingResponse 特殊格式：delta 本身有 choices 列表
-                            if hasattr(delta, "choices"):
-                                for c in delta.choices:
-                                    if hasattr(c, "delta"):
-                                        inner = _extract_delta_content(c.delta)
-                                        if inner:
-                                            return inner
                             return None
 
                         stream = llm_client.chat.completions.create(

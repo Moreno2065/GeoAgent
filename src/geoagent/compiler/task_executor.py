@@ -144,7 +144,7 @@ def _execute_buffer(task: BufferTask) -> str:
         from geoagent.gis_tools.gis_task_tools import vector_buffer
         from pathlib import Path
 
-        output_file = task.output_file or f"workspace/{Path(task.input_layer).stem}_buffer.shp"
+        output_file = task.output_file or f"workspace/outputs/{Path(task.input_layer).stem}_buffer.shp"
         result = vector_buffer(
             input_file=task.input_layer,
             output_file=output_file,
@@ -167,7 +167,7 @@ def _execute_overlay(task: OverlayTask) -> str:
         )
         import os
 
-        output_file = task.output_file or f"workspace/overlay_{task.operation}.shp"
+        output_file = task.output_file or f"workspace/outputs/overlay_{task.operation}.shp"
 
         if task.operation == "intersect":
             result = vector_intersect(task.layer1, task.layer2, output_file)
@@ -198,7 +198,7 @@ def _execute_interpolation(task: InterpolationTask) -> str:
     try:
         from geoagent.gis_tools.gis_task_tools import spatial_kernel_density
 
-        output_file = task.output_file or f"workspace/interpolation_{task.method.lower()}.tif"
+        output_file = task.output_file or f"workspace/outputs/interpolation_{task.method.lower()}.tif"
 
         if task.method == "IDW":
             result = spatial_kernel_density(
@@ -227,7 +227,7 @@ def _execute_ndvi(task: NdviTask) -> str:
     try:
         from geoagent.gis_tools import calculate_raster_index
 
-        output_file = task.output_file or "workspace/ndvi.tif"
+        output_file = task.output_file or "workspace/outputs/ndvi.tif"
 
         if task.band_math_expr:
             expr = task.band_math_expr
@@ -258,7 +258,7 @@ def _execute_hotspot(task: HotspotTask) -> str:
             geospatial_hotspot_analysis, spatial_autocorrelation_analysis
         )
 
-        output_file = task.output_file or f"workspace/hotspot_{task.value_field}.shp"
+        output_file = task.output_file or f"workspace/outputs/hotspot_{task.value_field}.shp"
 
         if task.analysis_type in ("gstar", "auto"):
             analysis_type = "lisa" if task.analysis_type == "auto" else "gstar"
@@ -297,7 +297,7 @@ def _execute_visualization(task: VisualizationTask) -> str:
         )
         from datetime import datetime
 
-        output_file = task.output_file or f"workspace/visualization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        output_file = task.output_file or f"workspace/outputs/visualization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
 
         if task.viz_type == "interactive_map":
             result = map_folium_interactive(
@@ -385,7 +385,7 @@ def _execute_shadow_analysis(task: ShadowTask) -> str:
         from geoagent.gis_tools.advanced_tools import shadow_analysis
         from datetime import datetime
 
-        output_file = task.output_file or f"workspace/shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.shp"
+        output_file = task.output_file or f"workspace/outputs/shadow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.shp"
         result = shadow_analysis(
             buildings=task.buildings,
             time=task.time,
@@ -424,7 +424,7 @@ def _execute_accessibility(task: AccessibilityTask) -> str:
             "time_threshold": task.time_threshold,
             "summary": f"可达性分析：以 {task.location} 为中心，{task.mode} {task.time_threshold} 分钟范围",
             "result": result,
-            "map_file": task.output_file or "workspace/accessibility_map.html",
+            "map_file": task.output_file or "workspace/outputs/accessibility_map.html",
         })
 
     except ImportError:
@@ -464,7 +464,7 @@ def _execute_suitability(task: SuitabilityTask) -> str:
         result_gdf["score"] = result_gdf.geometry.area
         top_gdf = result_gdf.nlargest(task.top_n, "score") if len(result_gdf) > task.top_n else result_gdf
 
-        output_file = task.output_file or f"workspace/suitability_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson"
+        output_file = task.output_file or f"workspace/outputs/suitability_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson"
         top_gdf.to_file(output_file, driver="GeoJSON")
 
         return _ok({
@@ -533,7 +533,7 @@ def _execute_viewshed(task: ViewshedTask) -> str:
                         viewshed[r, c] = 1
 
             from datetime import datetime
-            output_file = task.output_file or f"workspace/viewshed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tif"
+            output_file = task.output_file or f"workspace/outputs/viewshed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tif"
 
             with rasterio.open(
                 output_file, 'w', driver='GTiff',

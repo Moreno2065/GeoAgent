@@ -1511,7 +1511,7 @@ class CloudRS:
 
     @staticmethod
     def time_series_stats(stac_items_file: str, bbox: list, band: str = "B08",
-                          output_csv: str = "workspace/ndvi_timeseries.csv"):
+                          output_csv: str = "workspace/outputs/ndvi_timeseries.csv"):
         """STAC 多时相遥感指数时序统计"""
         import json
         import numpy as np

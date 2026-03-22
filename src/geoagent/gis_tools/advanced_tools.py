@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Optional, Tuple
 def spatial_autocorrelation_analysis(
     vector_file: str,
     value_column: str,
-    output_file: str = "workspace/autocorrelation_results.geojson",
+    output_file: str = "workspace/outputs/autocorrelation_results.geojson",
     method: str = "moran"
 ) -> str:
     """
@@ -515,7 +515,7 @@ def search_stac_data(
 def facility_accessibility_analysis(
     demand_file: str,
     facilities_file: str,
-    output_file: str = "workspace/accessibility_results.geojson",
+    output_file: str = "workspace/outputs/accessibility_results.geojson",
     max_travel_time: float = 30.0,
     beta: float = 2.0
 ) -> str:
@@ -676,7 +676,7 @@ __all__ = [
 
 def render_3d_map(
     vector_file: str,
-    output_html: str = "workspace/3d_map.html",
+    output_html: str = "workspace/outputs/3d_map.html",
     height_column: Optional[str] = None,
     color_column: Optional[str] = None,
     map_style: str = "dark",
@@ -1126,7 +1126,7 @@ def search_stac_imagery(
 def geospatial_hotspot_analysis(
     vector_file: str,
     value_column: str,
-    output_file: str = "workspace/hotspot_results.geojson",
+    output_file: str = "workspace/outputs/hotspot_results.geojson",
     analysis_type: str = "auto",
     neighbor_strategy: str = "queen",
     k_neighbors: int = 8,
@@ -1343,7 +1343,7 @@ def multi_criteria_site_selection(
     criteria_weights: Dict[str, float],
     aoi_bbox: Optional[List[float]] = None,
     candidate_count: int = 10,
-    output_file: str = "workspace/site_selection_results.geojson",
+    output_file: str = "workspace/outputs/site_selection_results.geojson",
     use_amap: bool = True,
     use_osm: bool = True,
     use_stac: bool = False,
@@ -1620,7 +1620,7 @@ def multi_criteria_site_selection(
 def render_accessibility_map(
     demand_file: str,
     facilities_file: str,
-    output_html: str = "workspace/accessibility_3d_map.html",
+    output_html: str = "workspace/outputs/accessibility_3d_map.html",
     max_travel_time: float = 30.0,
     travel_mode: str = "drive",
     weight_column: Optional[str] = None,
@@ -1810,9 +1810,9 @@ def stac_to_visualization(
     end_date: str = "2024-01-31",
     cloud_cover_max: int = 10,
     bands: Optional[List[str]] = None,
-    output_dir: str = "workspace",
+    output_dir: str = "workspace/outputs",
     render_type: str = "natural_color",
-    output_html: str = "workspace/stac_visualization.html",
+    output_html: str = "workspace/outputs/stac_visualization.html",
 ) -> str:
     """
     STAC 搜索 → COG 直接读取 → PyDeck 3D 可视化 一体化管道

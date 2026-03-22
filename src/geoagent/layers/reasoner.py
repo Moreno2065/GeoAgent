@@ -19,7 +19,6 @@ Reasoner - 被锁死的 NL→DSL 编译器
 
 支持模型：
   - DeepSeek: deepseek-reasoner (默认), deepseek-chat, deepseek-v3
-  - GLM: glm-4, glm-4-plus, glm-4-flash
 """
 
 from __future__ import annotations
@@ -51,19 +50,6 @@ REASONER_MODELS = {
     "deepseek-v3": {
         "base_url": "https://api.deepseek.com",
         "description": "DeepSeek V3 - 最新模型",
-    },
-    # GLM
-    "glm-4.6v": {
-        "base_url": "https://open.bigmodel.com/api/paas/v4",
-        "description": "GLM-4V - 视觉模型",
-    },
-    "glm-4-plus": {
-        "base_url": "https://open.bigmodel.com/api/paas/v4",
-        "description": "GLM-4 Plus - 增强版",
-    },
-    "glm-4-flash": {
-        "base_url": "https://open.bigmodel.com/api/paas/v4",
-        "description": "GLM-4 Flash - 快速版",
     },
 }
 
@@ -609,7 +595,7 @@ class ReasonerError(Exception):
 
 class GeoAgentReasoner:
     """
-    NL → GeoDSL 编译器（支持 DeepSeek / GLM 多模型）
+    NL → GeoDSL 编译器（支持 DeepSeek 模型）
 
     特征：
     - 纯翻译：NL → GeoDSL，无任何决策逻辑
@@ -618,12 +604,7 @@ class GeoAgentReasoner:
     - 透明：LLM 只做翻译，执行层完全确定性
 
     使用方式：
-        # DeepSeek Reasoner
         reasoner = GeoAgentReasoner(api_key="sk-...", model="deepseek-reasoner")
-        dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
-
-        # GLM
-        reasoner = GeoAgentReasoner(api_key="glm-xxx", model="glm-4.6v")
         dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
     """
 
@@ -861,13 +842,10 @@ def get_reasoner(
     """
     获取全局 Reasoner 单例（线程不安全，仅用于单线程场景）。
 
-    支持 DeepSeek / GLM 双模型：
+    支持 DeepSeek 模型：
 
         # DeepSeek Reasoner（默认）
         reasoner = get_reasoner(api_key="sk-...")
-
-        # GLM
-        reasoner = get_reasoner(api_key="glm-xxx", model="glm-4.6v")
 
     建议每次请求创建新实例或使用依赖注入。
     """
@@ -922,13 +900,9 @@ def translate_with_reasoner(
     """
     便捷函数：单次翻译
 
-    支持 DeepSeek / GLM：
+    支持 DeepSeek 模型：
 
-        # DeepSeek
         dsl = translate_with_reasoner("芜湖南站到方特", model="deepseek-reasoner")
-
-        # GLM
-        dsl = translate_with_reasoner("芜湖南站到方特", model="glm-4.6v", api_key="glm-xxx")
 
     Args:
         user_input: 自然语言
