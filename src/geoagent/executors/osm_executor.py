@@ -218,6 +218,46 @@ class OSMExecutor(BaseExecutor):
             else:
                 messages.append("  ⚠️ 该区域无建筑物数据。")
 
+        if data_type == "water":
+            """下载水体数据（河流、湖泊、海洋等）"""
+            messages.append(f"  → 下载水体数据...")
+            # OSM 水体相关标签
+            water_tags = [
+                {"waterway": "river"},      # 河流
+                {"waterway": "stream"},     # 溪流
+                {"waterway": "canal"},      # 运河
+                {"natural": "water"},       # 自然水体（湖泊、池塘）
+                {"water": "lake"},           # 湖泊
+                {"water": "pond"},          # 池塘
+                {"water": "reservoir"},     # 水库
+                {"waterway": "dam"},        # 水坝
+                {"landuse": "reservoir"},   # 水库用地
+            ]
+            
+            water_geoms = []
+            for tags in water_tags:
+                try:
+                    # osmnx >= 1.9 使用 features_from_point
+                    features = ox.features_from_point(center_tuple, tags, dist=radius)
+                except AttributeError:
+                    # 旧版本使用 geometries_from_point
+                    features = ox.geometries_from_point(center_tuple, tags, dist=radius)
+                
+                if not features.empty:
+                    # 只保留有效的几何类型（Point 排除在外，因为河流应该是 LineString）
+                    valid_features = features[features.geometry.type.isin(["LineString", "Polygon", "MultiLineString", "MultiPolygon"])]
+                    if not valid_features.empty:
+                        water_geoms.append(valid_features)
+                        messages.append(f"    ✅ {tags}：{len(valid_features)} 个要素")
+            
+            if water_geoms:
+                import pandas as pd
+                water_gdf = gpd.GeoDataFrame(pd.concat(water_geoms, ignore_index=True))
+                geometries.append(water_gdf)
+                messages.append(f"  ✅ 水体：共 {len(water_gdf)} 个要素。")
+            else:
+                messages.append("  ⚠️ 该区域无水体数据。")
+
         if not geometries:
             return ExecutorResult.err("fetch_osm", "OSM 下载结果为空，请检查坐标是否在中国大陆境外。")
 

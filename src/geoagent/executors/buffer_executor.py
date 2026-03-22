@@ -169,9 +169,27 @@ class BufferExecutor(BaseExecutor):
             found_path = _find_file(input_layer_val)
 
             if found_path is None:
-                # 不是文件 → 视为地名词，先通过高德 API 获取坐标
-                gdf = self._build_point_from_place(input_layer_val)
-                source_label = f"地名词「{input_layer_val}」"
+                # 本地找不到文件 → 尝试在线下载数据（河流/道路等要素类型）
+                from geoagent.executors.file_fallback_handler import FileFallbackHandler
+                
+                handler = FileFallbackHandler(workspace=Path("workspace"))
+                # 先尝试推断数据类型（河流/道路/建筑等）
+                data_type = handler.guess_data_type(input_layer_val, "buffer")
+                
+                if data_type != "unknown":
+                    # 尝试从在线数据源下载
+                    online_path = handler.try_online_fallback(input_layer_val, "buffer")
+                    if online_path:
+                        gdf = gpd.read_file(online_path)
+                        source_label = f"在线数据「{input_layer_val}」（{data_type}）"
+                    else:
+                        # 下载失败 → 回退到地名词查询
+                        gdf = self._build_point_from_place(input_layer_val)
+                        source_label = f"地名词「{input_layer_val}」"
+                else:
+                    # 无法推断类型 → 回退到地名词查询
+                    gdf = self._build_point_from_place(input_layer_val)
+                    source_label = f"地名词「{input_layer_val}」"
             else:
                 input_path = str(found_path)
                 print(f"[DEBUG] _run_geopandas: input_layer_val={input_layer_val!r}, found_path={input_path!r}, exists={Path(input_path).exists()}")

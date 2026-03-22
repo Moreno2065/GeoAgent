@@ -247,10 +247,12 @@ class FileFallbackHandler:
 
             # 步骤2：OSM 下载
             osm_executor = self._get_osm_executor()
+            # 修复：正确传递 water 类型给 OSM
+            osm_data_type = "water" if data_type == "water" else data_type
             result = osm_executor._run_osmnx(
                 center_tuple=(lat, lng),
                 radius=2000,  # 默认 2km 范围
-                data_type="all" if data_type == "water" else data_type,
+                data_type=osm_data_type,
                 network_type="drive",
             )
 
