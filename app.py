@@ -261,11 +261,31 @@ def _get_conv_files(cid: str) -> list[Path]:
     )
 
 
+def _get_conv_workspace_dir(cid: str) -> Path:
+    """获取当前对话的工作目录"""
+    p = _WORKSPACE_DIR / "conversation_files" / cid
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _delete_conv_file(cid: str, fname: str) -> bool:
+    """删除对话内的文件"""
+    p = _get_conv_workspace_dir(cid) / fname
+    if p.exists():
+        p.unlink()
+        return True
+    return False
+
+
 def _render_agent_generated_maps() -> str | None:
-    """检测 workspace/outputs 中最新生成的 HTML 地图"""
-    if not _OUTPUTS_DIR.exists():
+    """检测最新生成的 HTML 地图（修复目录隔离问题）"""
+    cid = st.session_state.get("active_conv_id")
+    if not cid:
         return None
-    html_files = list(_OUTPUTS_DIR.glob("*.html"))
+    conv_outputs_dir = _get_conv_workspace_dir(cid) / "outputs"
+    if not conv_outputs_dir.exists():
+        return None
+    html_files = list(conv_outputs_dir.glob("*.html"))
     if not html_files:
         return None
     return str(sorted(html_files, key=lambda p: p.stat().st_mtime)[-1])
@@ -697,7 +717,8 @@ def _render_sidebar():
             if uploaded:
                 new_uploads = 0
                 conv_dir = _get_conv_workspace_dir(cid)
-                for f in uploaded:
+                files = uploaded if isinstance(uploaded, list) else [uploaded]
+                for f in files:
                     file_path = conv_dir / f.name
                     file_path.write_bytes(f.getbuffer())
                     new_uploads += 1
@@ -705,7 +726,7 @@ def _render_sidebar():
                     st.success(f"✅ {new_uploads} 个文件已上传到当前对话！")
                     st.rerun()
                 else:
-                    st.info(f"ℹ️ {len(uploaded)} 个文件已在当前对话就绪。")
+                    st.info(f"ℹ️ {len(files)} 个文件已在当前对话就绪。")
 
         st.divider()
 
@@ -1600,9 +1621,19 @@ def _handle_user_message(prompt: str, agent):
             return
 
     # ── 正常处理用户输入 ──────────────────────────────────────────
-        injected_ctx = _format_click_context(st.session_state["pending_click"])
-        prompt = prompt + injected_ctx
-        st.session_state["pending_click"] = None
+    injected_ctx = _format_click_context(st.session_state.get("pending_click"))
+    st.session_state["pending_click"] = None
+
+    # 动态注入工作区文件列表，帮 LLM 补全缺省的后缀名
+    conv_files = _get_conv_files(cid)
+    if conv_files:
+        names = ", ".join(f.name for f in conv_files)
+        injected_ctx += (
+            f"\n\n[系统提示] 当前工作区可用文件: {names}。"
+            f"如果用户未指定扩展名，请优先用这些文件进行匹配。"
+        )
+
+    prompt = prompt + injected_ctx
 
     user_msg_id = f"user_{hash(prompt) & 0x7FFFFFFF}"
     st.session_state["conversations"][cid]["messages"].append({
@@ -1615,6 +1646,14 @@ def _handle_user_message(prompt: str, agent):
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # ── 防止重复执行（rerun 防护）────────────────────────────────
+    # 必须在 with 块之前检查，否则 return 无法触发 finally 块
+    _processing_key = "_handle_msg_in_progress"
+    if st.session_state.get(_processing_key):
+        # 已经在处理中，直接返回避免重复执行
+        return
+    st.session_state[_processing_key] = True
+
     with st.chat_message("assistant"):
         content_ph = st.empty()
         # 追踪已渲染文本（用于流式追加）
@@ -1622,238 +1661,221 @@ def _handle_user_message(prompt: str, agent):
 
         st.session_state["llm_status"] = "thinking"
         st.session_state["llm_current_node"] = "🚀 启动中..."
-        
-        # 🌟 修改 2：刚按下发送键时，立刻让指示灯变黄！
-        if "sidebar_status_ph" in st.session_state:
-            with st.session_state["sidebar_status_ph"]:
-                _render_llm_status()
-
-        stream_state = {
-            "text": "",
-            "tools": [],
-            "has_error": False,
-            "error_msg": "",
-            "map_files_generated": [],
-            "current_node": "⏳ 等待中",
-            "step_count": 0,
-            "plan_steps": [],
-        }
-
-        baseline = set()
-        if _OUTPUTS_DIR.exists():
-            baseline = set(_OUTPUTS_DIR.glob("*.html"))
-
-        def _update_stream(text: str):
-            """追加新内容并渲染，末尾加闪烁光标表示正在输出。"""
-            nonlocal rendered_text
-            new = text[len(rendered_text):]
-            rendered_text = text
-            if new:
-                cursor = '<span style="animation:blink 1s infinite">▍</span>'
-                content_ph.markdown(text + cursor, unsafe_allow_html=True)
-
-        # ── 统一日志追加辅助（所有事件统一写入思考日志）──────────────
-        def _log(etype: str, msg: str):
-            if "agent_log" not in st.session_state:
-                st.session_state["agent_log"] = []
-            st.session_state["agent_log"].append({
-                "ts": datetime.datetime.now().strftime("%H:%M:%S"),
-                "type": etype,
-                "msg": msg,
-            })
-
-        def on_event(event_type: str, payload: dict):
-            et_lower = event_type.lower()
-
-            # ── 仅更新内部状态，不调用 st.*（全部收敛到思考日志）──
-            if et_lower == "plan_start":
-                stream_state["current_node"] = "🧠 Planner 生成计划中..."
-                _log("plan", "📋 Planner 启动，正在制定任务计划...")
-            elif et_lower == "plan_generated":
-                stream_state["current_node"] = "🧠 Planner 计划已就绪"
-                plan = payload.get("plan", [])
-                steps = [
-                    f"  步骤{i+1}: {s.get('action_name','?')} — {s.get('description','')}"
-                    for i, s in enumerate(plan)
-                ]
-                _log("plan", f"✅ 计划已生成，共 {len(plan)} 步:\n" + "\n".join(steps[:8]))
-            elif et_lower == "step_start":
-                stream_state["step_count"] += 1
-                step_num = stream_state["step_count"]
-                tool = payload.get("tool", "")
-                desc = payload.get("description", "")
-                stream_state["current_node"] = f"⚡ Executor 执行中 ({step_num}步) · {tool}"
-                _log("step", f"⚡ 第 {step_num} 步: `{tool}` — {desc}")
-            elif et_lower == "step_end":
-                _log("review", f"{'✅' if payload.get('success') else '❌'} 步骤完成: `{payload.get('tool','')}`")
-            elif et_lower == "react_start":
-                stream_state["current_node"] = "🔄 ReAct 模式启动"
-                _log("plan", "🔄 计划解析失败，降级为 ReAct 模式")
-            elif et_lower == "react_turn_start":
-                turn = payload.get("turn", "")
-                max_turns = payload.get("max_turns", "")
-                stream_state["current_node"] = f"🔄 ReAct 第 {turn}/{max_turns} 轮"
-                _log("step", f"🔄 ReAct 第 {turn}/{max_turns} 轮中...")
-            elif et_lower == "react_error":
-                stream_state["current_node"] = "❌ ReAct 错误"
-                _log("error", f"❌ ReAct 错误: {str(payload.get('error',''))[:300]}")
-            elif et_lower == "react_max_steps":
-                _log("error", f"⚠️ ReAct 达到最大步数限制 ({payload.get('turns','')})")
-            elif et_lower == "react_complete":
-                stream_state["current_node"] = "✅ ReAct 执行完成"
-                _log("info", "✅ ReAct 执行完成")
-            elif et_lower == "tool_call_start":
-                tool = payload.get("tool", "")
-                stream_state["current_node"] = f"🔧 调用工具: {tool}"
-                _log("tool", f"🔧 触发工具: `{tool}`")
-            elif et_lower == "tool_call_end":
-                succ = payload.get("success", False)
-                tool_name = payload.get("tool", "")
-                stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 {tool_name}"
-                if succ:
-                    _log("tool", f"{'✅' if succ else '❌'} `{tool_name}` {'成功' if succ else '失败'}")
-                else:
-                    _log("error", f"{'✅' if succ else '❌'} `{tool_name}` {'成功' if succ else '失败'}")
-                    # 写入 traceback 日志
-                    error_type = payload.get("error_type")
-                    error_summary = payload.get("error_summary")
-                    stderr_output = payload.get("stderr")
-                    if error_type:
-                        _log("error", f"  错误类型: {error_type}")
-                    if error_summary:
-                        _log("error", f"  错误摘要: {error_summary[:200]}{'...' if len(str(error_summary)) > 200 else ''}")
-                    if stderr_output:
-                        # 截取 traceback 关键部分（前 20 行）
-                        tb_lines = stderr_output.strip().split('\n')
-                        tb_display = '\n'.join(tb_lines[:25])
-                        if len(tb_lines) > 25:
-                            tb_display += f"\n  ... (共 {len(tb_lines)} 行)"
-                        _log("error", f"  Traceback:\n{tb_display}")
-            elif et_lower == "review_pass":
-                stream_state["current_node"] = "🔍 Reviewer 审查通过"
-                _log("review", f"✅ 审查通过: 步骤 {payload.get('step_id','')}")
-            elif et_lower == "review_retry":
-                stream_state["current_node"] = "🔄 Reviewer 重试中"
-                _log("review", f"🔄 审查重试: `{payload.get('tool','')}` (第 {payload.get('attempt','')} 次)")
-            elif et_lower == "review_skip":
-                stream_state["current_node"] = "⚠️ Reviewer 跳过"
-                _log("error", f"⚠️ 审查跳过: `{payload.get('tool','')}` 已重试 {payload.get('attempt','')} 次")
-            elif et_lower == "step_skipped_deadloop":
-                stream_state["current_node"] = "⚠️ 死循环防护"
-                _log("error", f"⚠️ `{payload.get('tool','')}` 连续失败，强制跳过 — {payload.get('reason','')}")
-            elif et_lower == "error":
-                stream_state["has_error"] = True
-                stream_state["error_msg"] = payload.get("error", "未知错误")
-                _log("error", f"❌ 系统错误: {stream_state['error_msg'][:300]}")
-            elif et_lower == "final_response":
-                _log("info", "💬 执行完成")
-            elif et_lower == "intent_classified":
-                stream_state["current_node"] = f"🎯 意图识别: {payload.get('intent', '')}"
-                confidence = payload.get('confidence', 0)
-                keywords = payload.get('matched_keywords', [])
-                kw_str = ', '.join(keywords[:5]) if keywords else '无'
-                _log("plan", f"🎯 意图识别: **{payload.get('intent', '')}** (置信度 {confidence:.2f}, 匹配: {kw_str})")
-            elif et_lower == "schema_loaded":
-                stream_state["current_node"] = f"📋 Schema 加载: {payload.get('intent', '')}"
-                _log("plan", f"📋 Schema 加载: {payload.get('intent', '')}, 参数: {payload.get('schema_keys', [])}")
-            elif et_lower == "llm_response":
-                _log("plan", f"📝 LLM 参数提取完成")
-            elif et_lower == "task_parsed":
-                stream_state["current_node"] = f"✅ 任务解析: {payload.get('task_type', '')}"
-                _log("step", f"✅ 任务解析成功: **{payload.get('task_type', '')}**")
-            elif et_lower == "task_executed":
-                stream_state["current_node"] = f"⚡ 执行完成"
-                _log("step", "⚡ 任务执行完成")
-            elif et_lower == "complete":
-                success = payload.get('success', False)
-                stream_state["current_node"] = f"{'✅' if success else '❌'} 编译器执行完成"
-                _log("info", f"{'✅' if success else '❌'} 编译器执行{'成功' if success else '失败'}")
-            elif et_lower == "validation_error":
-                stream_state["has_error"] = True
-                stream_state["error_msg"] = payload.get('error', '参数校验失败')
-                _log("error", f"❌ 参数校验失败: {payload.get('error', '')[:200]}")
-            elif et_lower == "llm_thinking":
-                full_text = payload.get("full_text", "")
-                stream_state["text"] = full_text
-                st.session_state["llm_status"] = "speaking"
-                st.session_state["llm_current_node"] = "LLM 输出中"
-                _update_stream(full_text)
-
-            # ── V2 六层 Pipeline 事件映射 ───────────────────────────────
-            elif et_lower == "input_received":
-                stream_state["current_node"] = "L1 用户输入已接收"
-                _log("step", "📥 L1 用户输入层：输入已接收")
-            elif et_lower == "intent_classified":
-                intent = payload.get("scenario", "")
-                confidence = payload.get("confidence", 0)
-                _log("plan", f"🎯 L2 意图识别: **{intent}** (置信度 {confidence:.2f})")
-                stream_state["current_node"] = f"🎯 L2 意图: {intent}"
-            elif et_lower == "orchestration_complete":
-                scenario = payload.get("scenario", "")
-                _log("plan", f"✅ L3 场景编排完成 — 场景: {scenario}")
-            elif et_lower == "clarification_needed":
-                questions = payload.get("clarification_questions", [])
-                q_texts = [q.get("question", q.get("field", "")) for q in questions]
-                _log("plan", f"⚠️ L3 需要追问: {q_texts}")
-                stream_state["current_node"] = f"⚠️ L3 参数追问中 ({len(questions)} 个问题)"
-            elif et_lower == "dsl_built":
-                _log("step", f"📋 L4 DSL 构建完成 — 任务: {payload.get('task', '')}")
-            elif et_lower == "execution_complete":
-                success = payload.get("success", False)
-                engine = payload.get("engine", "")
-                _log("step", f"{'✅' if success else '❌'} L5 执行{'成功' if success else '失败'} — 引擎: {engine}")
-                stream_state["current_node"] = f"⚡ L5 执行{'成功' if success else '失败'}"
-            elif et_lower == "render_complete":
-                _log("info", f"✅ L6 结果渲染完成")
-            elif et_lower == "complete":
-                success = payload.get("success", False)
-                _log("info", f"{'✅' if success else '❌'} Pipeline {'成功' if success else '失败'}")
-
-            # 🌟 修改 3：在 on_event 的最底部加上这段代码
-            # 每次收到后台事件，都把最新的节点状态同步给 UI，并强制重新渲染！
-            if et_lower != "llm_thinking":
-                if stream_state.get("has_error"):
-                    st.session_state["llm_status"] = "stopped"
-                else:
-                    st.session_state["llm_status"] = "thinking"
-                st.session_state["llm_current_node"] = stream_state.get("current_node", "")
-
-            if "sidebar_status_ph" in st.session_state:
-                with st.session_state["sidebar_status_ph"]:
-                    _render_llm_status()
-
-        # ── V2 六层架构执行分支 ─────────────────────────────────────
-        agent_v2 = st.session_state.get("agent_v2")
-        if not agent_v2:
-            agent_v2 = st.session_state.get("agent")
-        _log("info", "🚀 V2 六层 Pipeline 启动...")
 
         try:
-            # 收集事件
-            _captured_events: list[dict] = []
-
-            def v2_event_callback(ev_type: str, payload: dict):
-                _captured_events.append({"event": ev_type, **payload})
-                on_event(ev_type, payload)
-
-            result = agent_v2.run(prompt, event_callback=v2_event_callback)
-
-            # ── LLM 流式生成回复 ─────────────────────────────────────────────
-            # 从 result 中收集必要信息
-            extracted_params = {
-                "user_input": prompt,
-                "scenario": result.scenario or "unknown",
+            stream_state = {
+                "text": "",
+                "tools": [],
+                "has_error": False,
+                "error_msg": "",
+                "map_files_generated": [],
+                "current_node": "⏳ 等待中",
+                "step_count": 0,
+                "plan_steps": [],
+                "captured_logs": [],  # 在回调中收集日志，最后一次性渲染
             }
-            if result.metrics:
-                extracted_params.update(result.metrics)
 
-            # 使用 agent_v2 的客户端生成流式回复
-            llm_client = getattr(agent_v2, "_client", None)
-            llm_model = getattr(agent_v2, "model", None)
+            baseline = set()
+            if _OUTPUTS_DIR.exists():
+                baseline = set(_OUTPUTS_DIR.glob("*.html"))
 
-            if llm_client and llm_model and not stream_state.get("has_error"):
-                # 系统提示词
-                system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
+            def _update_stream(text: str):
+                """追加新内容并渲染，末尾加闪烁光标表示正在输出。"""
+                nonlocal rendered_text
+                new = text[len(rendered_text):]
+                rendered_text = text
+                if new:
+                    cursor = '<span style="animation:blink 1s infinite">▍</span>'
+                    content_ph.markdown(text + cursor, unsafe_allow_html=True)
+
+            def _log(etype: str, msg: str):
+                """仅写入 session_state 的 agent_log，供下次 rerun 渲染"""
+                if "agent_log" not in st.session_state:
+                    st.session_state["agent_log"] = []
+                st.session_state["agent_log"].append({
+                    "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "type": etype,
+                    "msg": msg,
+                })
+                stream_state["captured_logs"].append({
+                    "ts": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "type": etype,
+                    "msg": msg,
+                })
+
+            def on_event(event_type: str, payload: dict):
+                """
+                【关键修复】：此回调在 agent_v2.run() 内部被调用。
+                Streamlit 严格禁止在非顶层上下文（嵌套函数调用）中调用 st.* 命令，
+                否则会导致脚本反复重新执行形成死循环。
+
+                修复方案：此回调只更新 stream_state（内存状态）和 st.session_state["agent_log"]
+                （持久化日志），绝对不调用 st.empty() / st.markdown() / st.components.v1.html()。
+                UI 渲染仅在顶层流程中（streaming for 循环、pipeline 执行完成后）进行。
+                """
+                et_lower = event_type.lower()
+
+                if et_lower == "plan_start":
+                    stream_state["current_node"] = "🧠 Planner 生成计划中..."
+                    _log("plan", "📋 Planner 启动，正在制定任务计划...")
+                elif et_lower == "plan_generated":
+                    stream_state["current_node"] = "🧠 Planner 计划已就绪"
+                    plan = payload.get("plan", [])
+                    steps = [
+                        f"  步骤{i+1}: {s.get('action_name','?')} — {s.get('description','')}"
+                        for i, s in enumerate(plan)
+                    ]
+                    _log("plan", f"✅ 计划已生成，共 {len(plan)} 步:\n" + "\n".join(steps[:8]))
+                elif et_lower == "step_start":
+                    stream_state["step_count"] += 1
+                    step_num = stream_state["step_count"]
+                    tool = payload.get("tool", "")
+                    desc = payload.get("description", "")
+                    stream_state["current_node"] = f"⚡ Executor 执行中 ({step_num}步) · {tool}"
+                    _log("step", f"⚡ 第 {step_num} 步: `{tool}` — {desc}")
+                elif et_lower == "step_end":
+                    _log("review", f"{'✅' if payload.get('success') else '❌'} 步骤完成: `{payload.get('tool','')}`")
+                elif et_lower == "react_start":
+                    stream_state["current_node"] = "🔄 ReAct 模式启动"
+                    _log("plan", "🔄 计划解析失败，降级为 ReAct 模式")
+                elif et_lower == "react_turn_start":
+                    turn = payload.get("turn", "")
+                    max_turns = payload.get("max_turns", "")
+                    stream_state["current_node"] = f"🔄 ReAct 第 {turn}/{max_turns} 轮"
+                    _log("step", f"🔄 ReAct 第 {turn}/{max_turns} 轮中...")
+                elif et_lower == "react_error":
+                    stream_state["current_node"] = "❌ ReAct 错误"
+                    _log("error", f"❌ ReAct 错误: {str(payload.get('error',''))[:300]}")
+                elif et_lower == "react_max_steps":
+                    _log("error", f"⚠️ ReAct 达到最大步数限制 ({payload.get('turns','')})")
+                elif et_lower == "react_complete":
+                    stream_state["current_node"] = "✅ ReAct 执行完成"
+                    _log("info", "✅ ReAct 执行完成")
+                elif et_lower == "tool_call_start":
+                    tool = payload.get("tool", "")
+                    stream_state["current_node"] = f"🔧 调用工具: {tool}"
+                    _log("tool", f"🔧 触发工具: `{tool}`")
+                elif et_lower == "tool_call_end":
+                    succ = payload.get("success", False)
+                    tool_name = payload.get("tool", "")
+                    stream_state["current_node"] = f"{'✅' if succ else '❌'} 工具 {tool_name}"
+                    if succ:
+                        _log("tool", f"✅ `{tool_name}` 成功")
+                    else:
+                        _log("error", f"❌ `{tool_name}` 失败")
+                        error_type = payload.get("error_type")
+                        error_summary = payload.get("error_summary")
+                        stderr_output = payload.get("stderr")
+                        if error_type:
+                            _log("error", f"  错误类型: {error_type}")
+                        if error_summary:
+                            _log("error", f"  错误摘要: {error_summary[:200]}{'...' if len(str(error_summary)) > 200 else ''}")
+                        if stderr_output:
+                            tb_lines = stderr_output.strip().split('\n')
+                            tb_display = '\n'.join(tb_lines[:25])
+                            if len(tb_lines) > 25:
+                                tb_display += f"\n  ... (共 {len(tb_lines)} 行)"
+                            _log("error", f"  Traceback:\n{tb_display}")
+                elif et_lower == "review_pass":
+                    stream_state["current_node"] = "🔍 Reviewer 审查通过"
+                    _log("review", f"✅ 审查通过: 步骤 {payload.get('step_id','')}")
+                elif et_lower == "review_retry":
+                    stream_state["current_node"] = "🔄 Reviewer 重试中"
+                    _log("review", f"🔄 审查重试: `{payload.get('tool','')}` (第 {payload.get('attempt','')} 次)")
+                elif et_lower == "review_skip":
+                    stream_state["current_node"] = "⚠️ Reviewer 跳过"
+                    _log("error", f"⚠️ 审查跳过: `{payload.get('tool','')}` 已重试 {payload.get('attempt','')} 次")
+                elif et_lower == "step_skipped_deadloop":
+                    stream_state["current_node"] = "⚠️ 死循环防护"
+                    _log("error", f"⚠️ `{payload.get('tool','')}` 连续失败，强制跳过 — {payload.get('reason','')}")
+                elif et_lower == "error":
+                    stream_state["has_error"] = True
+                    stream_state["error_msg"] = payload.get("error", "未知错误")
+                    _log("error", f"❌ 系统错误: {stream_state['error_msg'][:300]}")
+                elif et_lower == "final_response":
+                    _log("info", "💬 执行完成")
+                elif et_lower == "intent_classified":
+                    intent = payload.get("intent", "") or payload.get("scenario", "")
+                    confidence = payload.get('confidence', 0)
+                    keywords = payload.get('matched_keywords', [])
+                    kw_str = ', '.join(keywords[:5]) if keywords else '无'
+                    stream_state["current_node"] = f"🎯 意图识别: {intent}"
+                    _log("plan", f"🎯 意图识别: **{intent}** (置信度 {confidence:.2f}, 匹配: {kw_str})")
+                elif et_lower == "schema_loaded":
+                    stream_state["current_node"] = f"📋 Schema 加载: {payload.get('intent', '')}"
+                    _log("plan", f"📋 Schema 加载: {payload.get('intent', '')}, 参数: {payload.get('schema_keys', [])}")
+                elif et_lower == "llm_response":
+                    _log("plan", f"📝 LLM 参数提取完成")
+                elif et_lower == "task_parsed":
+                    stream_state["current_node"] = f"✅ 任务解析: {payload.get('task_type', '')}"
+                    _log("step", f"✅ 任务解析成功: **{payload.get('task_type', '')}**")
+                elif et_lower == "task_executed":
+                    stream_state["current_node"] = f"⚡ 执行完成"
+                    _log("step", "⚡ 任务执行完成")
+                elif et_lower == "validation_error":
+                    stream_state["has_error"] = True
+                    stream_state["error_msg"] = payload.get('error', '参数校验失败')
+                    _log("error", f"❌ 参数校验失败: {payload.get('error', '')[:200]}")
+
+                # ── V2 六层 Pipeline 事件映射 ───────────────────────────────
+                elif et_lower == "input_received":
+                    stream_state["current_node"] = "L1 用户输入已接收"
+                    _log("step", "📥 L1 用户输入层：输入已接收")
+                elif et_lower == "orchestration_complete":
+                    scenario = payload.get("scenario", "")
+                    _log("plan", f"✅ L3 场景编排完成 — 场景: {scenario}")
+                elif et_lower == "clarification_needed":
+                    questions = payload.get("clarification_questions", [])
+                    q_texts = [q.get("question", q.get("field", "")) for q in questions]
+                    _log("plan", f"⚠️ L3 需要追问: {q_texts}")
+                    stream_state["current_node"] = f"⚠️ L3 参数追问中 ({len(questions)} 个问题)"
+                elif et_lower == "dsl_built":
+                    _log("step", f"📋 L4 DSL 构建完成 — 任务: {payload.get('task', '')}")
+                elif et_lower == "execution_complete":
+                    success = payload.get("success", False)
+                    engine = payload.get("engine", "")
+                    _log("step", f"{'✅' if success else '❌'} L5 执行{'成功' if success else '失败'} — 引擎: {engine}")
+                    stream_state["current_node"] = f"⚡ L5 执行{'成功' if success else '失败'}"
+                elif et_lower == "render_complete":
+                    _log("info", f"✅ L6 结果渲染完成")
+                elif et_lower == "complete":
+                    success = payload.get("success", False)
+                    _log("info", f"{'✅' if success else '❌'} Pipeline {'成功' if success else '失败'}")
+
+                # ── 【关键】绝对不能在 on_event 回调中调用任何 st.* 命令 ──────
+                # 包括：st.empty() / st.markdown() / st.components.v1.html()
+                # / with st.session_state["sidebar_status_ph"]
+                # 否则 Streamlit 会将此次调用视为 widget 更新，触发脚本重新执行，
+                # 导致 on_event 被再次调用，形成死循环。
+
+            # ── V2 六层架构执行分支 ─────────────────────────────────────
+            agent_v2 = st.session_state.get("agent_v2")
+            if not agent_v2:
+                agent_v2 = st.session_state.get("agent")
+            _log("info", "🚀 V2 六层 Pipeline 启动...")
+
+            try:
+                _captured_events: list[dict] = []
+
+                def v2_event_callback(ev_type: str, payload: dict):
+                    _captured_events.append({"event": ev_type, **payload})
+                    on_event(ev_type, payload)
+
+                result = agent_v2.run(prompt, event_callback=v2_event_callback)
+
+                # ── LLM 流式生成回复 ─────────────────────────────────────────
+                extracted_params = {
+                    "user_input": prompt,
+                    "scenario": result.scenario or "unknown",
+                }
+                if result.metrics:
+                    extracted_params.update(result.metrics)
+
+                llm_client = getattr(agent_v2, "_client", None)
+                llm_model = getattr(agent_v2, "model", None)
+
+                if llm_client and llm_model and not stream_state.get("has_error"):
+                    system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
 
 回复要求：
 1. 使用中文
@@ -1861,190 +1883,177 @@ def _handle_user_message(prompt: str, agent):
 3. 包含关键数据和结论
 4. 如有必要，给出下一步建议"""
 
-                # 根据提供商选择正确的模型参数
-                params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
-                user_message = f"""用户请求：{prompt}
+                    params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
+                    user_message = f"""用户请求：{prompt}
 
 任务类型：{result.scenario or "unknown"}
 分析结果摘要：{result.summary or ""}
 
 关键指标："""
 
-                if result.metrics:
-                    for k, v in list(result.metrics.items())[:5]:
-                        user_message += f"\n- {k}: {v}"
+                    if result.metrics:
+                        for k, v in list(result.metrics.items())[:5]:
+                            user_message += f"\n- {k}: {v}"
 
-                user_message += "\n\n请生成简洁的回复："
+                    user_message += "\n\n请生成简洁的回复："
 
-                try:
-                    stream_state["text"] = ""
-                    full_text = ""
+                    try:
+                        stream_state["text"] = ""
+                        full_text = ""
+                        st.session_state["llm_status"] = "speaking"
+                        st.session_state["llm_current_node"] = "LLM 输出中"
 
-                    # 更新状态为正在输出
-                    st.session_state["llm_status"] = "speaking"
-                    st.session_state["llm_current_node"] = "LLM 输出中"
+                        stream = llm_client.chat.completions.create(
+                            model=llm_model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_message},
+                            ],
+                            temperature=0.7,
+                            max_tokens=500,
+                            stream=True,
+                        )
 
-                    stream = llm_client.chat.completions.create(
-                        model=llm_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message},
-                        ],
-                        temperature=0.7,
-                        max_tokens=500,
-                        stream=True,
-                    )
+                        for chunk in stream:
+                            if chunk.choices and chunk.choices[0].delta.content:
+                                content = chunk.choices[0].delta.content
+                                full_text += content
+                                stream_state["text"] = full_text
+                                _update_stream(full_text)
 
-                    for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            content = chunk.choices[0].delta.content
-                            full_text += content
-                            stream_state["text"] = full_text
+                        if result.metrics:
+                            metrics_lines = ["\n\n📈 **关键指标**:"]
+                            label_map = {
+                                "distance_m": "距离(米)", "distance_km": "距离(公里)",
+                                "duration_min": "时长(分钟)", "duration_s": "时长(秒)",
+                                "mode": "出行方式", "engine": "引擎",
+                                "start": "起点", "end": "终点",
+                            }
+                            for k, v in list(result.metrics.items())[:10]:
+                                label = label_map.get(k, k)
+                                metrics_lines.append(f"  - **{label}**: `{v}`")
+                            full_text += "\n".join(metrics_lines)
                             _update_stream(full_text)
 
-                    # 追加指标信息到流式回复后面
-                    if result.metrics:
-                        metrics_lines = ["\n\n📈 **关键指标**:"]
-                        label_map = {
-                            "distance_m": "距离(米)",
-                            "distance_km": "距离(公里)",
-                            "duration_min": "时长(分钟)",
-                            "duration_s": "时长(秒)",
-                            "mode": "出行方式",
-                            "engine": "引擎",
-                            "start": "起点",
-                            "end": "终点",
-                        }
-                        for k, v in list(result.metrics.items())[:10]:
-                            label = label_map.get(k, k)
-                            metrics_lines.append(f"  - **{label}**: `{v}`")
-                        full_text += "\n".join(metrics_lines)
-                        _update_stream(full_text)
+                        final_content = full_text
 
-                    final_content = full_text
-
-                except Exception as e:
-                    _log("error", f"LLM 流式输出失败: {str(e)}")
-                    final_content = None
-            else:
-                final_content = None
-
-            # 如果流式输出没有生成 final_content，使用默认格式
-            if final_content is None:
-                if result.clarification_needed:
-                    qs = result.clarification_questions or []
-                    if qs:
-                        clarification_text = "为了完成分析，我需要确认以下几点：\n"
-                        for i, q in enumerate(qs, 1):
-                            clarification_text += f"\n**{i}. {q.get('question', q.get('field', '未知问题'))}**"
-                            opts = q.get("options", [])
-                            if opts:
-                                clarification_text += f"\n   可选：{' / '.join(opts)}"
-                        final_content = f"**⚠️ 需要更多信息**\n\n{clarification_text}"
-                        st.session_state["pending_clarification"] = {
-                            "original_input": prompt,
-                            "questions": qs,
-                            "answers": {},
-                        }
-                    else:
-                        final_content = "**⚠️ 参数不完整，请补充更多信息**"
-                    stream_state["has_error"] = True
-                    stream_state["error_msg"] = "参数不完整"
-
-                elif result.success:
-                    lines = [f"**✅ {result.scenario.upper() if result.scenario else '分析'} 执行成功**\n"]
-                    if result.summary:
-                        lines.append(f"\n📋 **摘要**: {result.summary}")
-
-                    # 显示 metrics（路径规划的距离、时长等）
-                    if result.metrics:
-                        lines.append("\n📈 **关键指标**:")
-                        for k, v in list(result.metrics.items())[:10]:
-                            # 格式化显示
-                            label_map = {
-                                "distance_m": "距离(米)",
-                                "distance_km": "距离(公里)",
-                                "duration_min": "时长(分钟)",
-                                "duration_s": "时长(秒)",
-                                "mode": "出行方式",
-                                "engine": "引擎",
-                                "start": "起点",
-                                "end": "终点",
-                            }
-                            label = label_map.get(k, k)
-                            lines.append(f"  - **{label}**: `{v}`")
-
-                    # 显示 conclusion
-                    if result.conclusion:
-                        conclusion = result.conclusion
-                        if isinstance(conclusion, dict):
-                            findings = conclusion.get("key_findings", [])
-                            if findings:
-                                lines.append("\n🔍 **分析结果**:")
-                                for f in findings[:5]:
-                                    lines.append(f"  - {f}")
-
-                    final_content = "\n".join(lines)
+                    except Exception as e:
+                        _log("error", f"LLM 流式输出失败: {str(e)}")
+                        final_content = None
                 else:
-                    error = result.error or "执行失败"
-                    final_content = f"**❌ 执行失败**: {error}"
-                    stream_state["has_error"] = True
-                    stream_state["error_msg"] = error
+                    final_content = None
 
-        except Exception as e:
-            final_content = f"**❌ V2 Pipeline 异常**: {str(e)}"
-            _log("error", f"❌ V2 Pipeline 异常: {str(e)}")
-            stream_state["has_error"] = True
-            stream_state["error_msg"] = str(e)
+                # 如果流式输出没有生成 final_content，使用默认格式
+                if final_content is None:
+                    if result.clarification_needed:
+                        qs = result.clarification_questions or []
+                        if qs:
+                            clarification_text = "为了完成分析，我需要确认以下几点：\n"
+                            for i, q in enumerate(qs, 1):
+                                clarification_text += f"\n**{i}. {q.get('question', q.get('field', '未知问题'))}**"
+                                opts = q.get("options", [])
+                                if opts:
+                                    clarification_text += f"\n   可选：{' / '.join(opts)}"
+                            final_content = f"**⚠️ 需要更多信息**\n\n{clarification_text}"
+                            st.session_state["pending_clarification"] = {
+                                "original_input": prompt,
+                                "questions": qs,
+                                "answers": {},
+                            }
+                        else:
+                            final_content = "**⚠️ 参数不完整，请补充更多信息**"
+                        stream_state["has_error"] = True
+                        stream_state["error_msg"] = "参数不完整"
 
-        if stream_state["has_error"]:
-            final_content = (final_content or "") + f"\n\n> **⚠️ 提示:** {stream_state['error_msg']}"
+                    elif result.success:
+                        lines = [f"**✅ {result.scenario.upper() if result.scenario else '分析'} 执行成功**\n"]
+                        if result.summary:
+                            lines.append(f"\n📋 **摘要**: {result.summary}")
 
-        # ── 显示最终回复（已无光标）──
-        if final_content:
-            content_ph.markdown(final_content)
-        elif stream_state["tools"]:
-            tool_list = "，".join(f"`{t.get('tool','')}" for t in stream_state["tools"])
-            content_ph.markdown(f"✅ Agent 执行完成，共调用 **{len(stream_state['tools'])}** 个工具：{tool_list}")
-        else:
-            content_ph.markdown("✅ Agent 响应完成（无文本输出）")
+                        if result.metrics:
+                            lines.append("\n📈 **关键指标**:")
+                            label_map = {
+                                "distance_m": "距离(米)", "distance_km": "距离(公里)",
+                                "duration_min": "时长(分钟)", "duration_s": "时长(秒)",
+                                "mode": "出行方式", "engine": "引擎",
+                                "start": "起点", "end": "终点",
+                            }
+                            for k, v in list(result.metrics.items())[:10]:
+                                label = label_map.get(k, k)
+                                lines.append(f"  - **{label}**: `{v}`")
 
-        # 将最终状态写入思考日志
-        if stream_state["has_error"]:
-            _log("error", f"🏁 执行完成（含错误）: {stream_state['error_msg'][:200]}")
-        else:
-            node = stream_state.get("current_node", "")
-            _log("info", f"🏁 执行完成 — {node.replace('**', '')}" if node else "🏁 执行完成")
+                        if result.conclusion:
+                            conclusion = result.conclusion
+                            if isinstance(conclusion, dict):
+                                findings = conclusion.get("key_findings", [])
+                                if findings:
+                                    lines.append("\n🔍 **分析结果**:")
+                                    for f in findings[:5]:
+                                        lines.append(f"  - {f}")
 
-        asst_msg_id = f"asst_{hash((cid, final_content[:80])) & 0x7FFFFFFF}"
-        st.session_state["conversations"][cid]["messages"].append({
-            "role": "assistant",
-            "content": final_content,
-            "tool_calls": [
-                {"function": {"name": t.get("tool", "")}} for t in stream_state["tools"]
-            ],
-            "id": asst_msg_id,
-        })
+                        final_content = "\n".join(lines)
+                    else:
+                        error = result.error or "执行失败"
+                        final_content = f"**❌ 执行失败**: {error}"
+                        stream_state["has_error"] = True
+                        stream_state["error_msg"] = error
 
-        if _OUTPUTS_DIR.exists():
-            current_maps = set(_OUTPUTS_DIR.glob("*.html"))
-            new_maps = current_maps - baseline
-            if new_maps:
-                latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
-                st.session_state["last_map_file"] = str(latest_map)
-                st.markdown("<hr>", unsafe_allow_html=True)
-                st.markdown(
-                    '<div class="section-heading">🗺️ &nbsp;最新地图</div>',
-                    unsafe_allow_html=True,
-                )
-                _render_html_map_inline(str(latest_map), height=760)
-                _update_kpi_from_tool_results(stream_state["tools"])
+            except Exception as e:
+                final_content = f"**❌ V2 Pipeline 异常**: {str(e)}"
+                _log("error", f"❌ V2 Pipeline 异常: {str(e)}")
+                stream_state["has_error"] = True
+                stream_state["error_msg"] = str(e)
 
-        # rerun 前强制重置 LLM 状态灯，避免假死
-        st.session_state["llm_status"] = "idle"
-        st.session_state["llm_current_node"] = ""
+            # ── 显示最终回复（已无光标）──
+            if final_content:
+                content_ph.markdown(final_content)
+            elif stream_state["tools"]:
+                tool_list = "，".join(f"`{t.get('tool','')}" for t in stream_state["tools"])
+                content_ph.markdown(f"✅ Agent 执行完成，共调用 **{len(stream_state['tools'])}** 个工具：{tool_list}")
+            else:
+                content_ph.markdown("✅ Agent 响应完成（无文本输出）")
 
-        st.rerun()
+            # 将最终状态写入思考日志
+            if stream_state["has_error"]:
+                _log("error", f"🏁 执行完成（含错误）: {stream_state['error_msg'][:200]}")
+            else:
+                node = stream_state.get("current_node", "")
+                _log("info", f"🏁 执行完成 — {node.replace('**', '')}" if node else "🏁 执行完成")
+
+            asst_msg_id = f"asst_{hash((cid, final_content[:80] if final_content else '')) & 0x7FFFFFFF}"
+            st.session_state["conversations"][cid]["messages"].append({
+                "role": "assistant",
+                "content": final_content or "",
+                "tool_calls": [
+                    {"function": {"name": t.get("tool", "")}} for t in stream_state["tools"]
+                ],
+                "id": asst_msg_id,
+            })
+
+            if _OUTPUTS_DIR.exists():
+                current_maps = set(_OUTPUTS_DIR.glob("*.html"))
+                new_maps = current_maps - baseline
+                if new_maps:
+                    latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
+                    st.session_state["last_map_file"] = str(latest_map)
+                    st.markdown("<hr>", unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="section-heading">🗺️ &nbsp;最新地图</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _render_html_map_inline(str(latest_map), height=760)
+                    _update_kpi_from_tool_results(stream_state["tools"])
+
+            # 执行完成后触发 rerun 以更新 UI 状态灯（LLM 状态已写入 session_state）
+            # rerun 前强制重置 LLM 状态灯，避免假死
+            st.session_state["llm_status"] = "idle"
+            st.session_state["llm_current_node"] = ""
+            st.rerun()
+
+        finally:
+            # 【关键】无论正常完成还是异常退出，必须清除处理标志
+            # 防止下次 rerun 时误判为"正在处理中"而导致消息丢失
+            st.session_state.pop("_handle_msg_in_progress", None)
 
 
 def _update_kpi_from_tool_results(tools: list):

@@ -94,7 +94,8 @@ class RouteTask(BaseTask):
     city: Optional[str] = Field(default=None, description="城市名称（用于辅助定位）")
     provider: Literal["amap", "osm", "auto"] = Field(
         default="auto",
-        description="数据源：amap（国内高德）/ osm（海外OSM）/ auto（自动选择）"
+        description="【高德限制令】amap=仅限国内中文地址翻译+导航，禁止用于几何计算。"
+                    "数据源：amap（国内高德）/ osm（海外OSM）/ auto（自动选择）"
     )
 
     @field_validator("start", "end")

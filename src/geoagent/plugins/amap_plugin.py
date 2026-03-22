@@ -974,37 +974,23 @@ def _resolve_location_to_coords(location: str, city: str = "") -> Optional[dict]
 
 class AmapPlugin(BasePlugin):
     """
-    高德地图 API 插件
+    【高德地图 API 限制令】本插件仅负责两件事：
 
-    支持的 Action 列表：
-    🟢 基础服务：
-        - geocode              地理编码
-        - regeocode            逆地理编码
-        - direction_routing    路径规划（步行/驾车/公交/骑行）
-        - district_search      行政区域查询
-        - static_map           静态地图
-        - convert_coords       坐标转换
-        - grasp_road           轨迹纠偏
+    🅰️ 地址翻译（geocode / regeocode）
+        输入中文地址 → 返回 [lng, lat] 坐标。
+        输入坐标 → 返回地址描述。
 
-    🔵 高级服务：
-        - search_poi           POI 搜索
-        - input_tips           输入提示
-        - traffic_status       交通态势
-        - traffic_events       交通事件
-        - transit_info         公交信息
-        - ip_location          IP 定位
-        - weather_query        天气查询
+    🅱️ 路径导航（direction_routing / direction_walking / direction_driving / direction_transit）
+        输入起点终点 → 返回路径几何和里程。
+
+    🚨 严禁在此插件中做几何计算（缓冲区/面积/叠置）！
+       几何计算 → GeoPandas/Shapely → Folium 渲染。
     """
 
+    # 仅允许地址翻译和路径导航两类 action
     SUPPORTED_ACTIONS = {
-        # 基础服务
-        "geocode", "regeocode", "direction_routing", "district_search",
-        "static_map", "convert_coords", "grasp_road",
-        # 高级服务
-        "search_poi", "input_tips", "traffic_status", "traffic_events",
-        "transit_info", "ip_location", "weather_query",
-        # 兼容旧版
-        "poi_text_search", "poi_around_search",
+        "geocode", "regeocode",
+        "direction_routing",
         "direction_walking", "direction_driving", "direction_transit",
     }
 

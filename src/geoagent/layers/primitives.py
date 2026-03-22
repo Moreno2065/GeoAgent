@@ -238,8 +238,9 @@ def get_task_info(task: str) -> Optional[Dict[str, Any]]:
     """根据任务名获取任务定义信息"""
     task_lower = task.lower()
     for category_ops in PRIMITIVES.values():
-        if task_lower in category_ops:
-            return category_ops[task_lower]
+        for op_name, op_info in category_ops.items():
+            if op_name.lower() == task_lower:
+                return op_info
     return None
 
 
@@ -252,8 +253,9 @@ def get_category_of_task(task: str) -> Optional[str]:
     """获取任务所属的类别"""
     task_lower = task.lower()
     for cat, ops in PRIMITIVES.items():
-        if task_lower in ops:
-            return cat
+        for op_name in ops:
+            if op_name.lower() == task_lower:
+                return cat
     return None
 
 

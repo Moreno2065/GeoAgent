@@ -148,7 +148,7 @@ SCENARIO_CONFIGS: Dict[str, ScenarioConfig] = {
             "engine", "output_format",
         ],
         output_format="geojson",
-        notes="Amap API 用于真实导航；NetworkX 用于自定义路网分析",
+        notes="【高德限制令】amap 仅用于国内真实导航。几何计算（缓冲区/面积）→ GeoPandas/Shapely → Folium 渲染。",
     ),
 
     # -------------------------------------------------------------------------
