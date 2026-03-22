@@ -83,6 +83,9 @@ class Scenario(str, Enum):
     # ── 🟣 代码沙盒场景（受限代码执行）──────────────────────────────
     CODE_SANDBOX = "code_sandbox"  # 受限代码执行（非标准任务的自定义 Python 代码）
 
+    # ── 🟣 OSM 地图下载场景 ────────────────────────────────────────
+    FETCH_OSM = "fetch_osm"  # 从 OpenStreetMap 下载路网/建筑物数据
+
     # ── 🟢 高德基础 Web 服务场景 ─────────────────────────────────
     GEOCODE = "geocode"        # 地理编码（地址 → 坐标）
     REGEOCODE = "regeocode"     # 逆地理编码（坐标 → 地址）

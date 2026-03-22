@@ -109,6 +109,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "amap":          lambda: __import__(
                               "geoagent.executors.amap_executor",
                               fromlist=["AmapExecutor"]).AmapExecutor,
+        # 多条件综合搜索（联网推理）
+        "multi_criteria_search": lambda: __import__(
+                              "geoagent.executors.multi_criteria_executor",
+                              fromlist=["MultiCriteriaSearchExecutor"]).MultiCriteriaSearchExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -141,6 +145,7 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "accessibility":    "route",              # accessibility 路由到 route executor
     "suitability":     "suitability",          # 适宜性选址（MCDA）
     "general":         "general",
+    "multi_criteria_search": "multi_criteria_search",  # 多条件综合搜索
     # GDAL 工具（raster_clip, raster_reproject, vector_buffer 等）
     "gdal":            "gdal",
     "raster_clip":     "gdal",
@@ -199,6 +204,7 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "accessibility":     "accessibility",
     "suitability":      "suitability",
     "general":          "general",
+    "multi_criteria_search": "multi_criteria_search",
     # 兼容 geo_engine/router.py 中的 task 别名
     "proximity":        "buffer",
     "surface":          "interpolation",
@@ -318,6 +324,33 @@ class TaskRouter:
             )
 
         try:
+            # ── 🟣 code_sandbox: instruction → code 翻译 ───────────────────
+            if task_type == "code_sandbox" and "instruction" in task and not task.get("code"):
+                task = dict(task)  # 不修改原始 dict
+                from geoagent.layers.llm_router import _generate_sandbox_code
+                import os as _os
+                workspace_files = []
+                try:
+                    from geoagent.gis_tools.fixed_tools import get_workspace_dir
+                    workspace = get_workspace_dir()
+                    workspace_files = [
+                        str(f.relative_to(workspace)) for f in workspace.rglob("*")
+                        if f.is_file()
+                    ]
+                except Exception:
+                    pass
+                generated_code = _generate_sandbox_code(task["instruction"], workspace_files)
+                if generated_code:
+                    task["code"] = generated_code
+                    task["description"] = task["instruction"]
+                else:
+                    return ExecutorResult.err(
+                        task_type,
+                        "code_sandbox：无法生成代码（请检查 DEEPSEEK_API_KEY）",
+                        engine="sandbox",
+                    )
+            # ───────────────────────────────────────────────────────────────
+
             return executor.run(task)
         except Exception as e:
             return ExecutorResult.err(

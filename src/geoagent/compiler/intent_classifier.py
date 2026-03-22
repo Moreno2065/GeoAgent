@@ -32,7 +32,7 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
     ],
     "buffer": [
         # 中文
-        "缓冲", "buffer", "缓冲区", "方圆", "周围", "附近范围",
+        "缓冲", "buffer", "缓冲区", "方圆", "附近范围",
         "500米范围", "1公里内", "xx米", "xx公里",
         # 英文
         "buffer zone", "buffering", "proximity", "within distance",
@@ -120,6 +120,19 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
         "site suitability", "suitable area", "suitability analysis",
         "land suitability",
     ],
+    # ── 🟣 多条件综合搜索（联网推理）───────────────────────────────
+    "multi_criteria_search": [
+        # 中文 — 复合条件搜索（简单匹配词）
+        "找一个", "找一下", "帮我找", "搜索", "查找",
+        "附近", "周边", "附近找", "附近有",
+        "摸鱼", "摸鱼地点", "适合摸鱼",
+        "距离星巴克", "距离地铁", "距离小于", "距离大于",
+        "附近.*推荐", "推荐.*附近",
+        # 英文
+        "find me a", "find a", "search for", "look for",
+        "nearby", "nearest", "close to",
+        "site selection", "optimal location", "best spot",
+    ],
     "viewshed": [
         # 中文
         "视域", "视域分析", "通视", "通视分析", "可见性",
@@ -154,6 +167,18 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
         "calculate distance", "custom formula", "custom algorithm",
         "iterative", "statistical analysis", "coordinate transformation",
         "run python", "execute code", "script execution",
+    ],
+    # ── 🟣 OSM 地图下载 ───────────────────────────────────────────────
+    "fetch_osm": [
+        # 中文
+        "osm下载", "用osm", "osm抓取", "下载地图", "抓取地图",
+        "下载osm", "osm数据", "osm地图", "openstreetmap下载",
+        "获取osm", "获取地图数据", "下载路网", "下载建筑",
+        "周边地图", "周围地图", "地图下载",
+        # 英文
+        "osm download", "osm fetch", "fetch osm", "download osm",
+        "osm data", "openstreetmap", "download map", "fetch map",
+        "download buildings", "download network", "download roads",
     ],
 }
 
@@ -409,6 +434,8 @@ INTENT_TO_TASK_TYPE: Dict[str, str] = {
     "accessibility": "accessibility",
     "suitability": "suitability",
     "viewshed": "viewshed",
+    "multi_criteria_search": "multi_criteria_search",
+    "fetch_osm": "fetch_osm",
     "general": "general",
 }
 
@@ -457,6 +484,11 @@ SCENARIO_SUBTYPES: Dict[str, Dict[str, List[str]]] = {
         "mcda": ["多准则", "mcda", "多目标", "multi-criteria"],
         "weighted": ["加权", "权重", "weighted overlay"],
         "site_selection": ["选址", "选位置", "site selection"],
+    },
+    "multi_criteria_search": {
+        "poi_search": ["附近", "周边", "找", "搜索", "nearby", "near"],
+        "distance_filter": ["距离", "小于", "大于", "within", "beyond"],
+        "comparison": ["最近", "最远", "哪个", "nearest", "farthest"],
     },
 }
 
@@ -633,6 +665,27 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "examples": ["2026-03-21 09:00", "2026-03-21 12:00", "2026-03-21 15:00"],
         },
     },
+    "multi_criteria_search": {
+        "center": {
+            "question": "请问搜索的中心位置是哪里？",
+            "options": None,
+            "required": False,
+            "default": "",
+            "examples": ["天河体育中心", "琶洲", "珠江新城"],
+        },
+        "criteria": {
+            "question": "请描述搜索条件？（如：距离星巴克小于200米，距离地铁站大于500米）",
+            "options": None,
+            "required": False,
+            "default": "",
+        },
+        "radius": {
+            "question": "请问搜索半径是多少？",
+            "options": ["1公里", "2公里", "3公里", "5公里"],
+            "required": False,
+            "default": "3公里",
+        },
+    },
     "ndvi": {
         "input_file": {
             "question": "请提供遥感影像文件？",
@@ -691,6 +744,38 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "options": None,
             "required": False,
             "examples": ["高度", "楼层", "building_height"],
+        },
+    },
+    # ── 🟣 OSM 地图下载 ────────────────────────────────────────────────
+    "fetch_osm": {
+        "center_point": {
+            "question": "请问要下载哪个地点周围的地图？（输入地址或地标名称）",
+            "options": None,
+            "required": True,
+            "examples": ["武汉黄鹤楼", "北京天安门", "上海外滩"],
+            "step": 1,
+        },
+        "radius": {
+            "question": "请问下载范围半径是多少米？",
+            "options": ["500米", "1000米", "2000米", "3000米", "5000米"],
+            "required": False,
+            "default": 1000,
+            "examples": ["500", "1000", "2000"],
+            "step": 2,
+        },
+        "data_type": {
+            "question": "请问要下载什么类型的数据？",
+            "options": ["路网和建筑物", "仅路网", "仅建筑物"],
+            "required": False,
+            "default": "all",
+            "step": 3,
+        },
+        "network_type": {
+            "question": "请问路网的类型是？",
+            "options": ["步行网络", "车行网络", "骑行网络", "所有道路"],
+            "required": False,
+            "default": "walk",
+            "step": 3,
         },
     },
 }

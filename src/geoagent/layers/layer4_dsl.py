@@ -565,6 +565,31 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
         },
     },
 
+    # ── 🟣 代码沙盒（受限代码执行）────────────────────────────────
+    Scenario.CODE_SANDBOX: {
+        "instruction": {
+            "type": "string",
+            "required": True,
+            "description": "用户原始指令（透传给 LLM 生成代码）",
+            "examples": ["计算两个圆的交集面积", "生成随机点并计算距离"],
+        },
+        "timeout_seconds": {
+            "type": "number",
+            "required": False,
+            "default": 60.0,
+            "min": 1.0,
+            "max": 300.0,
+            "description": "执行超时时间（秒）",
+        },
+        "mode": {
+            "type": "string",
+            "required": False,
+            "default": "exec",
+            "options": ["exec", "interactive", "notebook"],
+            "description": "执行模式",
+        },
+    },
+
     # ── POI 周边搜索（"XX周围有多少个XX"模式）──────────────────────────────
     Scenario.POI_SEARCH: {
         "center_point": {
@@ -782,6 +807,7 @@ class DSLBuilder:
             Scenario.RASTER: ["input_file"],
             Scenario.SUITABILITY: ["study_area"],
             Scenario.POI_SEARCH: ["center_point"],
+            Scenario.CODE_SANDBOX: ["instruction"],  # 用户原始指令
         }
 
         keys = inputs_keys.get(scenario, [])

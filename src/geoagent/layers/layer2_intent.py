@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Set, Optional
@@ -343,18 +344,21 @@ class IntentClassifier:
     """
     意图分类器
 
-    基于关键词的意图分类，稳定高效。
+    采用两阶段架构：
+    1. 第一阶段：LLM 语义理解（优先）
+    2. 第二阶段：关键词匹配（兜底）
 
     设计原则：
-    - 不依赖 LLM，用关键词匹配
+    - LLM 优先处理复杂语义理解
+    - 关键词匹配作为降级方案
     - 返回固定 Scenario 枚举
-    - 置信度基于匹配得分
+    - LLM 不可用时优雅降级
 
     使用方式：
         classifier = IntentClassifier()
         result = classifier.classify("芜湖南站到方特的步行路径")
         print(result.primary)  # Scenario.ROUTE
-        print(result.confidence)  # 0.95
+        print(result.confidence)  # 0.99
     """
 
     def __init__(self, threshold: float = 0.05):
@@ -369,9 +373,7 @@ class IntentClassifier:
 
     def _build_index(self) -> None:
         """构建关键词索引以加速匹配"""
-        # 关键词 -> 意图的映射
         self._keyword_to_intent: Dict[str, List[Scenario]] = {}
-        # 意图 -> 关键词列表
         self._intent_keywords: Dict[Scenario, List[str]] = {}
 
         for intent, keywords in INTENT_KEYWORDS.items():
@@ -382,9 +384,100 @@ class IntentClassifier:
                     self._keyword_to_intent[kw_lower] = []
                 self._keyword_to_intent[kw_lower].append(intent)
 
-    def classify(self, query: str, multi: bool = False) -> IntentResult:
+    def _call_llm_intent(self, query: str) -> Optional[IntentResult]:
         """
-        对用户 query 进行意图分类
+        调用 LLM 进行意图分类。
+
+        返回 IntentResult 或 None（失败时降级）。
+
+        Args:
+            query: 用户输入的自然语言查询
+
+        Returns:
+            IntentResult 或 None（LLM 不可用或调用失败）
+        """
+        import json
+
+        # 检查 API Key
+        api_key = os.getenv("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            return None
+
+        # 检查是否禁用 LLM
+        if os.getenv("GEOAGENT_DISABLE_LLM", "").lower() in ("1", "true", "yes"):
+            return None
+
+        SCENARIOS = [s.value for s in Scenario]
+        SCENARIO_NAMES = [s.name for s in Scenario]
+
+        prompt = f"""你是专业的 GIS 空间意图识别器。
+请将用户输入分类到以下场景之一：
+{', '.join(SCENARIOS)}
+
+涉及复杂空间运算、多条件距离计算、无本地数据的分析 → CODE_SANDBOX
+输入："{query}"
+只输出枚举单词，不要解释。"""
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            )
+
+            response = client.chat.completions.create(
+                model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                messages=[
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=20,
+                timeout=30.0,
+            )
+
+            reply = response.choices[0].message.content or ""
+            if not reply:
+                return None
+
+            reply = reply.strip().upper()
+
+            # 尝试匹配 Scenario 枚举
+            for scenario in Scenario:
+                if scenario.name == reply or scenario.value.upper() == reply:
+                    return IntentResult(
+                        primary=scenario,
+                        confidence=0.99,  # LLM 置信度高
+                        matched_keywords=["llm_detected"],
+                        all_intents={scenario}
+                    )
+
+            # 尝试 JSON 解析（某些模型可能返回 JSON）
+            try:
+                parsed = json.loads(reply)
+                if isinstance(parsed, dict) and "scenario" in parsed:
+                    scenario_name = parsed["scenario"].upper()
+                    for scenario in Scenario:
+                        if scenario.name == scenario_name or scenario.value.upper() == scenario_name:
+                            return IntentResult(
+                                primary=scenario,
+                                confidence=0.99,
+                                matched_keywords=["llm_detected"],
+                                all_intents={scenario}
+                            )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        except Exception:
+            pass
+
+        return None
+
+    def _classify_by_keywords(self, query: str, multi: bool = False) -> IntentResult:
+        """
+        关键词匹配兜底方法（原 classify 核心逻辑）。
+
+        当 LLM 不可用或调用失败时使用。
 
         Args:
             query: 用户输入的自然语言查询
@@ -393,16 +486,22 @@ class IntentClassifier:
         Returns:
             IntentResult 对象
         """
-        if not query or not query.strip():
+        # ==========================================
+        # 🚨 哈基米前置拦截器 (Early Exit Pattern)
+        # ==========================================
+        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算"]
+
+        if any(trigger in query for trigger in sandbox_dictators):
             return IntentResult(
-                primary=Scenario.ROUTE,
-                confidence=0.0,
-                matched_keywords=[],
-                all_intents=set()
+                primary=Scenario.CODE_SANDBOX,
+                confidence=1.0,
+                matched_keywords=["显式编程触发词"],
+                all_intents={Scenario.CODE_SANDBOX}
             )
+        # ==========================================
 
         query_lower = query.lower()
-        matched: Dict[Scenario, List[str]] = {}  # intent -> matched keywords
+        matched: Dict[Scenario, List[str]] = {}
 
         # 精确匹配
         for kw, intents in self._keyword_to_intent.items():
@@ -432,14 +531,13 @@ class IntentClassifier:
             is_garbage = stripped.isdigit() or len(stripped) < 2
             if is_garbage:
                 return IntentResult(
-                    primary="general",  # 安检门：垃圾输入标记
+                    primary="general",
                     confidence=1.0,
                     matched_keywords=[],
                     all_intents=set()
                 )
-            # 无匹配且非垃圾 → 无足够证据，阈值兜底
             return IntentResult(
-                primary="general",  # type: ignore[arg-type]
+                primary="general",
                 confidence=0.0,
                 matched_keywords=[],
                 all_intents=set()
@@ -448,15 +546,11 @@ class IntentClassifier:
         # 计算每个意图的得分
         scores: Dict[Scenario, float] = {}
         for intent, keywords in matched.items():
-            # 得分 = 匹配关键词数量 * 关键词长度权重（归一化）
             n_matched = len(keywords)
-            # 关键词总字符长度
             total_kw_chars = sum(len(kw) for kw in keywords)
-            # 关键词数量得分
             all_kws = self._intent_keywords.get(intent, [])
             char_score = total_kw_chars / max(sum(len(k) for k in all_kws), 1)
             count_score = n_matched / max(len(all_kws), 1)
-            # 综合得分：字符权重 + 数量权重
             scores[intent] = char_score * 0.6 + count_score * 0.4
 
         # 按得分排序
@@ -471,13 +565,12 @@ class IntentClassifier:
         if multi:
             all_intents = {intent for intent, _ in sorted_intents}
         else:
-            # 单意图模式：返回得分最高的意图
             all_intents = {sorted_intents[0][0]} if sorted_intents else set()
 
-        # 检查是否低于阈值——低于阈值 = 无法确定场景，标记为 general
+        # 检查是否低于阈值
         if confidence < self.threshold:
             return IntentResult(
-                primary="general",  # type: ignore[arg-type]
+                primary="general",
                 confidence=confidence,
                 matched_keywords=[],
                 all_intents=set()
@@ -492,6 +585,39 @@ class IntentClassifier:
             matched_keywords=primary_keywords,
             all_intents=all_intents
         )
+
+    def classify(self, query: str, multi: bool = False) -> IntentResult:
+        """
+        对用户 query 进行意图分类（两阶段架构）。
+
+        1. 第一阶段：LLM 语义理解（优先）
+        2. 第二阶段：关键词匹配兜底（降级）
+
+        Args:
+            query: 用户输入的自然语言查询
+            multi: 是否返回多意图（True）或仅返回主要意图（False）
+
+        Returns:
+            IntentResult 对象
+        """
+        if not query or not query.strip():
+            return IntentResult(
+                primary=Scenario.ROUTE,
+                confidence=0.0,
+                matched_keywords=[],
+                all_intents=set()
+            )
+
+        # ===== 第一阶段：LLM 语义理解（降维打击）=====
+        try:
+            llm_reply = self._call_llm_intent(query)
+            if llm_reply:
+                return llm_reply
+        except Exception:
+            pass  # LLM 失败，默默降级
+
+        # ===== 第二阶段：关键词匹配兜底（保留原逻辑）=====
+        return self._classify_by_keywords(query, multi)
 
     def classify_simple(self, query: str) -> Scenario:
         """

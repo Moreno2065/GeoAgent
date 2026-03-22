@@ -644,6 +644,38 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "step": 3,
         },
     },
+    # ── 🟣 OSM 地图下载 ────────────────────────────────────────────
+    "fetch_osm": {
+        "center_point": {
+            "question": "请问要下载哪个地点周围的地图？（输入地址或地标名称）",
+            "options": None,
+            "required": True,
+            "examples": ["武汉黄鹤楼", "北京天安门", "上海外滩"],
+            "step": 1,
+        },
+        "radius": {
+            "question": "请问下载范围半径是多少米？",
+            "options": ["500米", "1000米", "2000米", "3000米", "5000米"],
+            "required": False,
+            "default": 1000,
+            "examples": ["500", "1000", "2000"],
+            "step": 2,
+        },
+        "data_type": {
+            "question": "请问要下载什么类型的数据？",
+            "options": ["路网和建筑物", "仅路网", "仅建筑物"],
+            "required": False,
+            "default": "all",
+            "step": 3,
+        },
+        "network_type": {
+            "question": "请问路网的类型是？",
+            "options": ["步行网络", "车行网络", "骑行网络", "所有道路"],
+            "required": False,
+            "default": "walk",
+            "step": 3,
+        },
+    },
 }
 
 
@@ -2132,6 +2164,7 @@ class ScenarioOrchestrator:
                         "viewshed", "shadow_analysis", "ndvi", "raster",
                         "suitability", "poi_search", "geocode",
                         "regeocode", "visualization", "code_sandbox",
+                        "fetch_osm",  # OSM 地图下载
                         # Amap 高德 Web 服务
                         "input_tips", "district", "static_map",
                         "coord_convert", "grasp_road", "traffic_status",
@@ -2147,6 +2180,7 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+            "fetch_osm",  # OSM 地图下载
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
             "traffic_status", "traffic_events", "transit_info",
@@ -2182,6 +2216,7 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
+            "fetch_osm",  # OSM 地图下载
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
             "traffic_status", "traffic_events", "transit_info",
@@ -2208,6 +2243,20 @@ class ScenarioOrchestrator:
         # 🤖 LLM 智能路由安检门：接管 "general" 场景的二次判断
         # ==========================================
         scenario_str = scenario.value if hasattr(scenario, 'value') else str(scenario)
+
+        # ==========================================
+        # 🚨 哈基米强插机制：最高指令直接接管！
+        # ==========================================
+        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算"]
+        if any(trigger in text for trigger in sandbox_dictators):
+            print(f"⚡ [最高权限] 检测到编程指令，强制路由至 code_sandbox！")
+            scenario_str = "code_sandbox"
+            scenario = Scenario.CODE_SANDBOX
+        # ==========================================
+
+        # ==========================================
+        # 🤖 LLM 智能路由安检门：接管 "general" 场景的二次判断
+        # ==========================================
         if scenario_str == "general":
             # 交给大模型做二次路由判断：
             # - 闲聊 → 直接回复
@@ -2242,6 +2291,14 @@ class ScenarioOrchestrator:
         for key, value in defaults.items():
             if key not in extracted_params or not extracted_params[key]:
                 extracted_params[key] = value
+
+        # ── 🟣 CODE_SANDBOX 透传 user_input（必须在所有 return 之前）─────────
+        # 用户的原始指令需要透传到 DSL 层，供 LLM 生成代码
+        scenario_val = scenario.value if hasattr(scenario, 'value') else str(scenario)
+        if scenario_val == "code_sandbox":
+            extracted_params["user_input"] = text
+            extracted_params["instruction"] = text
+        # ───────────────────────────────────────────────────────────────────
 
         clarification = self.clarification_engine.check_params(scenario, extracted_params)
 

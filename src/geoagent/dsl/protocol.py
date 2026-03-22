@@ -34,6 +34,7 @@ class ScenarioType(str, Enum):
     ACCESSIBILITY = "accessibility"          # 可达性分析
     SUITABILITY = "suitability"             # 选址分析
     CODE_SANDBOX = "code_sandbox"           # 受限代码执行
+    MULTI_CRITERIA_SEARCH = "multi_criteria_search"  # 多条件综合搜索
     GENERAL = "general"                      # 通用任务
 
 
