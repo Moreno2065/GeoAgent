@@ -193,6 +193,7 @@ class ResultRenderer:
         "raster": "_render_raster",
         "code_sandbox": "_render_code_sandbox",  # 受限代码执行
         "poi_search": "_render_poi_search",  # POI 周边搜索
+        "fetch_osm": "_render_fetch_osm",  # OSM 在线下载
     }
 
     def render(self, result: ExecutorResult) -> RenderResult:
@@ -780,6 +781,63 @@ class ResultRenderer:
                 "index_type": index_type,
                 "mean_value": mean_ndvi,
                 "engine": result.engine,
+            },
+            raw_result=result.to_dict(),
+        )
+
+    def _render_fetch_osm(self, result: ExecutorResult) -> RenderResult:
+        """渲染 OSM 在线下载结果（建筑物/路网）"""
+        data = result.data or {}
+        feature_count = data.get("feature_count", 0)
+        html_map_path = data.get("html_map_path", "")
+        bounds = data.get("bounds", [])
+        geojson_path = data.get("geojson_path", "")
+
+        # 提取文件名
+        html_name = Path(html_map_path).name if html_map_path else "未生成"
+        geojson_name = Path(geojson_path).name if geojson_path else "未保存"
+
+        summary = f"从 OpenStreetMap 下载了 {feature_count} 个地理要素"
+
+        # 生成关键发现
+        key_findings = [f"共下载 {feature_count} 个要素"]
+        if bounds:
+            key_findings.append(
+                f"边界范围：({bounds[0]:.4f}, {bounds[1]:.4f}) 到 ({bounds[2]:.4f}, {bounds[3]:.4f})"
+            )
+        key_findings.append(f"数据格式：GeoJSON (EPSG:4326)")
+
+        conclusion = BusinessConclusion(
+            summary=summary,
+            key_findings=key_findings,
+            recommendations=[
+                "可在地图中查看下载的建筑轮廓和路网" if html_map_path else "可进行空间分析",
+                "可与其他数据进行叠加分析",
+            ],
+        )
+
+        explanation = ExplanationCard(
+            title="OSM 数据下载结果",
+            what_i_did=f"从 OpenStreetMap 下载了 {feature_count} 个地理要素",
+            why="OpenStreetMap 提供全球开放地理数据，包括建筑物轮廓、道路、水体等",
+            what_it_means=f"数据已保存，可用于后续的空间分析或可视化",
+            caveats="OSM 数据质量因地区而异，部分区域可能缺少数据",
+        )
+
+        output_files = []
+        if geojson_path:
+            output_files.append(geojson_path)
+
+        return RenderResult(
+            success=True,
+            summary=summary,
+            conclusion=conclusion,
+            explanation=explanation,
+            map_file=html_map_path if html_map_path else None,
+            output_files=output_files,
+            metrics={
+                "feature_count": feature_count,
+                "bounds": bounds,
             },
             raw_result=result.to_dict(),
         )

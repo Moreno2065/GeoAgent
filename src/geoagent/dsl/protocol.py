@@ -33,6 +33,7 @@ class ScenarioType(str, Enum):
     VISUALIZATION = "visualization"          # 可视化
     ACCESSIBILITY = "accessibility"          # 可达性分析
     SUITABILITY = "suitability"             # 选址分析
+    CODE_SANDBOX = "code_sandbox"           # 受限代码执行
     GENERAL = "general"                      # 通用任务
 
 

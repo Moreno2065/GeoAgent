@@ -236,6 +236,21 @@ class IntentClassifier:
                 all_intents={"general"}
             )
 
+        # ==========================================
+        # 🚨 哈基米前置拦截器 (Early Exit Pattern)
+        # ==========================================
+        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算"]
+
+        if any(trigger in query for trigger in sandbox_dictators):
+            print("⚡ [前置拦截] 检测到最高编程指令，跳过词袋匹配，锁定为 code_sandbox！")
+            return IntentResult(
+                primary="code_sandbox",
+                confidence=1.0,
+                matched_keywords=["显式编程触发词"],
+                all_intents={"code_sandbox"}
+            )
+        # ==========================================
+
         query_lower = query.lower()
         matched: Dict[str, List[str]] = {}  # intent -> matched keywords
 

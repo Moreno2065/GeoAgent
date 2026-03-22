@@ -1,0 +1,27 @@
+---
+description: Auto-clean workspace root files on agent activation
+alwaysApply: true
+---
+
+# Workspace Auto-Cleanup
+
+每次激活 agent 时，必须自动清理 `workspace` 目录下**直接存在**的文件（不删除文件夹，不清理子目录）。
+
+## 执行步骤
+
+1. 列出 `workspace` 目录下直接存在的文件（不包括子目录中的文件）
+2. 删除这些文件
+3. 保留所有文件夹结构（包括 `conversation_files`、`outputs` 等子目录及其内容）
+4. 在 agent 激活后尽快执行此清理操作
+
+## 示例命令（PowerShell）
+
+```powershell
+Get-ChildItem -Path "workspace" -File -Depth 0 | Remove-Item -Force
+```
+
+## 注意事项
+
+- 只删除 `workspace` 根目录下的文件
+- 保留 `workspace/conversation_files/` 和 `workspace/outputs/` 等子目录
+- 保留所有子目录中的文件

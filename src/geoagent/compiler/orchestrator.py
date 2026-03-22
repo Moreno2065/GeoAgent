@@ -724,6 +724,16 @@ class ScenarioOrchestrator:
         scenario_str = intent_result.primary
 
         # ==========================================
+        # 🚨 哈基米强插机制：最高指令直接接管！ (Priority Override)
+        # ==========================================
+        # 无论 L2 的词袋模型猜出了什么（哪怕是 0.99 的 overlay），
+        # 只要用户的原话中出现了明确的"沙盒/代码"显式调用指令，直接夺权！
+        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python"]
+        if any(trigger in user_input.lower() for trigger in sandbox_dictators):
+            print(f"⚡ [最高权限] 检测到用户显式要求编程，强制剥夺 '{scenario_str}' 的执行权，路由至 code_sandbox！")
+            scenario_str = "code_sandbox"
+
+        # ==========================================
         # 🚨 哈基米防幻觉安检门：暴力拦截无效输入
         # ==========================================
         is_garbage_input = user_input.strip().isdigit() or len(user_input.strip()) < 2
@@ -771,7 +781,7 @@ class ScenarioOrchestrator:
             )
 
         # 4. 构建任务 DSL
-        task = self._build_task(scenario_str, extracted_params)
+        task = self._build_task(scenario_str, extracted_params, user_input)
 
         return OrchestrationResult(
             status=OrchestrationStatus.READY,
@@ -784,6 +794,7 @@ class ScenarioOrchestrator:
         self,
         scenario: str,
         params: Dict[str, Any],
+        user_input: str = "",
     ) -> GeoDSL:
         """构建 GeoDSL 任务"""
         defaults = self._scenario_defaults.get(scenario, {})
@@ -854,6 +865,11 @@ class ScenarioOrchestrator:
         elif scenario == "visualization":
             inputs["input_files"] = params.get("files", [])
             parameters["viz_type"] = defaults.get("viz_type", "interactive_map")
+
+        elif scenario == "code_sandbox":
+            inputs["instruction"] = user_input  # 用户原始指令透传给 LLM
+            parameters["timeout_seconds"] = 60.0
+            parameters["mode"] = "exec"
 
         else:  # general
             inputs["description"] = params.get("description", "")

@@ -72,7 +72,7 @@ class OSMExecutor(BaseExecutor):
                 center_tuple, radius, data_type, network_type
             )
         except Exception as e:
-            return ExecutorResult.error(f"OSM 数据下载失败: {e}")
+            return ExecutorResult.err("fetch_osm", f"OSM 数据下载失败: {e}", engine="osmnx")
 
     def _resolve_center_point(self, center_point: str) -> tuple[float, float]:
         """
@@ -204,7 +204,12 @@ class OSMExecutor(BaseExecutor):
         if data_type in ("building", "all"):
             messages.append(f"  → 下载建筑物轮廓...")
             tags = {"building": True}
-            buildings = ox.geometries_from_point(center_tuple, tags, dist=radius)
+            try:
+                # osmnx >= 1.9 使用 features_from_point
+                buildings = ox.features_from_point(center_tuple, tags, dist=radius)
+            except AttributeError:
+                # 旧版本使用 geometries_from_point
+                buildings = ox.geometries_from_point(center_tuple, tags, dist=radius)
             if not buildings.empty:
                 geometries.append(buildings)
                 messages.append(f"  ✅ 建筑物：{len(buildings)} 个轮廓。")
@@ -212,28 +217,119 @@ class OSMExecutor(BaseExecutor):
                 messages.append("  ⚠️ 该区域无建筑物数据。")
 
         if not geometries:
-            return ExecutorResult.error("OSM 下载结果为空，请检查坐标是否在中国大陆境外。")
+            return ExecutorResult.err("fetch_osm", "OSM 下载结果为空，请检查坐标是否在中国大陆境外。")
 
         # 合并所有几何
         combined = gpd.GeoDataFrame(pd.concat(geometries, ignore_index=True))
         combined = combined.to_crs("EPSG:4326")
 
-        # 保存 GeoJSON
+        # 保存 GeoJSON 到 conversation_files
         output_dir = Path("workspace/conversation_files")
         output_dir.mkdir(parents=True, exist_ok=True)
         geojson_path = output_dir / f"osm_fetch_{lng:.4f}_{lat:.4f}.geojson"
         combined.to_file(geojson_path, driver="GeoJSON")
 
+        # ── 自动生成交互式 HTML 地图（保存到 outputs 目录，Streamlit 会自动展示）──
+        outputs_dir = Path("workspace/outputs")
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        html_path = self._generate_interactive_map(combined, center_tuple, radius, outputs_dir)
+        messages.append(f"  🗺️ 交互地图已生成：{html_path.name}")
+
         return ExecutorResult.ok(
+            task_type="fetch_osm",
+            engine="osmnx",
             data={
                 "geojson_path": str(geojson_path),
+                "html_map_path": str(html_path),
                 "feature_count": len(combined),
                 "bounds": combined.total_bounds.tolist(),
                 "crs": "EPSG:4326",
-                "message": "\n".join(messages),
+                "log": "\n".join(messages),
             },
-            message="\n".join(messages),
         )
+
+    def _generate_interactive_map(
+        self,
+        gdf: "gpd.GeoDataFrame",
+        center: tuple[float, float],
+        radius: int,
+        output_dir: Path,
+    ) -> Path:
+        """生成交互式 HTML 地图（Folium）"""
+        import folium
+
+        lat, lng = center
+        m = folium.Map(
+            location=[lat, lng],
+            zoom_start=15,
+            tiles="OpenStreetMap",
+        )
+
+        # 添加中心点标记
+        folium.Marker(
+            [lat, lng],
+            popup=f"中心点<br>半径: {radius}m",
+            icon=folium.Icon(color="red", icon="info-sign"),
+        ).add_to(m)
+
+        # 添加半径圆
+        folium.Circle(
+            [lat, lng],
+            radius=radius,
+            color="green",
+            fill=True,
+            fill_opacity=0.1,
+            popup=f"{radius}m 半径圈",
+        ).add_to(m)
+
+        # 添加 GeoJSON 图层（根据几何类型自动区分样式）
+        for idx, row in gdf.iterrows():
+            geom = row.geometry
+            name = (
+                row.get("name")
+                or row.get("名称", "")
+                or row.get("highway", "")
+                or f"Feature {idx}"
+            )
+
+            if geom.geom_type == "Polygon":
+                coords = [[lat, lon] for lon, lat in geom.exterior.coords]
+                folium.Polygon(
+                    locations=coords,
+                    popup=name,
+                    color="blue",
+                    fill=True,
+                    fill_color="lightblue",
+                    fill_opacity=0.7,
+                    weight=1,
+                ).add_to(m)
+            elif geom.geom_type == "LineString":
+                coords = [[lat, lon] for lon, lat in geom.coords]
+                folium.PolyLine(
+                    locations=coords,
+                    popup=name,
+                    color="gray",
+                    weight=2,
+                    opacity=0.8,
+                ).add_to(m)
+            elif geom.geom_type == "Point":
+                folium.CircleMarker(
+                    location=[geom.y, geom.x],
+                    popup=name,
+                    radius=3,
+                    color="darkblue",
+                    fill=True,
+                    fill_color="blue",
+                    fill_opacity=0.8,
+                ).add_to(m)
+
+        # 添加图层控制
+        folium.LayerControl().add_to(m)
+
+        # 保存 HTML
+        html_path = output_dir / f"osm_map_{lng:.4f}_{lat:.4f}.html"
+        m.save(html_path)
+        return html_path
 
 
 # 兼容函数式调用（供 registry.py 等直接调用）
