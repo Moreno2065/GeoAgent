@@ -723,6 +723,20 @@ class ScenarioOrchestrator:
         intent_result = self.intent_classifier.classify(user_input)
         scenario_str = intent_result.primary
 
+        # ==========================================
+        # 🚨 哈基米防幻觉安检门：暴力拦截无效输入
+        # ==========================================
+        is_garbage_input = user_input.strip().isdigit() or len(user_input.strip()) < 2
+        if scenario_str == "general" and is_garbage_input:
+            # 物理切断流水线，不给大模型任何发癫的机会
+            return OrchestrationResult(
+                status=OrchestrationStatus.READY,
+                scenario="unknown",
+                error="本哈基米是一个严肃的🌍空间智能引擎！请发送明确的地理指令（例如：帮我查一下从芜湖南站到方特的路径）。",
+                intent_result=intent_result
+            )
+        # ==========================================
+
         if event_callback:
             event_callback("intent_classified", {
                 "scenario": scenario_str,

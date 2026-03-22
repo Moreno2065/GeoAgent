@@ -53,9 +53,9 @@ REASONER_MODELS = {
         "description": "DeepSeek V3 - 最新模型",
     },
     # GLM
-    "glm-4": {
+    "glm-4.6v": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "description": "GLM-4 - 中文理解强",
+        "description": "GLM-4V - 视觉模型",
     },
     "glm-4-plus": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
@@ -414,7 +414,7 @@ class GeoAgentReasoner:
         dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
 
         # GLM
-        reasoner = GeoAgentReasoner(api_key="glm-xxx", model="glm-4")
+        reasoner = GeoAgentReasoner(api_key="glm-xxx", model="glm-4.6v")
         dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
     """
 
@@ -647,7 +647,7 @@ def get_reasoner(
         reasoner = get_reasoner(api_key="sk-...")
 
         # GLM
-        reasoner = get_reasoner(api_key="glm-xxx", model="glm-4")
+        reasoner = get_reasoner(api_key="glm-xxx", model="glm-4.6v")
 
     建议每次请求创建新实例或使用依赖注入。
     """
@@ -708,7 +708,7 @@ def translate_with_reasoner(
         dsl = translate_with_reasoner("芜湖南站到方特", model="deepseek-reasoner")
 
         # GLM
-        dsl = translate_with_reasoner("芜湖南站到方特", model="glm-4", api_key="glm-xxx")
+        dsl = translate_with_reasoner("芜湖南站到方特", model="glm-4.6v", api_key="glm-xxx")
 
     Args:
         user_input: 自然语言

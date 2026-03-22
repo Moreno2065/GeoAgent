@@ -5,7 +5,7 @@ LLM 配置管理模块
 
 支持的模型：
 - DeepSeek: deepseek-chat, deepseek-coder, deepseek-reasoner
-- GLM: glm-4, glm-4-flash, glm-4-plus, glm-4v
+- GLM: glm-4, glm-4-flash, glm-4-plus, glm-4.6v
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ class DeepSeekModel(Enum):
 
 class GLMModel(Enum):
     """GLM 模型"""
-    GLM4 = "glm-4"
+    GLM4 = "glm-4.6v"
     GLM4_FLASH = "glm-4-flash"
     GLM4_PLUS = "glm-4-plus"
-    GLM4V = "glm-4v"  # 视觉模型
+    GLM4V = "glm-4.6v"  # 视觉模型
 
 
 # =============================================================================
@@ -121,8 +121,8 @@ DEEPSEEK_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 GLM_PRESETS: Dict[str, Dict[str, Any]] = {
-    "glm-4": {
-        "model": "glm-4",
+    "glm-4.6v": {
+        "model": "glm-4.6v",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "description": "GLM-4 - 通用对话，中文理解强",
     },
@@ -243,7 +243,7 @@ class LLMConfigManager:
             key_file = ".api_key"
         else:
             presets = GLM_PRESETS
-            default_model = "glm-4"
+            default_model = "glm-4.6v"
             key_getter = self.get_glm_key
             key_file = ".glm_api_key"
 
@@ -324,7 +324,7 @@ def create_deepseek_config(
 
 
 def create_glm_config(
-    model: str = "glm-4",
+    model: str = "glm-4.6v",
     api_key: Optional[str] = None,
 ) -> LLMConfig:
     """创建 GLM 配置"""
@@ -340,7 +340,7 @@ def setup_dual_config(
     primary_key: str,
     primary_model: str = "deepseek-chat",
     fallback_key: Optional[str] = None,
-    fallback_model: str = "glm-4",
+    fallback_model: str = "glm-4.6v",
 ) -> tuple[LLMConfig, Optional[LLMConfig]]:
     """
     设置双模型配置

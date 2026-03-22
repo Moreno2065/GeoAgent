@@ -76,3 +76,8 @@ src/*.egg-info/
 *.opendb
 workspace/2025 GIS考核(公开）.zip
 cache/15347569ac6798bbced1e1cb467c09fda661a804.json
+workspace/conversation_files/1969fe9c/河流.shx
+workspace/conversation_files/1969fe9c/河流.shp
+.gitignore
+workspace/conversation_files/cbce7874/土地利用.shp
+.gitignore

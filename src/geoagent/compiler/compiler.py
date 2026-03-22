@@ -124,7 +124,7 @@ class GISCompiler:
         enable_fallback: bool = True,
         # 备用模型配置 (GLM)
         fallback_api_key: str = None,
-        fallback_model: str = "glm-4",
+        fallback_model: str = "glm-4.6v",
         fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
         # 重试配置
         retry_multiplier: float = 1.0,
@@ -194,7 +194,7 @@ class GISCompiler:
     def _init_fallback_client(
         self,
         fallback_api_key: str = None,
-        fallback_model: str = "glm-4",
+        fallback_model: str = "glm-4.6v",
         fallback_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
     ) -> None:
         """

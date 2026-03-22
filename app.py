@@ -55,7 +55,7 @@ LLM_PROVIDER_OPTIONS = {
         "label": "DeepSeek",
     },
     "glm": {
-        "model": "glm-4",
+        "model": "glm-4.6v",
         "label": "GLM",
     },
 }
@@ -105,6 +105,11 @@ def _render_kpi_wall(kpi_data: dict):
 
 def _render_data_table_tab():
     """渲染"数据资产"Tab"""
+    cid = st.session_state.get("active_conv_id")
+    if cid:
+        set_conversation_workspace(cid)
+    conv_dir = _get_conv_workspace_dir(cid) if cid else _WORKSPACE_DIR
+
     files = list_workspace_files()
     if not files:
         st.info("📂 工作区暂无 GIS 数据，请上传 Shapefile / GeoJSON / GeoTIFF 文件")
@@ -138,7 +143,7 @@ def _render_data_table_tab():
                 if info.get("file_type") == "vector":
                     try:
                         import geopandas as gpd
-                        gdf = gpd.read_file(_WORKSPACE_DIR / fname)
+                        gdf = gpd.read_file(conv_dir / fname)
                         st.dataframe(gdf.head(20), use_container_width=True, hide_index=False)
                     except Exception as e:
                         st.warning(f"属性表预览失败: {e}")
@@ -198,6 +203,11 @@ def _make_pydeck_responsive(html_content: str) -> str:
 
 def _render_charts_tab():
     """渲染"统计图表"Tab"""
+    cid = st.session_state.get("active_conv_id")
+    if cid:
+        set_conversation_workspace(cid)
+    conv_dir = _get_conv_workspace_dir(cid) if cid else _WORKSPACE_DIR
+
     files = list_workspace_files()
     if not files:
         st.info("📊 请先上传或生成 GIS 数据文件")
@@ -208,7 +218,7 @@ def _render_charts_tab():
     for fname in vector_files[:5]:
         try:
             import geopandas as gpd
-            gdf = gpd.read_file(_WORKSPACE_DIR / fname)
+            gdf = gpd.read_file(conv_dir / fname)
             numeric_cols = gdf.select_dtypes(include='number').columns.tolist()
             if numeric_cols:
                 with st.expander(
@@ -229,7 +239,7 @@ def _render_charts_tab():
         with st.expander(f"🛰️ 栅格数据统计 — {raster_files[0]}"):
             try:
                 import rasterio
-                with rasterio.open(_WORKSPACE_DIR / raster_files[0]) as src:
+                with rasterio.open(conv_dir / raster_files[0]) as src:
                     st.json({
                         "band_count": src.count,
                         "crs": str(src.crs),
@@ -628,28 +638,51 @@ def _render_sidebar():
                 st.session_state["deepseek_key"] = dk
                 st.session_state["glm_key"] = gk
 
-                # 确定主模型
-                primary_model = LLM_PROVIDER_OPTIONS[selected_provider]["model"]
+                # ── 主模型选择：根据 selected_provider 确定主模型配置 ─────────
+                # 验证：DeepSeek Key（仅在 DeepSeek 作为主模型时才必须）
+                if selected_provider == "deepseek" and not dk.startswith("sk-"):
+                    st.error("❌ DeepSeek Key 格式错误，应以 sk- 开头")
+                else:
+                    if selected_provider == "glm":
+                        # 主模型 = GLM
+                        primary_api_key = gk.strip() if gk.strip() else None
+                        primary_model = "glm-4.6v"
+                        primary_base_url = "https://open.bigmodel.cn/api/paas/v4"
+                        # 备用 = DeepSeek（如果有）
+                        fallback_api_key = dk.strip() if dk.startswith("sk-") else None
+                        fallback_model = "deepseek-chat"
+                        fallback_base_url = "https://api.deepseek.com"
+                    else:
+                        # 主模型 = DeepSeek（默认）
+                        primary_api_key = dk.strip()
+                        primary_model = "deepseek-chat"
+                        primary_base_url = "https://api.deepseek.com"
+                        # 备用 = GLM（如果有）
+                        fallback_api_key = gk.strip() if gk.strip() else None
+                        fallback_model = "glm-4.6v"
+                        fallback_base_url = "https://open.bigmodel.cn/api/paas/v4"
 
-                try:
-                    # 创建 Agent（支持双模型）
-                    st.session_state["agent_v2"] = create_agent_v2(
-                        primary_api_key=dk,
-                        primary_model=primary_model,
-                        fallback_api_key=gk.strip() if gk else None,
-                        fallback_model="glm-4" if gk else None,
-                    )
-                    st.session_state["agent"] = None
+                    try:
+                        # 创建 Agent（支持双模型，provider 由主模型决定）
+                        st.session_state["agent_v2"] = create_agent_v2(
+                            primary_api_key=primary_api_key,
+                            primary_model=primary_model,
+                            primary_base_url=primary_base_url,
+                            fallback_api_key=fallback_api_key,
+                            fallback_model=fallback_model,
+                            fallback_base_url=fallback_base_url,
+                        )
+                        st.session_state["agent"] = None
 
-                    # 显示当前配置
-                    model_info = st.session_state["agent_v2"].get_current_model_info()
-                    st.success(
-                        f"✅ Agent 已启动\n"
-                        f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
-                        f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
-                    )
-                except Exception as e:
-                    st.error(f"❌ 初始化失败：{e}")
+                        # 显示当前配置
+                        model_info = st.session_state["agent_v2"].get_current_model_info()
+                        st.success(
+                            f"✅ Agent 已启动\n"
+                            f"• 主模型: {model_info['provider']}/{model_info['model']}\n"
+                            f"• 备用模型: {model_info.get('fallback_model', '未配置')}"
+                        )
+                    except Exception as e:
+                        st.error(f"❌ 初始化失败：{e}")
 
         agent_v2 = st.session_state.get("agent_v2")
         agent_online_v2 = bool(agent_v2)
@@ -936,27 +969,18 @@ def main():
         }
 
         /* ── 8. CHAT BUBBLES — 超大字体 ───────────────── */
-        [data-testid="stChatMessage"][aria-label*="user"] [data-testid="stChatMessageContent"] {
-            background-color: #EFF6FF !important;
-            color: #1E3A5F !important;
-            border-radius: 19px 19px 6px 19px !important;
-            padding: 19px 23px !important;
-            font-size: 1.14rem !important;
-            line-height: 1.71 !important;
-            max-width: 95% !important;
-            margin-left: auto !important;
-            border: 1.5px solid #DBEAFE !important;
-            overflow: visible !important;
-            margin-bottom: 13px !important;
+        /* Streamlit 1.51 实际 DOM 结构：
+           容器: div.stChatMessage（无后缀）
+           头像: data-testid="stChatMessageAvatarAssistant" 或 "stChatMessageAvatarUser"
+           内容: data-testid="stChatMessageContent"
+        */
+        [data-testid="stChatMessage"] {
+            margin-top: 0px !important;
+            margin-bottom: 4px !important;
         }
-        [data-testid="stChatMessage"][aria-label*="user"] [data-testid="stChatMessageAvatar"] {
-            background-color: #3B82F6 !important;
-            width: 44px !important;
-            height: 44px !important;
-        }
-        [data-testid="stChatMessage"][aria-label*="assistant"] [data-testid="stChatMessageContent"] {
-            background-color: #FFFFFF !important;
-            color: #1F2937 !important;
+
+        /* 通用内容气泡样式（AI 和用户都用这个作为基础） */
+        [data-testid="stChatMessageContent"] {
             border-radius: 19px 19px 19px 6px !important;
             padding: 19px 23px !important;
             font-size: 1.14rem !important;
@@ -967,14 +991,40 @@ def main():
             overflow: visible !important;
             margin-bottom: 13px !important;
         }
-        [data-testid="stChatMessage"][aria-label*="assistant"] [data-testid="stChatMessageAvatar"] {
+
+        /* 用户气泡（蓝色）— 靠右对齐，:has() 匹配有 AvatarUser 的容器 */
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+            background-color: #EFF6FF !important;
+            color: #1E3A5F !important;
+            border-radius: 19px 19px 6px 19px !important;
+            border: 1.5px solid #DBEAFE !important;
+            margin-left: auto !important;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageAvatarUser"] {
+            background-color: #3B82F6 !important;
+            width: 44px !important;
+            height: 44px !important;
+        }
+
+        /* AI 气泡（白色）— 靠左对齐 */
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageContent"] {
+            background-color: #FFFFFF !important;
+            color: #1F2937 !important;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageAvatarAssistant"] {
             background: linear-gradient(135deg, #3B82F6, #8B5CF6) !important;
             width: 44px !important;
             height: 44px !important;
         }
-        [data-testid="stChatMessageAvatar"] p,
-        [data-testid="stChatMessageAvatar"] span {
-            font-size: 1.235rem !important;
+
+        /* 头像内的 SVG 图标改成白色 */
+        [data-testid="stChatMessageAvatarAssistant"] svg,
+        [data-testid="stChatMessageAvatarUser"] svg {
+            color: #FFFFFF !important;
+        }
+        [data-testid="stChatMessageAvatarAssistant"],
+        [data-testid="stChatMessageAvatarUser"] {
+            border-radius: 50% !important;
         }
 
         /* ── 9. CHAT INPUT — 超大输入框 ─────────────────── */
@@ -1641,7 +1691,11 @@ def _handle_user_message(prompt: str, agent):
         "content": prompt,
         "id": user_msg_id,
     })
-    st.session_state["_rendered_msg_ids"].append(user_msg_id)
+    # 注意：不要在这里把 user_msg_id 加入 _rendered_msg_ids！
+    # 因为 _handle_user_message 是在 if prompt: 分支内调用的，
+    # rerun 后 prompt 为空，不会再进这个分支，也就不会重复执行。
+    # 如果加了 _rendered_msg_ids，main() 里的消息渲染循环就会跳过用户消息，
+    # 导致用户消息在 rerun 后消失（它既没有被 conversations 渲染，也没有被 st.chat_message 渲染）。
 
     with st.chat_message("user"):
         st.markdown(prompt)
