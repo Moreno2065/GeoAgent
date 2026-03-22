@@ -41,7 +41,7 @@ ExecutorResult = _BaseExecutorResult
 
 
 # =============================================================================
-# TaskRouter（委托给 executors.router，保持向后兼容）
+# TaskRouter（保持向后兼容）
 # =============================================================================
 
 SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
@@ -71,44 +71,20 @@ SCENARIO_EXECUTOR_MAP: Dict[str, str] = {
 }
 
 
-class TaskRouter(_get_router().__class__):
-    """任务路由器（委托给 geoagent.executors.router.TaskRouter）"""
-
-    def __init__(self):
-        super().__init__()
-
-    def route(self, scenario_or_str, task_dict: Dict[str, Any]) -> ExecutorResult:
-        """执行任务路由"""
-        from geoagent.layers.architecture import Scenario
-
-        # 安全获取 scenario 字符串值
-        if hasattr(scenario_or_str, 'value'):
-            scenario_str = scenario_or_str.value
-        elif isinstance(scenario_or_str, str):
-            scenario_str = scenario_or_str
-        else:
-            scenario_str = str(scenario_or_str)
-
-        executor_key = SCENARIO_EXECUTOR_MAP.get(scenario_str, "general")
-        task_dict = dict(task_dict)
-        task_dict["task"] = scenario_str
-
-        return _execute_task(task_dict)
+# TaskRouter 类已移除，使用 executors/router 中的 TaskRouter
+# 此处保留向后兼容的类型别名
 
 
 # =============================================================================
 # 全局 Router 实例
 # =============================================================================
 
-_router: Optional[TaskRouter] = None
+_router: Optional[_get_router().__class__] = None
 
 
-def get_router() -> TaskRouter:
-    """获取全局 Router 单例"""
-    global _router
-    if _router is None:
-        _router = TaskRouter()
-    return _router
+def get_router():
+    """获取全局 Router 单例（委托给 executors/router）"""
+    return _get_router()
 
 
 # =============================================================================
@@ -133,8 +109,20 @@ def execute_task(scenario: Any, task_dict: Dict[str, Any]) -> ExecutorResult:
     Returns:
         ExecutorResult 统一结果
     """
-    router = get_router()
-    return router.route(scenario, task_dict)
+    # 安全获取 scenario 字符串值
+    if hasattr(scenario, 'value'):
+        scenario_str = scenario.value
+    elif isinstance(scenario, str):
+        scenario_str = scenario
+    else:
+        scenario_str = str(scenario)
+
+    # 构建完整的 task dict，确保包含 "task" 字段
+    full_task_dict = dict(task_dict)
+    full_task_dict["task"] = scenario_str
+
+    # 直接调用 executors/router.execute_task（它会处理路由）
+    return _execute_task(full_task_dict)
 
 
 # =============================================================================

@@ -499,17 +499,93 @@ class WorkflowEngine:
         )
         return step_result
 
+    @staticmethod
+    def _looks_like_filename(value: str) -> bool:
+        """
+        判断字符串是否看起来像文件名。
+
+        只有看起来像文件名的字符串才触发 FileFallbackHandler 下载，
+        避免误处理普通参数如 "meters"、"intersect" 等。
+
+        规则：
+        - 包含常见扩展名（.shp, .geojson, .tif 等）→ 是文件名
+        - 包含路径分隔符（/、\）→ 是路径
+        - 不包含空格且全小写/全大写的短单词（如 "meters"、"intersect"）→ 不是文件名
+        - 包含 GIS 常见词汇（river, road, land, buffer 等）→ 是文件名
+        """
+        if not value or not isinstance(value, str):
+            return False
+
+        value_lower = value.lower()
+
+        # 包含常见 GIS 文件扩展名
+        file_extensions = [".shp", ".geojson", ".json", ".gpkg", ".kml", ".gml",
+                         ".tif", ".tiff", ".img", ".asc", ".csv", ".fgb",
+                         ".osm", ".topojson", ".mvt"]
+        if any(ext in value_lower for ext in file_extensions):
+            return True
+
+        # 包含路径分隔符
+        if "/" in value or "\\" in value:
+            return True
+
+        # 包含 GIS 常见词汇（可能是无扩展名的文件名）
+        gis_keywords = ["river", "road", "land", "buffer", "zone", "area", "city",
+                       "building", "park", "school", "hospital", "river", "黄河", "河流",
+                       "道路", "土地利用", "行政", "边界", "交通", "管线", "居民", "商业"]
+        if any(kw in value_lower for kw in gis_keywords):
+            return True
+
+        # 短单词（<= 15字符）且全是字母数字且不含特殊符号 → 不是文件名
+        # 如 "meters"、"intersect"、"walking" 都是参数值
+        if (len(value) <= 15
+                and value.replace("_", "").replace("-", "").isalnum()
+                and not any(c in value for c in [".", "/", "\\"])):
+            return False
+
+        # 默认保守返回 True（倾向于认为是文件名）
+        return True
+
+    def _find_file_in_workspace(self, filename: str) -> Optional[Path]:
+        """
+        在工作区中查找文件，支持精确匹配和后缀模糊匹配。
+
+        Args:
+            filename: 文件名（可能无扩展名）
+
+        Returns:
+            找到的文件路径，不存在则返回 None
+        """
+        if not filename or not isinstance(filename, str):
+            return None
+
+        # 1. 精确匹配
+        exact_path = self.workspace / filename
+        if exact_path.exists() and exact_path.is_file():
+            return exact_path
+
+        # 2. 模糊匹配：自动补全常见空间数据后缀
+        common_exts = [".shp", ".geojson", ".tif", ".csv", ".gpkg", ".json", ".kml", ".gml"]
+        # 只有在文件名本身没有后缀时才尝试补全
+        if not any(filename.lower().endswith(ext) for ext in common_exts):
+            for ext in common_exts:
+                fuzzy_path = self.workspace / f"{filename}{ext}"
+                if fuzzy_path.exists() and fuzzy_path.is_file():
+                    return fuzzy_path
+
+        return None
+
     def _resolve_inputs(self, step: WorkflowStep) -> Dict[str, Any]:
         """
-        解析步骤的输入参数，处理变量引用和文件缺失自动下载
+        解析步骤的输入参数，处理变量引用和文件缺失自动下载。
 
         支持的输入格式：
-        1. 字面量：{"layer": "道路.shp"} → 直接使用或自动下载
+        1. 字面量：{"layer": "道路.shp"} → 精确匹配 / 模糊匹配 / 尝试下载
         2. 变量引用：{"layer": "tmp_roads"} → 从 context 获取
         3. 显式引用：{"layer": {"from_step": "step_1"}} → 从 context 获取
 
         自动下载流程：
-        1. 调用 data_utils.resolve_path() 进行模糊匹配
+        1. 调用 _find_file_in_workspace() 进行本地查找
         2. 如果文件不存在，尝试 FileFallbackHandler 自动下载
         3. 下载成功后替换为新路径继续执行
 
@@ -519,7 +595,6 @@ class WorkflowEngine:
         Returns:
             解析后的参数字典
         """
-        from pathlib import Path
         from geoagent.executors.file_fallback_handler import FileFallbackHandler
 
         resolved: Dict[str, Any] = {}
@@ -527,7 +602,7 @@ class WorkflowEngine:
         for key, value in step.inputs.items():
             if isinstance(value, str):
                 if self._is_variable_ref(value):
-                    # tmp_xxx 变量引用
+                    # tmp_xxx 变量引用：从 context 获取
                     resolved[key] = self.context.get(value)
                     if resolved[key] is None:
                         raise ValueError(
@@ -536,51 +611,54 @@ class WorkflowEngine:
                         )
                 else:
                     # 字面量（文件名、路径等）
-                    # 先尝试标准路径解析（支持模糊匹配）
-                    resolved_path = self._resolve_path_from_inputs(value)
-                    resolved_path_obj = Path(resolved_path)
+                    # 使用实例级别的 workspace 查找文件
+                    matched_file = self._find_file_in_workspace(value)
 
-                    if resolved_path_obj.exists():
-                        # 文件存在，直接使用
-                        resolved[key] = resolved_path
+                    if matched_file:
+                        # 找到本地文件，返回完整路径
+                        resolved[key] = str(matched_file)
                     else:
                         # 文件不存在，尝试自动下载
-                        handler = FileFallbackHandler(
-                            workspace=self.workspace,
-                            context=self.context
-                        )
+                        # 但只有看起来像文件名的字符串才触发下载（避免误处理普通参数如 "meters"）
+                        if self._looks_like_filename(value):
+                            handler = FileFallbackHandler(
+                                workspace=self.workspace,
+                                context=self.context
+                            )
 
-                        # 先尝试本地模糊匹配
-                        found = handler.find_file(value)
-                        if found:
-                            resolved[key] = str(found)
-                            self._emit("file_found", {
-                                "step_id": step.step_id,
-                                "key": key,
-                                "original": value,
-                                "found": str(found),
-                                "source": "workspace_fuzzy_match",
-                            })
-                        else:
-                            # 尝试在线下载
-                            downloaded = handler.try_online_fallback(value, step.task)
-                            if downloaded:
-                                resolved[key] = downloaded
-                                self._emit("file_downloaded", {
+                            # 先尝试本地模糊匹配
+                            found = handler.find_file(value)
+                            if found:
+                                resolved[key] = str(found)
+                                self._emit("file_found", {
                                     "step_id": step.step_id,
                                     "key": key,
                                     "original": value,
-                                    "downloaded": downloaded,
+                                    "found": str(found),
+                                    "source": "workspace_fuzzy_match",
                                 })
                             else:
-                                # 下载失败，保持原值，让 executor 自行报错
-                                resolved[key] = resolved_path
-                                self._emit("file_not_found", {
-                                    "step_id": step.step_id,
-                                    "key": key,
-                                    "original": value,
-                                    "warning": "文件不存在且无法自动下载，将由 Executor 处理",
-                                })
+                                # 尝试在线下载
+                                downloaded = handler.try_online_fallback(value, step.task)
+                                if downloaded:
+                                    resolved[key] = downloaded
+                                    self._emit("file_downloaded", {
+                                        "step_id": step.step_id,
+                                        "key": key,
+                                        "original": value,
+                                        "downloaded": downloaded,
+                                    })
+                                else:
+                                    resolved[key] = value
+                                    self._emit("file_not_found", {
+                                        "step_id": step.step_id,
+                                        "key": key,
+                                        "original": value,
+                                        "warning": "文件不存在且无法自动下载",
+                                    })
+                        else:
+                            # 普通字符串参数（如 "meters"、"intersect"）直接透传
+                            resolved[key] = value
             elif isinstance(value, dict):
                 # 显式引用格式 {"from_step": "step_id", "field": "xxx"}
                 from_step_id = value.get("from_step")
@@ -600,9 +678,10 @@ class WorkflowEngine:
 
     def _resolve_path_from_inputs(self, file_name: str) -> str:
         """
-        解析文件路径（支持模糊匹配）
+        解析文件路径（支持模糊匹配）。
 
-        调用 data_utils.resolve_path() 实现扩展名补全和模糊匹配
+        调用 _find_file_in_workspace 实现扩展名补全和模糊匹配。
+        注意：优先使用实例级别的 workspace，与 _resolve_inputs 保持一致。
 
         Args:
             file_name: 文件名
@@ -610,8 +689,11 @@ class WorkflowEngine:
         Returns:
             解析后的文件绝对路径
         """
-        from geoagent.geo_engine.data_utils import resolve_path
-        return str(resolve_path(file_name))
+        found = self._find_file_in_workspace(file_name)
+        if found:
+            return str(found)
+        # 未找到时返回基于实例 workspace 的默认路径
+        return str(self.workspace / file_name)
 
     @staticmethod
     def _is_variable_ref(value: str) -> bool:
@@ -672,11 +754,14 @@ class WorkflowEngine:
                     dependents[dep].append(step.step_id)
 
         # 自动补充隐式依赖（基于 tmp_xxx 引用）
+        # 使用独立的集合记录所有依赖（显式 + 隐式），不修改原始 step.depends_on
+        all_deps: Dict[str, set] = {s.step_id: set(s.depends_on or []) for s in steps}
+
         for step in steps:
             implicit_deps = self._get_implicit_dependencies(step, step_map)
             for dep in implicit_deps:
-                if dep not in step.depends_on:
-                    step.depends_on.append(dep)
+                if dep not in all_deps[step.step_id]:
+                    all_deps[step.step_id].add(dep)
                     in_degree[step.step_id] += 1
                     if dep in dependents:
                         dependents[dep].append(step.step_id)

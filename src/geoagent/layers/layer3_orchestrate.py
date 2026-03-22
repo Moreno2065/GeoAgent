@@ -1787,7 +1787,7 @@ class ParameterExtractor:
                 constraints["土地利用"] = "landuse=unallocated"
 
         # 智能推断：根据设施类型添加默认约束
-        facility_type = task.get("facility_type", "general") if 'task' in dir() else self._extract_facility_type(query)
+        facility_type = self._extract_facility_type(query)
         if facility_type == "garbage":
             # 垃圾场典型约束
             if "道路" not in constraints:

@@ -707,6 +707,60 @@ def run_pipeline(
     return pipeline.run(text)
 
 
+def run_pipeline_mvp(
+    text: str,
+    scenario: str,
+    params: Dict[str, Any],
+) -> PipelineResult:
+    """
+    MVP 快速执行函数：直接指定场景和参数，跳过自然语言解析。
+
+    适用于确定性任务（已知场景类型和参数），无需经过意图识别和参数提取层。
+
+    Args:
+        text: 用户输入的自然语言（仅用于日志和上下文）
+        scenario: 场景类型（如 "route", "buffer", "overlay" 等）
+        params: 任务参数字典（直接传递给执行层）
+
+    Returns:
+        PipelineResult
+
+    示例：
+        result = run_pipeline_mvp(
+            text="芜湖南站到方特的步行路径",
+            scenario="route",
+            params={"start": "芜湖南站", "end": "方特欢乐世界", "mode": "walking"}
+        )
+    """
+    from geoagent.layers.architecture import Scenario
+    from geoagent.layers.layer5_executor import execute_task
+
+    # 安全转换 scenario
+    try:
+        scenario_enum = Scenario(scenario) if isinstance(scenario, str) else scenario
+    except (ValueError, TypeError):
+        scenario_enum = Scenario.ROUTE
+
+    # 构建 task dict
+    task_dict = {
+        "task": scenario,
+        **params,
+    }
+
+    # 执行任务
+    executor_result = execute_task(scenario_enum, task_dict)
+
+    # 转换结果为 PipelineResult
+    return PipelineResult(
+        status=PipelineStatus.COMPLETED if executor_result.success else PipelineStatus.FAILED,
+        layer_reached=6,
+        dsl=None,
+        executor_result=executor_result,
+        rendered_result=executor_result.data or {},
+        error=executor_result.error if not executor_result.success else None,
+    )
+
+
 __all__ = [
     "PipelineResult",
     "PipelineConfig",

@@ -113,7 +113,7 @@ class BufferExecutor(BaseExecutor):
         try:
             import geopandas as gpd
             from shapely.ops import unary_union
-            from shapely.geometry import CAP_STYLE, JOIN_STYLE
+            from shapely.geometry import CAP_STYLE, JOIN_STYLE, Point
 
         except ImportError:
             return ExecutorResult.err(
@@ -123,9 +123,6 @@ class BufferExecutor(BaseExecutor):
             )
 
         try:
-            import geopandas as gpd
-            from shapely.geometry import CAP_STYLE, JOIN_STYLE, Point
-
             input_layer = task["input_layer"]
             distance = float(task["distance"])
             dissolve = bool(task.get("dissolve", False))
