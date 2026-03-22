@@ -590,6 +590,42 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
         },
     },
 
+    # ── 🟣 多条件综合搜索 ───────────────────────────────────────────
+    Scenario.MULTI_CRITERIA_SEARCH: {
+        "user_input": {
+            "type": "string",
+            "required": True,
+            "description": "用户原始输入（用于解析多条件）",
+            "examples": ["广州体育中心附近找距离星巴克小于200米且地铁站大于500米的地方"],
+        },
+        "center_point": {
+            "type": "string",
+            "required": True,
+            "description": "搜索中心位置（地址或地标名）",
+            "examples": ["广州体育中心", "天河城", "珠江新城"],
+        },
+        "search_radius": {
+            "type": "number",
+            "required": False,
+            "default": 3000,
+            "min": 500,
+            "max": 10000,
+            "description": "搜索半径（米）",
+        },
+        "city": {
+            "type": "string",
+            "required": False,
+            "description": "城市名称（用于辅助定位同名地点）",
+            "examples": ["广州", "深圳"],
+        },
+        "visualize": {
+            "type": "boolean",
+            "required": False,
+            "default": True,
+            "description": "是否生成可视化地图",
+        },
+    },
+
     # ── POI 周边搜索（"XX周围有多少个XX"模式）──────────────────────────────
     Scenario.POI_SEARCH: {
         "center_point": {
@@ -617,6 +653,38 @@ SCHEMA_REQUIRED_PARAMS: Dict[Scenario, Dict[str, Any]] = {
             "required": False,
             "description": "城市名称（用于辅助定位同名地点）",
             "examples": ["上海", "北京", "深圳", "杭州"],
+        },
+    },
+
+    # ── 🟣 OSM 地图下载 ────────────────────────────────────────────
+    Scenario.FETCH_OSM: {
+        "center_point": {
+            "type": "string",
+            "required": True,
+            "description": "中心地点（地址或地标名，用于 Geocode 转经纬度）",
+            "examples": ["武汉黄鹤楼", "北京天安门", "上海外滩"],
+        },
+        "radius": {
+            "type": "number",
+            "required": False,
+            "default": 1000,
+            "min": 100,
+            "max": 50000,
+            "description": "下载半径（米）",
+        },
+        "data_type": {
+            "type": "string",
+            "required": False,
+            "default": "all",
+            "options": ["all", "network", "building"],
+            "description": "数据类型：all=路网+建筑，network=仅路网，building=仅建筑",
+        },
+        "network_type": {
+            "type": "string",
+            "required": False,
+            "default": "walk",
+            "options": ["walk", "drive", "bike", "all"],
+            "description": "路网类型：walk=步行网络，drive=车行网络，bike=骑行网络，all=所有道路",
         },
     },
 }
@@ -808,6 +876,7 @@ class DSLBuilder:
             Scenario.SUITABILITY: ["study_area"],
             Scenario.POI_SEARCH: ["center_point"],
             Scenario.CODE_SANDBOX: ["instruction"],  # 用户原始指令
+            Scenario.FETCH_OSM: ["center_point"],  # OSM 地图下载的中心点
         }
 
         keys = inputs_keys.get(scenario, [])

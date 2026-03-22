@@ -49,7 +49,7 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         Args:
             task: 包含以下字段的字典：
                 - user_input: 原始用户输入
-                - center: 中心位置（地名或坐标）
+                - center_point 或 center: 中心位置（地名或坐标）
                 - criteria: 搜索条件字典
                 - search_radius: 搜索半径（米）
 
@@ -57,12 +57,13 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             ExecutorResult: 包含搜索结果的执行结果
         """
         user_input = task.get("user_input", "")
-        center = task.get("center", "")
+        # 支持 center_point 和 center 两个参数名
+        center = task.get("center_point") or task.get("center", "")
         criteria = task.get("criteria", {})
         search_radius = int(task.get("search_radius", 3000))
 
         if not user_input and not center:
-            return ExecutorResult.error(
+            return ExecutorResult.err(
                 "multi_criteria_search",
                 "缺少必要参数：user_input 或 center"
             )
@@ -74,7 +75,7 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             # 2. 获取中心点坐标
             center_coords = self._resolve_center(parsed.get("center", center or user_input))
             if not center_coords:
-                return ExecutorResult.error(
+                return ExecutorResult.err(
                     "multi_criteria_search",
                     f"无法解析中心位置：{parsed.get('center', center)}"
                 )
@@ -89,7 +90,7 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             return self._build_result(filtered, center_coords, parsed, user_input)
 
         except Exception as e:
-            return ExecutorResult.error(
+            return ExecutorResult.err(
                 "multi_criteria_search",
                 f"多条件搜索执行失败: {str(e)}"
             )
@@ -239,12 +240,8 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         """
         try:
             from geoagent.plugins.amap_plugin import geocode
-            import os
 
-            api_key = os.getenv("AMAP_API_KEY", "").strip()
-            if not api_key:
-                return None
-
+            # 直接调用 geocode，它内部会从 ~/.env 加载 API Key
             result = geocode(address)
             if result and result.get("lon") and result.get("lat"):
                 return (result["lon"], result["lat"])

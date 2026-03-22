@@ -419,7 +419,8 @@ class CodeSandboxExecutor(BaseExecutor):
         from geoagent.sandbox.protocol import SandboxExecuteRequest
         from geoagent.sandbox.client import SandboxClient
 
-        client = SandboxClient()
+        # 禁用客户端自带的残缺降级，没 Docker 时抛出异常
+        client = SandboxClient(local_fallback=False)
 
         # 如果提供了 context_data，将其序列化为 JSON 字符串传入
         # sandbox 会自动解析 workspace 文件

@@ -268,12 +268,18 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "道路施工", "交通管制", "突发事件",
     ],
 
-    # 公交信息
+    # 公交信息（更精确的关键词，避免误匹配"距离XX大于500米"等POI搜索）
     Scenario.TRANSIT_INFO: [
-        "公交线路", "公交", "地铁", "bus", "metro", "subway",
-        "transit info", "公交信息", "地铁线路", "公交换乘",
-        "公交站点", "地铁站", "公交查询",
-        "bus route", "subway line", "transit",
+        # 必须包含明确的"公交线路"、"公交站点"等完整语义
+        "公交线路查询", "查询公交线路", "找公交线路",
+        "公交站点查询", "查询公交站点", "找公交站点",
+        "公交换乘查询", "换乘方案", "如何换乘",
+        "几路公交车", "公交车线路", "查公交车",
+        # 英文必须完整
+        "bus route", "bus line", "bus station query",
+        "transit route", "transit line", "subway route", "metro line",
+        # 明确的交通查询格式
+        "从.*到.*公交", "公交.*到.*", ".*坐.*公交",
     ],
 
     # IP 定位
@@ -289,6 +295,24 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "weather query", "weather forecast", "天气预报",
         "今天天气", "明天天气", "湿度", "风力", "风速",
         "穿衣指数", "空气指数", "空气质量",
+    ],
+
+    # ── 🟣 多条件综合搜索（POI 多条件筛选）─────────────────────────────
+    Scenario.MULTI_CRITERIA_SEARCH: [
+        # 多条件组合搜索：必须同时满足多个 POI + 距离条件
+        # 关键短语模式（使用实际短语而非正则）
+        "距离星巴克", "距离地铁站", "距离小于", "距离大于",
+        "小于200米", "大于500米", "小于 200 米", "大于 500 米",
+        "距离小于200米", "距离大于500米", "距离小于 200 米", "距离大于 500 米",
+        "并且", "而且", "同时", "既要", "也要", "既要.*又要",
+        "同时满足", "满足条件",
+        # 典型场景关键词
+        "摸鱼", "完美地点", "理想位置", "最佳位置", "合适地点",
+        # POI 组合条件
+        "星巴克附近", "地铁站远一点",
+        # 英文
+        "less than", "more than", "within meters",
+        "perfect spot", "ideal location", "both and",
     ],
 
     # ── 🟣 代码沙盒（受限代码执行）────────────────────────────────
@@ -315,6 +339,19 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "calculate distance", "custom formula", "custom algorithm",
         "iterative", "statistical analysis", "coordinate transformation",
         "run python", "execute code", "script execution",
+    ],
+
+    # ── 🟣 OSM 地图下载 ────────────────────────────────────────────────
+    Scenario.FETCH_OSM: [
+        # 中文
+        "osm下载", "用osm", "osm抓取", "下载地图", "抓取地图",
+        "下载osm", "osm数据", "osm地图", "openstreetmap下载",
+        "获取osm", "获取地图数据", "下载路网", "下载建筑",
+        "周边地图", "周围地图", "地图下载",
+        # 英文
+        "osm download", "osm fetch", "fetch osm", "download osm",
+        "osm data", "openstreetmap", "download map", "fetch map",
+        "download buildings", "download network", "download roads",
     ],
 }
 

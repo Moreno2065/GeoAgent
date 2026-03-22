@@ -1458,6 +1458,143 @@ class ParameterExtractor:
             poi_params = self._extract_poi_params(query)
             params.update(poi_params)
 
+        # ── multi_criteria_search 场景 ────────────────────────────
+        # 多条件 POI 搜索：提取中心点和用户原始输入
+        elif _scenario_str == "multi_criteria_search":
+            # 透传用户原始输入
+            params["user_input"] = query
+
+            # 提取中心点
+            center = locations.get("start") or locations.get("end") or params.get("location")
+            if center:
+                params["center_point"] = center
+            elif params.get("coordinates"):
+                params["center_point"] = params.get("coordinates")
+            else:
+                # 从查询中提取中心点（清理常见前缀后缀）
+                cleaned = query
+                # 清理前缀
+                for prefix in ["找一个", "找", "帮我找", "请找", "查一下", "查询", "搜索"]:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                # 清理后缀
+                for suffix in ["周围", "附近", "周边", "方圆", "内"]:
+                    if cleaned.endswith(suffix):
+                        cleaned = cleaned[:-len(suffix)].strip()
+                # 提取 "XXX周围" 或 "在XXX" 模式
+                import re
+                patterns = [
+                    r"在(.+?)周围",
+                    r"在(.+?)附近",
+                    r"在(.+?)周边",
+                    r"(.+?)周围\s*\d",
+                    r"(.+?)附近\s*\d",
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, query)
+                    if match:
+                        params["center_point"] = match.group(1).strip()
+                        break
+
+            # 提取城市（如果有的话）
+            city_patterns = [
+                r"在(.+?)市",
+                r"在(.+?)区",
+                r"(.+?)市的",
+            ]
+            for pattern in city_patterns:
+                match = re.search(pattern, query)
+                if match:
+                    potential_city = match.group(1).strip()
+                    if len(potential_city) >= 2 and len(potential_city) <= 10:
+                        params["city"] = potential_city
+                        break
+
+            # 提取搜索半径
+            distance_info = params.get("distance_info")
+            if distance_info:
+                params["search_radius"] = int(distance_info.get("distance", 3000))
+
+            # 提取距离条件（用于后续筛选）
+            distance_conditions = []
+            # 模式: "距离星巴克小于200米"
+            patterns = [
+                r"距离(.+?)\s*[小于小于]\s*(\d+)\s*米",
+                r"(.+?)\s*小于\s*(\d+)\s*米",
+                r"(.+?)\s*以内\s*(\d+)\s*米",
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, query)
+                for poi_type, distance in matches:
+                    distance_conditions.append({
+                        "poi_type": poi_type.strip(),
+                        "operator": "<=",
+                        "distance": int(distance)
+                    })
+            # 模式: "距离地铁站大于500米"
+            patterns2 = [
+                r"距离(.+?)\s*[大于大]\s*(\d+)\s*米",
+                r"(.+?)\s*大于\s*(\d+)\s*米",
+                r"(.+?)\s*以外\s*(\d+)\s*米",
+            ]
+            for pattern in patterns2:
+                matches = re.findall(pattern, query)
+                for poi_type, distance in matches:
+                    distance_conditions.append({
+                        "poi_type": poi_type.strip(),
+                        "operator": ">=",
+                        "distance": int(distance)
+                    })
+            if distance_conditions:
+                params["distance_conditions"] = distance_conditions
+
+        # ── fetch_osm 场景 ───────────────────────────────────────
+        elif _scenario_str == "fetch_osm":
+            # OSM 地图下载场景：中心点从地点名或坐标中提取
+            
+            # 中心点提取优先级：
+            # 1. 优先从 location/start 参数获取
+            # 2. 其次从 coordinates 获取
+            # 3. 最后从 query 中提取地点名
+            center = locations.get("start") or locations.get("end") or params.get("location")
+            if center:
+                params["center_point"] = center
+            elif params.get("coordinates"):
+                params["center_point"] = params.get("coordinates")
+            else:
+                # 简单直接：从 query 中提取地点名
+                # 模式：XXX周围、XXX附近、下载XXX的地图
+                # 清理常见前缀和后缀词
+                cleaned = query
+                for prefix in ["用osm下载", "osm下载", "下载osm", "下载地图", "抓取地图", "下载"]:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                for suffix in ["周围的地图", "附近的地图", "周边的地图", "的地图", "地图", "周围的osm"]:
+                    if cleaned.endswith(suffix):
+                        cleaned = cleaned[:-len(suffix)].strip()
+                if cleaned:
+                    params["center_point"] = cleaned
+            
+            # 距离信息（半径）
+            distance_info = params.get("distance_info")
+            if distance_info:
+                params["radius"] = distance_info.get("distance")
+            # 数据类型
+            if "路网" in query or "network" in query.lower() or "道路" in query:
+                if "建筑" in query:
+                    params["data_type"] = "all"
+                else:
+                    params["data_type"] = "network"
+            elif "建筑" in query:
+                params["data_type"] = "building"
+            # 网络类型
+            if "步行" in query or "walk" in query.lower():
+                params["network_type"] = "walk"
+            elif "骑行" in query or "bike" in query.lower():
+                params["network_type"] = "bike"
+            elif "驾车" in query or "drive" in query.lower() or "开车" in query:
+                params["network_type"] = "drive"
+
         return params
 
     def _extract_poi_params(self, query: str) -> Dict[str, Any]:
@@ -2004,6 +2141,12 @@ class ScenarioOrchestrator:
                 "info_type": "line",
                 "outputs": {"map": False, "summary": True},
             },
+            # ── 🟣 多条件综合搜索 ─────────────────────────────────────
+            Scenario.MULTI_CRITERIA_SEARCH: {
+                "search_radius": 3000,
+                "visualize": True,
+                "outputs": {"map": True, "summary": True},
+            },
             Scenario.IP_LOCATION: {
                 "outputs": {"map": False, "summary": True},
             },
@@ -2018,6 +2161,13 @@ class ScenarioOrchestrator:
             },
             Scenario.GRASP_ROAD: {
                 "outputs": {"map": False, "summary": True},
+            },
+            # ── 🟣 OSM 地图下载 ──────────────────────────────────────────
+            Scenario.FETCH_OSM: {
+                "radius": 1000,
+                "data_type": "all",
+                "network_type": "walk",
+                "outputs": {"map": True, "summary": True},
             },
         }
 
@@ -2165,6 +2315,7 @@ class ScenarioOrchestrator:
                         "suitability", "poi_search", "geocode",
                         "regeocode", "visualization", "code_sandbox",
                         "fetch_osm",  # OSM 地图下载
+                        "multi_criteria_search",  # 多条件综合搜索
                         # Amap 高德 Web 服务
                         "input_tips", "district", "static_map",
                         "coord_convert", "grasp_road", "traffic_status",
@@ -2181,6 +2332,7 @@ class ScenarioOrchestrator:
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
             "fetch_osm",  # OSM 地图下载
+            "multi_criteria_search",  # 多条件综合搜索
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
             "traffic_status", "traffic_events", "transit_info",
@@ -2217,6 +2369,7 @@ class ScenarioOrchestrator:
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
             "fetch_osm",  # OSM 地图下载
+            "multi_criteria_search",  # 多条件综合搜索
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
             "traffic_status", "traffic_events", "transit_info",

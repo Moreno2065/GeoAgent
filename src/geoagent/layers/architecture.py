@@ -86,6 +86,9 @@ class Scenario(str, Enum):
     # ── 🟣 OSM 地图下载场景 ────────────────────────────────────────
     FETCH_OSM = "fetch_osm"  # 从 OpenStreetMap 下载路网/建筑物数据
 
+    # ── 🟣 多条件综合搜索场景 ─────────────────────────────────────────
+    MULTI_CRITERIA_SEARCH = "multi_criteria_search"  # 多条件 POI 搜索（如"找距离星巴克<200m且地铁站>500m的地方"）
+
     # ── 🟢 高德基础 Web 服务场景 ─────────────────────────────────
     GEOCODE = "geocode"        # 地理编码（地址 → 坐标）
     REGEOCODE = "regeocode"     # 逆地理编码（坐标 → 地址）
@@ -310,6 +313,7 @@ MVP_SCENARIO_EXECUTOR_MAP = {
     Scenario.IP_LOCATION: "amap_executor",
     Scenario.WEATHER: "amap_executor",
     Scenario.CODE_SANDBOX: "code_sandbox_executor",  # 受限代码执行（补丁层）
+    Scenario.FETCH_OSM: "osm_executor",  # OSM 地图下载
 }
 
 # 引擎名称

@@ -129,17 +129,19 @@ class OSMExecutor(BaseExecutor):
         # 方案1：高德 API
         try:
             from geoagent.plugins.amap_plugin import AmapPlugin
-            import json
 
             amap = AmapPlugin()
             result_str = amap.execute({"action": "geocode", "address": place_name})
             result = json.loads(result_str)
-            if result.get("success"):
-                location = result.get("location", {})
-                lng = location.get("lng") or location.get("longitude")
-                lat = location.get("lat") or location.get("latitude")
-                if lng and lat:
-                    return (float(lat), float(lng))  # OSMnx: (lat, lon)
+
+            # 高德返回格式：{ "lon": 118.376057, "lat": 31.282868, ... }
+            # 注意：高德返回的 lat 是纬度，lon 是经度
+            lon = result.get("lon")
+            lat = result.get("lat")
+
+            if lon is not None and lat is not None:
+                return (float(lat), float(lon))  # OSMnx: (lat, lon)
+
         except Exception:
             pass  # 高德不可用，继续尝试备选方案
 
