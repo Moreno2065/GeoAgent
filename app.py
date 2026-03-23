@@ -1128,28 +1128,56 @@ def _render_sidebar():
                             extract_dir.mkdir(parents=True, exist_ok=True)
 
                             # ── 统一的文件名解码函数 ────────────────────────────────
-                            def _decode_name(raw: str) -> str:
-                                """将 ZIP 内部原始文件名安全解码为可用字符串"""
-                                # 先尝 UTF-8（现代 ZIP 工具），再尝 GBK（国内常用压缩工具）
-                                for enc in ('utf-8', 'gbk', 'gb2312', 'cp437', 'latin1'):
+                            def _decode_name(zinfo: zipfile.ZipInfo) -> str:
+                                """
+                                将 ZIP 内部原始文件名安全解码为可用字符串
+                                
+                                关键：使用 orig_filename（原始字节）而非 filename（已错误解码）
+                                Python zipfile 在 Windows 上用 CP1252 解码，导致中文乱码
+                                """
+                                # orig_filename 保存原始字节（latin-1 表示），不受系统编码影响
+                                raw = getattr(zinfo, 'orig_filename', None) or zinfo.filename
+
+                                # 检查是否包含非 ASCII 字符
+                                has_non_ascii = any(ord(c) > 127 for c in raw)
+
+                                if not has_non_ascii:
+                                    # 纯 ASCII，安全返回但去除危险字符
+                                    ascii_only = "".join(
+                                        c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
+                                        for c in raw
+                                    )
+                                    return ascii_only or "unnamed"
+
+                                # 非 ASCII：尝试多种解码方式
+                                def try_decode(src: str, dst_enc: str) -> tuple[bool, str]:
+                                    """尝试用 latin1 → dst_enc 解码"""
                                     try:
-                                        decoded = raw.encode('latin1').decode(enc)
-                                        # 验证没有乱码标记
-                                        if '\ufffd' not in decoded and '?' not in decoded:
-                                            # 进一步确认所有字符都能安全传递给 Windows 文件 API
-                                            # Windows NTFS API 对非 ASCII 字符处理不一致，
-                                            # 为彻底避免 charmap 问题，文件名始终强制 ASCII
+                                        raw_bytes = src.encode('latin1')
+                                        decoded = raw_bytes.decode(dst_enc)
+                                        if '\ufffd' not in decoded:
+                                            return True, decoded
+                                    except (UnicodeDecodeError, UnicodeEncodeError):
+                                        pass
+                                    return False, ""
+
+                                # 按优先级尝试常见编码
+                                for enc in ('utf-8', 'gbk', 'gb2312', 'cp950', 'shift_jis', 'cp437', 'cp1252'):
+                                    success, decoded = try_decode(raw, enc)
+                                    if success:
+                                        # 验证是否包含合理字符
+                                        is_reasonable = (
+                                            any('\u4e00' <= c <= '\u9fff' for c in decoded) or  # CJK
+                                            len(decoded) < 200
+                                        )
+                                        if is_reasonable:
+                                            # 强制 ASCII 化确保 Windows 兼容
                                             ascii_only = "".join(
-                                                c if (
-                                                    ord(c) < 128
-                                                    and c.isprintable()
-                                                    and c not in r'\/:*?"<>|'
-                                                ) else '_'
+                                                c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
                                                 for c in decoded
                                             )
                                             return ascii_only or "unnamed"
-                                    except (UnicodeDecodeError, LookupError):
-                                        continue
+
                                 # 全失败 → 强制 ASCII 化
                                 ascii_only = "".join(
                                     c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
@@ -1159,26 +1187,33 @@ def _render_sidebar():
 
                             # ── 安全的文件写入 ────────────────────────────────────
                             def _safe_write(dst: Path, data: bytes) -> None:
+                                """安全写入文件，处理编码和路径问题"""
                                 try:
+                                    # 先尝试直接写入
                                     with open(dst, 'wb') as fh:
                                         fh.write(data)
-                                    return  # 成功写入直接返回
+                                    return
                                 except (OSError, UnicodeEncodeError, UnicodeDecodeError):
                                     pass
-                                # Fallback：始终使用 ASCII-only 文件名（绕过所有编码问题）
+
+                                # Fallback：使用 ASCII-only 文件名（绕过所有编码问题）
+                                # 提取原始文件名（可能在解压时已经 ASCII 化）
+                                raw_name = dst.name
                                 ascii_name = "".join(
                                     c if (
                                         ord(c) < 128
                                         and c.isprintable()
                                         and c not in r'\/:*?"<>|'
                                     ) else '_'
-                                    for c in dst.name
+                                    for c in raw_name
                                 )
                                 if not ascii_name or ascii_name.isspace():
                                     ascii_name = "file"
+                                # 分离 stem 和 suffix
                                 parts = ascii_name.rsplit('.', 1)
                                 stem = parts[0] if len(parts) == 2 else ascii_name
                                 ext = parts[1] if len(parts) == 2 else ''
+                                # 生成不冲突的路径
                                 base = (dst.parent / stem).with_suffix(f".{ext}" if ext else '') if ext else dst.parent / stem
                                 final = base
                                 cnt = 1
@@ -1192,7 +1227,7 @@ def _render_sidebar():
                             # encoding 参数在 Python 3.11+ 才支持，降级版本直接去掉
                             with zipfile.ZipFile(tmp_path, 'r') as zf:
                                 for zinfo in zf.infolist():
-                                    filename = _decode_name(zinfo.filename)
+                                    filename = _decode_name(zinfo)
                                     if filename.endswith('/'):
                                         (extract_dir / filename.rstrip('/')).mkdir(parents=True, exist_ok=True)
                                         continue
@@ -2571,25 +2606,69 @@ def _handle_user_message(prompt: str, agent):
 2. 简洁明了，不超过200字
 3. 包含关键数据和结论
 4. 如有必要，给出下一步建议
-5. 如果用户上传了文件，请结合文件内容进行回复"""
+5. 如果用户上传了文件，请结合文件内容进行回复
+6. ⚠️ 重要：只引用系统确认实际存在的文件，不要凭空捏造文件名"""
 
                     params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
+                    
+                    # ── 构建详细的执行结果信息 ───────────────────────────────
+                    result_details = []
+                    result_details.append(f"任务类型：{result.scenario or 'unknown'}")
+                    
+                    # 分析结果摘要
+                    if result.summary:
+                        result_details.append(f"分析结果摘要：{result.summary}")
+                    
+                    # 关键指标
+                    if result.metrics:
+                        result_details.append("关键指标：")
+                        for k, v in list(result.metrics.items())[:5]:
+                            result_details.append(f"  - {k}: {v}")
+                    
+                    # 🆕 输出文件（实际生成的文件）
+                    output_files = result.output_files if hasattr(result, 'output_files') else []
+                    if output_files:
+                        result_details.append(f"\n📁 实际生成的文件（共 {len(output_files)} 个）：")
+                        for f in output_files[:10]:  # 最多显示10个
+                            import os
+                            fname = os.path.basename(str(f))
+                            result_details.append(f"  - {fname}")
+                        if len(output_files) > 10:
+                            result_details.append(f"  ... 还有 {len(output_files) - 10} 个文件")
+                    else:
+                        result_details.append("\n📁 实际生成的文件：无")
+                    
+                    # 🆕 输出验证信息
+                    if hasattr(result, 'output_validated') and result.output_validated:
+                        validated = result.output_validated
+                        if validated.get('is_valid'):
+                            result_details.append("\n✅ 输出验证：所有文件已确认存在")
+                        else:
+                            existing = validated.get('existing_files', 0)
+                            total = validated.get('total_files', 0)
+                            missing = validated.get('missing_files', 0)
+                            result_details.append(f"\n⚠️ 输出验证：{existing}/{total} 个文件存在，{missing} 个缺失")
+                            if missing > 0:
+                                result_details.append("   （文件缺失可能表示执行未完全成功）")
+                    
+                    # 🆕 从 executor_result.data 中提取更多详情
+                    if hasattr(result, 'executor_result') and result.executor_result:
+                        er = result.executor_result
+                        if er.data:
+                            for key in ['feature_count', 'input_feature_count', 'distance', 'crs', 
+                                       'html_file', 'map_file', 'output_path']:
+                                if key in er.data and er.data[key]:
+                                    result_details.append(f"  - {key}: {er.data[key]}")
+
                     user_message = f"""用户请求：{prompt}
 
-任务类型：{result.scenario or "unknown"}
-分析结果摘要：{result.summary or ""}
-
-关键指标："""
-
-                    if result.metrics:
-                        for k, v in list(result.metrics.items())[:5]:
-                            user_message += f"\n- {k}: {v}"
+{chr(10).join(result_details)}"""
 
                     # 添加文件上下文
                     if file_context:
                         user_message += f"\n\n{file_context}"
 
-                    user_message += "\n\n请生成简洁的回复："
+                    user_message += "\n\n请生成简洁的回复："""
 
                     try:
                         stream_state["text"] = ""

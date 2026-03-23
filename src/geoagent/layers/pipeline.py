@@ -154,6 +154,7 @@ class PipelineResult:
     events: list = field(default_factory=list)
     output_validation: Optional[Any] = None  # 🆕 OutputValidation
     warning: Optional[str] = None  # 🆕 警告信息（如幻觉检测）
+    output_files: list = field(default_factory=list)  # 🆕 从 executor_result.data 提取的文件列表
 
     @property
     def success(self) -> bool:
@@ -163,8 +164,47 @@ class PipelineResult:
     def needs_clarification(self) -> bool:
         return self.status == PipelineStatus.CLARIFICATION_NEEDED
 
+    def _extract_output_files(self) -> list:
+        """从 executor_result.data 中提取 output_files"""
+        if not self.executor_result or not self.executor_result.data:
+            return []
+        
+        files = []
+        data = self.executor_result.data
+        
+        # 1. 直接的 output_file/output_files 字段
+        if "output_file" in data and data["output_file"]:
+            files.append(data["output_file"])
+        if "output_files" in data and data["output_files"]:
+            if isinstance(data["output_files"], list):
+                files.extend(data["output_files"])
+            else:
+                files.append(data["output_files"])
+        
+        # 2. html_file 字段（地图文件）
+        if "html_file" in data and data["html_file"]:
+            files.append(data["html_file"])
+        
+        # 3. map_file 字段
+        if "map_file" in data and data["map_file"]:
+            files.append(data["map_file"])
+        
+        # 4. result_file 字段
+        if "result_file" in data and data["result_file"]:
+            files.append(data["result_file"])
+        
+        # 5. download_path 字段
+        if "download_path" in data and data["download_path"]:
+            files.append(data["download_path"])
+        
+        return files
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
+        # 提取 output_files
+        if not self.output_files and self.executor_result:
+            self.output_files = self._extract_output_files()
+        
         return {
             "status": _get_enum_value(self.status),
             "layer_reached": self.layer_reached,
@@ -179,6 +219,8 @@ class PipelineResult:
             "error_detail": self.error_detail,
             "events": self.events,
             "result": self.rendered_result,
+            # 🆕 输出文件列表（从 executor_result.data 提取）
+            "output_files": self.output_files,
             # 🆕 输出验证信息
             "output_validated": self.output_validation is not None,
             "output_validation": {
@@ -631,7 +673,7 @@ class SixLayerPipeline:
             添加了 rendered_result 的 PipelineResult
         """
         if result.rendered_result is None:
-            result.rendered_result = {
+            rendered = {
                 "success": False,
                 "error": result.error or "未知错误",
                 "summary": f"任务在第 {result.layer_reached} 层失败",
@@ -641,6 +683,11 @@ class SixLayerPipeline:
                     if result.orchestration_result else None
                 ),
             }
+            # 🆕 如果有幻觉警告，加入渲染结果
+            if result.warning:
+                rendered["warning"] = result.warning
+                rendered["llm_hallucination"] = True
+            result.rendered_result = rendered
         return result
 
     def run_stream(self, text: str) -> Generator[Dict[str, Any], None, None]:

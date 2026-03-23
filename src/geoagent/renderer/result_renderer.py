@@ -1,4 +1,4 @@
-﻿"""
+"""
 Result Renderer - 结果渲染器
 ===========================
 将执行结果转换为标准化的前端展示格式。
@@ -185,21 +185,46 @@ def _extract_output_files(result: Dict[str, Any]) -> List[str]:
     """从结果中提取输出文件列表"""
     files = []
 
-    # 直接字段
-    if result.get("output_file"):
-        files.append(result["output_file"])
-    if result.get("map_file"):
-        files.append(result["map_file"])
+    # 直接字段（常见命名）
+    direct_fields = [
+        "output_file", "map_file", "output_path", "download_path",
+        "html_file", "result_file", "file_path"
+    ]
+    for field in direct_fields:
+        if result.get(field):
+            val = result[field]
+            if isinstance(val, list):
+                files.extend(val)
+            elif isinstance(val, str) and val:
+                files.append(val)
 
-    # 间接字段
+    # 嵌套 data 字段（ExecutorResult.data 结构）
+    if "data" in result and isinstance(result["data"], dict):
+        for field in direct_fields:
+            if result["data"].get(field):
+                val = result["data"][field]
+                if isinstance(val, list):
+                    files.extend(val)
+                elif isinstance(val, str) and val:
+                    files.append(val)
+
+    # files 字段
     if result.get("files"):
-        if isinstance(result["files"], list):
-            files.extend(result["files"])
-        else:
-            files.append(result["files"])
+        val = result["files"]
+        if isinstance(val, list):
+            files.extend(val)
+        elif isinstance(val, str) and val:
+            files.append(val)
 
-    # 去重
-    return list(set(files))
+    # 去重但保持顺序
+    seen = set()
+    unique_files = []
+    for f in files:
+        if f and f not in seen:
+            seen.add(f)
+            unique_files.append(f)
+
+    return unique_files
 
 
 def _extract_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -208,15 +233,30 @@ def _extract_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
 
     # 常见指标字段
     metric_keys = [
+        # 基础
         "distance", "duration", "feature_count", "result_count",
-        "visible_area_km2", "coverage_area", "mean_ndvi",
+        # 面积/范围
+        "visible_area_km2", "coverage_area", "total_area",
+        # 统计
+        "mean_ndvi", "valid_pixels", "resolution",
         "hotspot_count", "coldspot_count", "building_count",
-        "total_area", "valid_pixels", "resolution",
+        # 缓冲分析特有
+        "input_feature_count", "dissolve", "cap_style",
+        # 来源
+        "input_source", "input_layer", "crs", "original_crs",
+        # 输出
+        "output_path", "html_file", "output_file",
     ]
 
     for key in metric_keys:
         if key in result:
             metrics[key] = result[key]
+
+    # 嵌套 data 字段
+    if "data" in result and isinstance(result["data"], dict):
+        for key in metric_keys:
+            if key in result["data"] and key not in metrics:
+                metrics[key] = result["data"][key]
 
     return metrics
 

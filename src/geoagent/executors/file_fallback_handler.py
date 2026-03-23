@@ -216,7 +216,10 @@ class FileFallbackHandler:
         Returns:
             数据类型: "network" | "building" | "water" | "poi" | "landuse" | "unknown"
         """
-        name_lower = file_name.lower()
+        # 关键修复：先去掉扩展名再匹配关键词
+        # 问题："河流.shp" → ".shp" 不在关键词中，"shp" 也不在
+        #       但去掉 ".shp" 后，"河流" 能匹配 "water" 类型的 "河" 关键词
+        name_lower = Path(file_name).stem.lower()  # "河流.shp" → "河流"
 
         # 先检查 task_type 的提示
         if task_type == "route" or task_type == "accessibility":

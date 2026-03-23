@@ -20,6 +20,10 @@ from .structured_data_parser import StructuredDataParser
 from .geo_data_reader import GeoDataReader
 
 
+# Shapefile 必须保持所有辅助文件在同一目录
+_SHP_AUXILIARY_EXTENSIONS = frozenset({".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".sbp", ".shp.xml"})
+
+
 class FileUploadHandler:
     """
     统一文件上传处理器
@@ -30,6 +34,7 @@ class FileUploadHandler:
     - 支持批量处理多个文件
     - 自动保存文件到 workspace 目录
     - 提供文件内容上下文用于 LLM
+    - SHP 辅助文件自动随主文件一起复制（保证 Shapefile 完整性）
     """
 
     def __init__(self):
@@ -55,7 +60,7 @@ class FileUploadHandler:
 
         # 如果需要，复制到 workspace
         if save_to_workspace:
-            file_path = self._save_to_workspace(file_path)
+            file_path = self._resolve_file_path(file_path)
             path = Path(file_path)
 
         # 根据扩展名选择解析器
@@ -126,34 +131,87 @@ class FileUploadHandler:
             #   3. 回退到安全 ASCII 文件名（彻底屏蔽编码问题）
             # ═══════════════════════════════════════════════════════════════════
             def _extract_filename(zinfo: zipfile.ZipInfo) -> str:
-                """从 ZipInfo 中安全提取文件名，兼容各种编码"""
-                raw = zinfo.filename
+                """
+                从 ZipInfo 中安全提取文件名，兼容各种编码
+                
+                关键：使用 orig_filename（原始字节）而非 filename（已解码）
+                Python zipfile 使用 CP437 编码存储文件名，但 Windows 上会错误解码
+                """
+                # orig_filename 保存原始字节（latin-1 表示），不受系统编码影响
+                # 这是修复 Windows 上 ZIP 中文文件名的关键
+                raw = getattr(zinfo, 'orig_filename', None) or zinfo.filename
 
-                # 先尝 UTF-8（现代 ZIP 工具），再尝 GBK（国内压缩工具）
-                for enc in ('utf-8', 'gbk', 'gb2312', 'cp437', 'latin1'):
+                # ═══════════════════════════════════════════════════════════════════
+                # 🆕 彻底修复 ZIP 中文文件名问题
+                #
+                # 问题分析：
+                # 1. ZIP 规范使用 CP437 存储文件名，但现代工具常用 UTF-8 或 GBK
+                # 2. Python zipfile 在 Windows 上用 CP1252 解码，导致中文乱码
+                # 3. orig_filename 保持原始字节（latin-1），可用于正确解码
+                # ═══════════════════════════════════════════════════════════════════
+
+                # 1. 检查是否包含非 ASCII 字符
+                has_non_ascii = any(ord(c) > 127 for c in raw)
+
+                if not has_non_ascii:
+                    # 纯 ASCII，安全返回但去除危险字符
+                    ascii_only = "".join(
+                        c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
+                        for c in raw
+                    )
+                    return ascii_only or "file"
+
+                # 2. 非 ASCII 字符，尝试多种解码方式
+                # 关键：用 latin1 作为中间层，因为 ZIP 内部用 latin1 存储字节
+                def try_decode_with(src: str, dst: str) -> tuple[bool, str]:
+                    """尝试解码，返回 (是否成功, 解码结果)"""
                     try:
-                        decoded = raw.encode('latin1').decode(enc)
-                        # 验证没有乱码标记
-                        if '\ufffd' not in decoded and '?' not in decoded:
-                            # Windows 文件 API 不稳定 → 文件名始终强制 ASCII
+                        # 先将 latin1 表示的原始字节转为真正的字节
+                        raw_bytes = src.encode('latin1')
+                        # 再用目标编码解码
+                        decoded = raw_bytes.decode(dst)
+                        # 检查是否有乱码标记
+                        if '\ufffd' not in decoded:
+                            return True, decoded
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        pass
+                    return False, ""
+
+                # 常见的编码组合（按优先级）
+                candidates = [
+                    ('latin1', 'utf-8'),      # UTF-8 with CP437 fallback
+                    ('latin1', 'gbk'),        # GBK (中文 Windows)
+                    ('latin1', 'gb2312'),     # GB2312 (简体中文)
+                    ('latin1', 'cp950'),      # Big5 (繁体中文)
+                    ('latin1', 'shift_jis'), # Shift-JIS (日文)
+                    ('latin1', 'cp437'),      # CP437 (DOS)
+                    ('latin1', 'cp1252'),     # CP1252 (Windows Western)
+                ]
+
+                for src_enc, dst_enc in candidates:
+                    success, decoded = try_decode_with(raw, dst_enc)
+                    if success and decoded:
+                        # 验证是否包含合理字符
+                        is_reasonable = (
+                            any('\u4e00' <= c <= '\u9fff' for c in decoded) or  # CJK
+                            any('\u3040' <= c <= '\u309f' for c in decoded) or  # Hiragana
+                            any('\u30a0' <= c <= '\u30ff' for c in decoded) or  # Katakana
+                            len(decoded) < 200  # 普通 ASCII 文件名
+                        )
+                        if is_reasonable:
+                            # 强制 ASCII 化以确保 Windows 文件系统兼容
                             ascii_only = "".join(
-                                c if (
-                                    ord(c) < 128
-                                    and c.isprintable()
-                                    and c not in r'\/:*?"<>|'
-                                ) else '_'
+                                c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
                                 for c in decoded
                             )
-                            return ascii_only or "unnamed"
-                    except (UnicodeDecodeError, LookupError):
-                        continue
+                            return ascii_only or "file"
 
-                # 全失败 → 直接 ASCII 化
+                # 3. 全失败 → 强制 ASCII 化
                 ascii_only = "".join(
                     c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
                     for c in raw
                 )
-                return ascii_only or "unnamed"
+                return ascii_only or "file"
 
             def _safe_write(dst_path: Path, data: bytes) -> Path:
                 """将数据安全写入目标路径，处理 Windows 路径编码问题"""
@@ -365,25 +423,165 @@ class FileUploadHandler:
         container = ContentContainer(files=results)
         return container
 
+    def _resolve_file_path(self, file_path: str) -> str:
+        """
+        将任意路径解析为标准化路径。
+
+        处理逻辑（按优先级）：
+        1. 文件已在 workspace/conversation_files/ 下 → 直接使用，不重新复制
+           （app.py 的 ZIP 解压文件已经在正确的位置）
+        2. 文件在其他临时目录 → 复制到 workspace/
+        3. 已在 workspace 根目录 → 直接使用
+
+        Returns:
+            标准化后的文件路径（始终为绝对路径字符串）
+        """
+        path = Path(file_path)
+
+        if not path.exists():
+            return file_path
+
+        try:
+            from geoagent.gis_tools.fixed_tools import get_workspace_dir
+            workspace = get_workspace_dir()
+        except Exception:
+            return file_path
+
+        # 解析为绝对路径（避免当前目录歧义）
+        try:
+            path_abs = path.resolve()
+        except Exception:
+            path_abs = path.absolute()
+
+        # 已经在 conversation_files 子目录下（app.py 的解压目标），无需重新复制
+        try:
+            rel = path_abs.relative_to(workspace)
+            if str(rel).startswith("conversation_files"):
+                return str(path_abs)
+        except ValueError:
+            pass
+
+        # 已经在 workspace 根目录，直接使用
+        try:
+            rel = path_abs.relative_to(workspace)
+            parts = str(rel).split("/")
+            # "." or top-level file (no "/" in path) → workspace root
+            if str(rel) == "." or (len(parts) == 1 and parts[0]):
+                return str(path_abs)
+        except ValueError:
+            pass
+
+        # 需要复制到 workspace
+        return self._save_to_workspace(file_path)
+
     def _save_to_workspace(self, file_path: str) -> str:
-        """保存文件到 workspace 目录"""
+        """
+        保存文件到 workspace 目录。
+
+        关键逻辑：
+        - SHP 主文件 (.shp) 复制时自动带上同 stem 的所有辅助文件（.shx/.dbf/.prj等）
+          避免 GeoPandas 读取时因缺少辅助文件而报错
+        - ZIP 文件（已由 app.py 解压）跳过复制，由 ZIP 处理路径直接解析
+        - 防止重复复制：已存在于 workspace 的文件直接返回路径
+        """
         try:
             from geoagent.gis_tools.fixed_tools import get_workspace_dir
 
             workspace = get_workspace_dir()
             src = Path(file_path)
-            dst = workspace / src.name
+            src_resolved = src.resolve()
 
+            # ZIP 文件：已在 app.py 中解压到 conversation_files，直接跳过复制
+            if src.suffix.lower() == ".zip":
+                return file_path
+
+            # 防止重复复制（文件已在 workspace 根目录）
+            try:
+                src_resolved.relative_to(workspace)
+                return str(src_resolved)
+            except ValueError:
+                pass
+
+            suffix = src.suffix.lower()
+            stem = src.stem
+
+            # ── SHP 主文件：同时复制所有辅助文件 ───────────────────────
+            if suffix == ".shp":
+                return self._save_shapefile_group(src, workspace, stem)
+
+            # ── 其他文件：单文件复制 ─────────────────────────────────
+            dst = workspace / src.name
             if dst.exists():
                 dst = self._get_unique_path(workspace, src.name)
 
-            shutil.copy2(src, dst)
+            shutil.copy2(src_resolved, dst)
             return str(dst)
 
         except ImportError:
             return file_path
         except Exception:
             return file_path
+
+    def _save_shapefile_group(self, src_shp: Path, workspace: Path, stem: str) -> str:
+        """
+        复制 Shapefile 主文件及其所有辅助文件到 workspace。
+
+        策略：
+        1. 收集 src_shp 同目录下的所有 .shx/.dbf/.prj/.cpg/.sbn/.sbx 等辅助文件
+        2. 目标目录优先使用 conversation_files/{cid}/（保留对话隔离）
+        3. 如果 src_shp 的父目录在 conversation_files 下，直接使用该目录
+        4. 否则使用 workspace 根目录
+        5. 同 stem 的文件编号一致（如河流_1.shp / 河流_1.shx）
+        """
+        # 判断源文件是否在 conversation_files 下（保留目录结构）
+        try:
+            src_resolved = src_shp.resolve()
+            rel = str(src_resolved.relative_to(workspace))
+            # Windows uses backslashes, normalize to forward slash for parsing
+            rel_forward = rel.replace("\\", "/")
+            if rel_forward.startswith("conversation_files/"):
+                # conversation_files/{cid}/... → 使用 conversation_files/{cid}/
+                parts = rel_forward.split("/")
+                target_dir = workspace / parts[0] / parts[1]
+            else:
+                target_dir = workspace
+        except ValueError:
+            target_dir = workspace
+
+        # 收集同 stem 的所有相关文件
+        src_dir = src_shp.parent.resolve()
+        group_files: List[Path] = [src_shp.resolve()]
+        for aux_ext in _SHP_AUXILIARY_EXTENSIONS:
+            aux_file = src_dir / f"{stem}{aux_ext}"
+            if aux_file.exists():
+                group_files.append(aux_file)
+
+        # 生成统一编号
+        counter = 1
+        base_stem = stem
+        while True:
+            conflict_free = True
+            for f in group_files:
+                target_name = f"{base_stem}{f.suffix}"
+                target_path = target_dir / target_name
+                if target_path.exists() and target_path.resolve() != f.resolve():
+                    conflict_free = False
+                    break
+            if conflict_free:
+                break
+            base_stem = f"{stem}_{counter}"
+            counter += 1
+
+        # 复制所有文件
+        for f in group_files:
+            target_name = f"{base_stem}{f.suffix}"
+            target_path = target_dir / target_name
+            if target_path.exists():
+                target_path = self._get_unique_path(target_dir, target_name)
+            shutil.copy2(f, target_path)
+
+        # 返回 .shp 文件的路径（供调用方使用）
+        return str(target_dir / f"{base_stem}.shp")
 
     def _get_unique_path(self, directory: Path, filename: str) -> Path:
         """获取唯一的文件路径"""
