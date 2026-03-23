@@ -98,8 +98,13 @@ class OverlayExecutor(BaseExecutor):
 
     def _resolve_output(self, operation: str, output_file: str | None) -> str:
         if output_file:
-            return self._resolve_path(output_file)
-        return self._resolve_path(f"overlay_{operation}.shp")
+            path = Path(self._resolve_path(output_file))
+            # 拦截 shp，强行戴上 zip 帽子
+            if path.suffix.lower() == '.shp':
+                path = path.with_suffix('.zip')
+            return str(path)
+        # 默认生成 zip
+        return self._resolve_path(f"overlay_{operation}.zip")
 
     def _run_geopandas(self, task: Dict[str, Any]) -> ExecutorResult:
         """GeoPandas 叠置分析（主力引擎）"""
@@ -175,8 +180,26 @@ class OverlayExecutor(BaseExecutor):
                 )
 
             # 保存
-            driver = self._get_driver(output_path)
-            result_gdf.to_file(output_path, driver=driver)
+            import shutil
+            output_path_obj = Path(output_path)
+
+            if output_path.endswith(".zip"):
+                # 1. 创建临时夹
+                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+
+                # 2. 生成全家桶
+                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
+                result_gdf.to_file(str(shp_path), driver="ESRI Shapefile")
+
+                # 3. 压缩并销毁临时文件
+                zip_base_name = str(output_path_obj.with_suffix(''))
+                shutil.make_archive(zip_base_name, 'zip', temp_dir)
+                shutil.rmtree(temp_dir)
+                driver = "ESRI Shapefile (ZIP)"
+            else:
+                driver = self._get_driver(output_path)
+                result_gdf.to_file(output_path, driver=driver)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -293,6 +316,7 @@ class OverlayExecutor(BaseExecutor):
         ext = Path(path).suffix.lower()
         return {
             ".shp": "ESRI Shapefile",
+            ".zip": "ESRI Shapefile",
             ".geojson": "GeoJSON",
             ".json": "GeoJSON",
             ".gpkg": "GPKG",

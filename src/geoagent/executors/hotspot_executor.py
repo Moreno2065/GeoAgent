@@ -70,8 +70,13 @@ class HotspotExecutor(BaseExecutor):
 
     def _resolve_output(self, input_file: str, output_file: Optional[str]) -> str:
         if output_file:
-            return self._resolve_path(output_file)
-        return self._resolve_path(f"hotspot_{Path(input_file).stem}.geojson")
+            path = Path(self._resolve_path(output_file))
+            # 拦截 shp，强行戴上 zip 帽子
+            if path.suffix.lower() == '.shp':
+                path = path.with_suffix('.zip')
+            return str(path)
+        # 默认生成 zip（替换原来的 .geojson）
+        return self._resolve_path(f"hotspot_{Path(input_file).stem}.zip")
 
     def _run_pysal(self, task: Dict[str, Any]) -> ExecutorResult:
         """PySAL 热点分析（主力引擎）"""
@@ -199,7 +204,32 @@ class HotspotExecutor(BaseExecutor):
             # 保存结果
             if gdf.crs and gdf.crs.to_epsg() != 4326:
                 gdf = gdf.to_crs(4326)
-            gdf.to_file(output_path, driver="GeoJSON", encoding="utf-8")
+
+            import shutil
+            output_path_obj = Path(output_path)
+
+            if output_path.endswith(".zip"):
+                # 1. 创建临时夹
+                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+
+                # 2. 生成全家桶
+                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
+                gdf.to_file(str(shp_path), driver="ESRI Shapefile")
+
+                # 3. 压缩并销毁临时文件
+                zip_base_name = str(output_path_obj.with_suffix(''))
+                shutil.make_archive(zip_base_name, 'zip', temp_dir)
+                shutil.rmtree(temp_dir)
+            else:
+                ext = output_path_obj.suffix.lower()
+                if ext in (".geojson", ".json"):
+                    driver = "GeoJSON"
+                elif ext == ".gpkg":
+                    driver = "GPKG"
+                else:
+                    driver = "ESRI Shapefile"
+                gdf.to_file(output_path, driver=driver, encoding="utf-8")
 
             return ExecutorResult.ok(
                 self.task_type,
