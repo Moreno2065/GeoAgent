@@ -61,7 +61,12 @@ class OSMExecutor(BaseExecutor):
         network_type = task.get("network_type", "drive")
         engine = task.get("engine", "osmnx")
 
+        # H1: 验证参数完整性
+        _debug_log("H1", "osm_executor.py:58", f"任务参数检查: center_point={repr(center_point)}, radius={radius}, data_type={data_type}", 
+                   {"center_point": center_point, "radius": radius, "data_type": data_type, "network_type": network_type})
+
         if not center_point:
+            _debug_log("H1", "osm_executor.py:65", "参数缺失: center_point为空", {"task_keys": list(task.keys())})
             return ExecutorResult.error("fetch_osm 缺少 center_point 参数")
 
         # 解析 center_point：可能是 "lng,lat" 字符串，也可能是变量引用
@@ -175,10 +180,18 @@ class OSMExecutor(BaseExecutor):
         network_type: str,
     ) -> ExecutorResult:
         """使用 OSMnx 下载数据"""
-        import osmnx as ox  # type: ignore
-        import geopandas as gpd  # type: ignore
-        import pandas as pd  # type: ignore
-        from shapely.geometry import Point
+        # H2: 验证 osmnx 库和网络连接
+        _debug_log("H2", "osm_executor.py:206", "开始 OSMnx 下载", 
+                   {"center": center_tuple, "radius": radius, "data_type": data_type})
+        
+        try:
+            import osmnx as ox  # type: ignore
+            import geopandas as gpd  # type: ignore
+            import pandas as pd  # type: ignore
+            from shapely.geometry import Point
+        except ImportError as e:
+            _debug_log("H2", "osm_executor.py:215", "库导入失败", {"error": str(e)})
+            return ExecutorResult.err("fetch_osm", f"缺少必要库: {e}", engine="osmnx")
 
         ox.settings.use_cache = True
         ox.settings.log_console = True
@@ -198,10 +211,19 @@ class OSMExecutor(BaseExecutor):
             }
             nt = nt_map.get(network_type, "drive")
             messages.append(f"  → 下载 {nt} 路网...")
-            G = ox.graph_from_point(center_tuple, dist=radius, network_type=nt)
-            nodes, edges = ox.graph_to_gdfs(G)
-            geometries.append(edges)
-            messages.append(f"  ✅ 成功！获取 {len(edges)} 条街道、{len(nodes)} 个节点。")
+            
+            # H3: 网络请求错误捕获
+            try:
+                _debug_log("H3", "osm_executor.py:238", "开始下载路网", {"center": center_tuple, "dist": radius, "type": nt})
+                G = ox.graph_from_point(center_tuple, dist=radius, network_type=nt)
+                nodes, edges = ox.graph_to_gdfs(G)
+                geometries.append(edges)
+                messages.append(f"  ✅ 成功！获取 {len(edges)} 条街道、{len(nodes)} 个节点。")
+                _debug_log("H3", "osm_executor.py:241", "路网下载成功", {"edges": len(edges), "nodes": len(nodes)})
+            except Exception as e:
+                err_msg = f"路网下载失败: {str(e)}"
+                _debug_log("H3", "osm_executor.py:244", "路网下载失败", {"error": str(e), "traceback": traceback.format_exc()})
+                messages.append(f"  ❌ {err_msg}")
 
         if data_type in ("building", "all"):
             messages.append(f"  → 下载建筑物轮廓...")
@@ -295,7 +317,6 @@ class OSMExecutor(BaseExecutor):
     ) -> Path:
         """生成交互式 HTML 地图（Folium）"""
         import folium
-        from folium.utilities import JpegMixin
 
         lat, lng = center
 

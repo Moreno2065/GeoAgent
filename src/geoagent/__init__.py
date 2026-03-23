@@ -91,9 +91,9 @@ from geoagent.gis_tools.geotoolbox import (
     get_toolbox,
 )
 
-from geoagent.spatial_agent_prompts import (
-    SPATIAL_AGENT_SYSTEM_PROMPT,
-    ANTI_HALLUCINATION_PROMPT,
+from geoagent.system_prompts import (
+    GIS_EXPERT_SYSTEM_PROMPT_V2,
+    ANTI_HALLUCINATION_SYSTEM_PROMPT,
     CRS_SPECIFICATION_PROMPT,
     OOM_DEFENSE_PROMPT,
     REMOTE_SENSING_PROMPT,
@@ -115,6 +115,14 @@ from geoagent.executors.stac_search_executor import (
     STACSearchExecutor,
 )
 
+# 核心入口类
+from geoagent.core import (
+    GeoAgent,
+    GeoAgentV2,
+    create_agent,
+    create_agent_v2,
+)
+
 # 导出所有公开API
 __all__ = [
     # 版本
@@ -128,16 +136,20 @@ __all__ = [
     "PipelineStatus",
     "SpatialOperation",
     "Engine",
+    "GeoAgent",
+    "GeoAgentV2",
     "GeoAgentPipeline",
     "PipelineResult",
     "PipelineContext",
+    "create_agent",
+    "create_agent_v2",
     "BaseExecutor",
     "ExecutorResult",
     "GeoToolbox",
     "get_toolbox",
     # 提示词
-    "SPATIAL_AGENT_SYSTEM_PROMPT",
-    "ANTI_HALLUCINATION_PROMPT",
+    "GIS_EXPERT_SYSTEM_PROMPT_V2",
+    "ANTI_HALLUCINATION_SYSTEM_PROMPT",
     "CRS_SPECIFICATION_PROMPT",
     "OOM_DEFENSE_PROMPT",
     "REMOTE_SENSING_PROMPT",

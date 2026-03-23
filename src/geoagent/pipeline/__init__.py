@@ -1,22 +1,34 @@
 """
-GeoAgent Pipeline - 六层统一流水线
-=================================
-将六个层次串联起来的统一入口。
+GeoAgent Pipeline - 空间Agent七层统一流水线
+==========================================
+将七个层次串联起来的统一入口。
 
 ┌─────────────────────────────────────────────────────────────┐
-│  User Input → Intent → Orchestrate → DSL → Execute → Render  │
+│                    空间Agent 七层架构                        │
+├─────────────────────────────────────────────────────────────┤
+│  第1层：用户交互层     - 自然语言、多模态输入                  │
+│  第2层：意图理解层     - 30+场景分类、实体识别               │
+│  第3层：知识融合层     - RAG检索、最佳实践                   │
+│  第4层：任务规划层     - 工作流编排、依赖管理                 │
+│  第5层：执行引擎层     - 矢量/栅格/遥感/网络/三维            │
+│  第6层：验证安全层     - 防幻觉、CRS/OOM检查                 │
+│  第7层：结果呈现层     - 地图、图表、自然语言                  │
 └─────────────────────────────────────────────────────────────┘
 
 使用方式：
     from geoagent.pipeline import GeoAgentPipeline, run_pipeline
 
     pipeline = GeoAgentPipeline()
-    result = pipeline.run("芜湖南站到方特的步行路径")
+    result = pipeline.run("计算这片区域的NDVI")
+    print(result.to_user_text())
 
-MVP 只支持三种场景：
-    - route（路径/可达性）
-    - buffer（缓冲/邻近）
-    - overlay（叠置/选址）
+核心场景：
+    - 矢量分析：buffer, overlay, spatial_join
+    - 栅格处理：clip, reproject, slope_aspect
+    - 遥感分析：NDVI, NDWI, change_detection
+    - 三维分析：viewshed, shadow, volume
+    - 网络分析：route, isochrone
+    - 空间统计：hotspot, interpolation
 """
 
 from __future__ import annotations

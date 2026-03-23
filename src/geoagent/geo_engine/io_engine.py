@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
 from geoagent.geo_engine.data_utils import (
-    resolve_path, ensure_dir, format_result,
+    resolve_path, ensure_dir, format_result, save_vector_file,
     DataType,
 )
 
@@ -86,7 +86,7 @@ class IOEngine:
 
                 if output_file:
                     _ensure_dir(output_file)
-                    gdf.to_file(_resolve(output_file))
+                    save_vector_file(gdf, _resolve(output_file))
 
                 return format_result(
                     success=True,
@@ -128,7 +128,7 @@ class IOEngine:
                     )
                     if output_file:
                         _ensure_dir(output_file)
-                        gdf.to_file(_resolve(output_file))
+                        save_vector_file(gdf, _resolve(output_file))
                     return format_result(
                         success=True,
                         data=gdf,

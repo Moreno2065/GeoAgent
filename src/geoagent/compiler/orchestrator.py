@@ -21,11 +21,12 @@ from dataclasses import dataclass, field
 
 from geoagent.dsl.protocol import (
     GeoDSL,
-    ScenarioType,
     OutputSpec,
     ClarificationQuestion,
-    OrchestrationStatus,
+    OrchestrationStatus,  # 从 dsl.protocol 导入
 )
+# 使用唯一的 Scenario 枚举（从 architecture 模块）
+from geoagent.layers.architecture import Scenario
 from geoagent.compiler.intent_classifier import (
     IntentClassifier,
     IntentResult,
@@ -900,9 +901,9 @@ class ScenarioOrchestrator:
 
         # 构建 GeoDSL
         try:
-            scenario_enum = ScenarioType(scenario)
+            scenario_enum = Scenario(scenario)
         except ValueError:
-            scenario_enum = ScenarioType.GENERAL
+            scenario_enum = Scenario.ROUTE  # 默认使用 ROUTE
 
         return GeoDSL(
             version="1.0",

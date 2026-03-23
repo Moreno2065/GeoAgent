@@ -58,6 +58,32 @@ from geoagent.executors.postgis_executor import PostGISExecutor
 from geoagent.executors.general_executor import GeneralExecutor
 from geoagent.executors.gdal_executor import GDALExecutor
 
+# ── 🆕 新增执行器 ────────────────────────────────────────────────
+try:
+    from geoagent.executors.remote_sensing_executor import (
+        RemoteSensingExecutor,
+        RemoteSensingIndex,
+        BandMapping,
+    )
+except ImportError:
+    RemoteSensingExecutor = None
+    RemoteSensingIndex = None
+    BandMapping = None
+
+try:
+    from geoagent.executors.lidar_3d_executor import (
+        LiDAR3DExecutor,
+        calculate_sun_position,
+    )
+except ImportError:
+    LiDAR3DExecutor = None
+    calculate_sun_position = None
+
+try:
+    from geoagent.executors.stac_search_executor import STACSearchExecutor
+except ImportError:
+    STACSearchExecutor = None
+
 # GDAL 工具相关
 from geoagent.executors.gdal_engine import (
     GDAL_TOOL_WHITELIST,
@@ -95,6 +121,13 @@ __all__ = [
     "PostGISExecutor",
     "GeneralExecutor",
     "GDALExecutor",
+    # ── 🆕 新增执行器 ─────────────────────────────────────────────
+    "RemoteSensingExecutor",
+    "RemoteSensingIndex",
+    "BandMapping",
+    "LiDAR3DExecutor",
+    "calculate_sun_position",
+    "STACSearchExecutor",
     # ---- GDAL 工具 ----
     "GDAL_TOOL_WHITELIST",
     "GDAL_TOOL_DEFINITIONS",

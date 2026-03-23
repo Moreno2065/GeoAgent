@@ -399,6 +399,54 @@ class BaseExecutor(ABC):
 
         return gdf, actual_path
 
+    def _ensure_shapefile_aux_files(
+        self,
+        gdf: "gpd.GeoDataFrame",
+        output_path: Path,
+        encoding: str = "utf-8"
+    ) -> None:
+        """
+        确保 Shapefile 辅助文件完整。
+
+        Shapefile 格式需要以下文件：
+        - .shp: 主文件（由 gdf.to_file 生成）
+        - .shx: 索引文件（通常由 gdf.to_file 自动生成）
+        - .dbf: 属性数据（由 gdf.to_file 自动生成）
+        - .prj: 投影文件（可能缺失，需要手动创建）
+        - .cpg: 编码文件（可能缺失，需要手动创建）
+
+        Args:
+            gdf: GeoDataFrame
+            output_path: 输出路径（.shp 文件）
+            encoding: 编码
+        """
+        import os
+
+        # 设置 GDAL 环境变量
+        os.environ["SHAPE_RESTORE_SHX"] = "YES"
+
+        base_path = output_path.with_suffix("")
+
+        # 生成 .prj 文件
+        if gdf.crs is not None:
+            prj_path = base_path.with_suffix(".prj")
+            if not prj_path.exists():
+                try:
+                    crs_wkt = gdf.crs.to_wkt()
+                    with open(prj_path, "w", encoding="utf-8") as f:
+                        f.write(crs_wkt)
+                except Exception:
+                    pass
+
+        # 生成 .cpg 文件
+        cpg_path = base_path.with_suffix(".cpg")
+        if not cpg_path.exists():
+            try:
+                with open(cpg_path, "w", encoding="utf-8") as f:
+                    f.write(encoding)
+            except Exception:
+                pass
+
     def save_geodataframe(
         self,
         gdf: "gpd.GeoDataFrame",
@@ -474,6 +522,10 @@ class BaseExecutor(ABC):
             # 【防幻觉】验证文件是否真正创建
             if not output_path_obj.exists():
                 raise Exception(f"文件创建失败: {output_path_obj}")
+
+            # 确保 Shapefile 辅助文件完整（.prj 和 .cpg）
+            if driver == "ESRI Shapefile" and output_path.endswith(".shp"):
+                self._ensure_shapefile_aux_files(gdf, output_path_obj, encoding)
 
             return str(output_path_obj), driver
 

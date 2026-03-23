@@ -238,6 +238,83 @@ def normalize_to_graph(data: Any) -> "networkx.Graph":
 
 
 # =============================================================================
+# Shapefile 完整保存辅助函数
+# =============================================================================
+
+def save_shapefile(gdf, output_path: Path, encoding: str = "utf-8") -> None:
+    """
+    保存 GeoDataFrame 为 Shapefile，确保生成完整的辅助文件
+    
+    Shapefile 由多个文件组成：
+    - .shp: 主文件（几何数据）
+    - .shx: 索引文件
+    - .dbf: 属性数据
+    - .prj: 投影文件（CRS）
+    - .cpg: 编码文件
+    - .sbn/.sbx: 空间索引
+    - .shp.xml: 元数据
+    
+    Args:
+        gdf: GeoDataFrame
+        output_path: 输出路径（.shp 文件路径）
+        encoding: 属性数据编码（默认 utf-8）
+    """
+    import os
+    
+    # 确保输出目录存在
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 设置 GDAL 环境变量，启用自动生成缺失文件
+    os.environ["SHAPE_RESTORE_SHX"] = "YES"
+    
+    # 保存主文件
+    gdf.to_file(output_path, encoding=encoding)
+    
+    # 获取不带扩展名的基路径
+    base_path = output_path.with_suffix("")
+    
+    # 手动补充 .prj 文件（某些驱动可能不会自动生成）
+    if gdf.crs is not None:
+        prj_path = base_path.with_suffix(".prj")
+        if not prj_path.exists():
+            try:
+                crs_wkt = gdf.crs.to_wkt()
+                with open(prj_path, "w", encoding="utf-8") as f:
+                    f.write(crs_wkt)
+            except Exception:
+                pass
+    
+    # 生成 .cpg 文件（编码标识）
+    cpg_path = base_path.with_suffix(".cpg")
+    if not cpg_path.exists():
+        with open(cpg_path, "w", encoding="utf-8") as f:
+            f.write(encoding)
+
+
+def save_vector_file(gdf, output_path: Path, driver: str = None, encoding: str = "utf-8") -> None:
+    """
+    智能保存矢量数据，根据扩展名选择合适的保存方式
+    
+    Args:
+        gdf: GeoDataFrame
+        output_path: 输出路径
+        driver: 驱动名称（如 "ESRI Shapefile"、"GeoJSON"、"GPKG"）
+        encoding: 属性数据编码（仅对 Shapefile 有效）
+    """
+    suffix = output_path.suffix.lower()
+    
+    if suffix == ".shp":
+        save_shapefile(gdf, output_path, encoding=encoding)
+    else:
+        # 其他格式（GeoJSON、GPKG 等）直接保存
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if driver:
+            gdf.to_file(output_path, driver=driver, encoding=encoding if suffix == ".shp" else None)
+        else:
+            gdf.to_file(output_path, encoding=encoding if suffix == ".shp" else None)
+
+
+# =============================================================================
 # 统一 normalize 函数
 # =============================================================================
 

@@ -310,7 +310,7 @@ class PipelineStatus(str, Enum):
 # =============================================================================
 
 ARCHITECTURE_VERSION = "2.0"
-ARCHITECTURE_NAME = "Six-Layer GIS Agent Architecture"
+ARCHITECTURE_NAME = "Seven-Layer Spatial Agent Architecture"
 
 # MVP 支持的场景
 MVP_SCENARIOS = [Scenario.ROUTE, Scenario.BUFFER, Scenario.OVERLAY]

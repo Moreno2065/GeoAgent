@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 
 from geoagent.geo_engine.data_utils import (
-    resolve_path, ensure_dir, format_result,
+    resolve_path, ensure_dir, format_result, save_vector_file,
     normalize_to_gdf, DataType,
 )
 
@@ -119,7 +119,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                buffered.to_file(out_path)
+                save_vector_file(buffered, out_path)
 
             return format_result(
                 success=True,
@@ -182,7 +182,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -250,7 +250,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -309,7 +309,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -359,7 +359,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -415,7 +415,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             label = f"字段 '{by_field}'" if by_field else "全部"
             return format_result(
@@ -470,7 +470,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -527,7 +527,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                gdf.to_file(out_path)
+                save_vector_file(gdf, out_path)
 
             return format_result(
                 success=True,
@@ -592,7 +592,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,
@@ -639,16 +639,30 @@ class VectorEngine:
             gdf = gpd.read_file(fpath)
             _ensure_dir(output_file)
             out_path = _resolve(output_file)
-            gdf.to_file(out_path, driver=driver)
+            # 格式转换时需要指定 driver
+            driver_map = {
+                ".geojson": "GeoJSON",
+                ".json": "GeoJSON",
+                ".gpkg": "GPKG",
+                ".shp": "ESRI Shapefile",
+            }
+            # 如果用户指定了 driver，优先使用；否则根据扩展名推断
+            final_driver = driver if driver and driver != "GeoJSON" else driver_map.get(out_path.suffix.lower(), "GeoJSON")
+            
+            # 对于 Shapefile，使用专门的保存函数确保辅助文件完整
+            if out_path.suffix.lower() == ".shp":
+                save_vector_file(gdf, out_path, driver=final_driver)
+            else:
+                gdf.to_file(out_path, driver=final_driver)
 
             return format_result(
                 success=True,
                 data=gdf,
                 output_path=str(out_path),
-                message=f"格式转换完成 ({driver})，{len(gdf)} 个要素",
+                message=f"格式转换完成 ({final_driver})，{len(gdf)} 个要素",
                 metadata={
                     "operation": "convert_format",
-                    "driver": driver,
+                    "driver": final_driver,
                     "feature_count": len(gdf),
                 },
             )
@@ -708,7 +722,7 @@ class VectorEngine:
             if output_file:
                 _ensure_dir(output_file)
                 out_path = _resolve(output_file)
-                result.to_file(out_path)
+                save_vector_file(result, out_path)
 
             return format_result(
                 success=True,

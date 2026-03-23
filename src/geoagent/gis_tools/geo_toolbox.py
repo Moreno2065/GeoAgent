@@ -17,6 +17,8 @@ import warnings
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
+from geoagent.geo_engine.data_utils import save_vector_file
+
 
 # =============================================================================
 # 工具函数
@@ -57,7 +59,7 @@ class Vector:
         gdf = gpd.read_file(fpath)
         gdf = gdf.to_crs(target_crs)
         _ensure_dir(str(_resolve(output_file)))
-        gdf.to_file(_resolve(output_file))
+        save_vector_file(gdf, _resolve(output_file))
         print(f"✅ [Vector] 投影已转换为 {target_crs}，保存至 {output_file}")
 
     @staticmethod
@@ -96,7 +98,7 @@ class Vector:
             raise ValueError("缓冲区分析结果为空（可能输入几何无效或距离值异常）")
 
         _ensure_dir(str(_resolve(output_file)))
-        buffered_m.to_file(_resolve(output_file))
+        save_vector_file(buffered_m, _resolve(output_file))
         print(f"✅ [Vector] 已生成 {distance}m 缓冲区，{len(buffered_m)} 个结果要素，保存至 {output_file}")
 
     @staticmethod
@@ -136,7 +138,7 @@ class Vector:
             raise ValueError(f"叠置分析 ({how}) 结果为空——两图层无重叠区域")
 
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 叠置分析 ({how}) 完成，{len(result)} 个结果要素，保存至 {output_file}")
 
     @staticmethod
@@ -159,7 +161,7 @@ class Vector:
             raise ValueError("融合结果为空")
 
         _ensure_dir(str(_resolve(output_file)))
-        dissolved.to_file(_resolve(output_file))
+        save_vector_file(dissolved, _resolve(output_file))
         label = f"字段 '{by_field}'" if by_field else "全部"
         print(f"✅ [Vector] 按 {label} 融合完成，{len(dissolved)} 个要素，保存至 {output_file}")
 
@@ -192,7 +194,7 @@ class Vector:
             raise ValueError("裁剪结果为空——输入图层与裁剪图层无重叠区域")
 
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 矢量裁剪完成，{len(result)} 个要素落在裁剪区域内，保存至 {output_file}")
 
     @staticmethod
@@ -225,7 +227,7 @@ class Vector:
             raise ValueError("空间连接结果为空——两图层无满足条件的空间关系")
 
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 空间连接 ({how}/{predicate}) 完成，{len(result)} 个结果，保存至 {output_file}")
 
     @staticmethod
@@ -260,7 +262,7 @@ class Vector:
             crs="EPSG:4326"
         )
         _ensure_dir(str(_resolve(output_file)))
-        gdf.to_file(_resolve(output_file))
+        save_vector_file(gdf, _resolve(output_file))
         print(f"✅ [Vector] {len(pts)}/{len(address_list)} 个地址地理编码完成，保存至 {output_file}")
 
     @staticmethod
@@ -280,7 +282,7 @@ class Vector:
 
         result = gpd.GeoDataFrame(gdf.drop(columns=["geometry"]).reset_index(drop=True), geometry=centroids, crs=gdf.crs)
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 质心计算完成，{len(result)} 个点，保存至 {output_file}")
 
     @staticmethod
@@ -303,7 +305,7 @@ class Vector:
             gdf["geometry"] = gdf.geometry.apply(lambda g: shapely.simplify(g, tolerance))
 
         _ensure_dir(str(_resolve(output_file)))
-        gdf.to_file(_resolve(output_file))
+        save_vector_file(gdf, _resolve(output_file))
         print(f"✅ [Vector] 简化完成 (tolerance={tolerance}), {len(gdf)} 个要素，保存至 {output_file}")
 
     @staticmethod
@@ -329,7 +331,7 @@ class Vector:
             raise ValueError("擦除结果为空——输入图层与擦除图层无重叠可移除区域")
 
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 擦除完成，{len(result)} 个结果要素，保存至 {output_file}")
 
     @staticmethod
@@ -363,7 +365,7 @@ class Vector:
         result = gpd.GeoDataFrame(geometry=list(voronoi_polys.geoms), crs="EPSG:4326")
 
         _ensure_dir(str(_resolve(output_file)))
-        result.to_file(_resolve(output_file))
+        save_vector_file(result, _resolve(output_file))
         print(f"✅ [Vector] 泰森多边形生成完成，{len(result)} 个多边形，保存至 {output_file}")
 
     @staticmethod
@@ -380,7 +382,7 @@ class Vector:
             raise ValueError(f"输入文件 '{input_file}' 读取后为空，无要素可转换")
 
         _ensure_dir(str(_resolve(output_file)))
-        gdf.to_file(_resolve(output_file), driver=driver)
+        save_vector_file(gdf, _resolve(output_file), driver=driver)
         print(f"✅ [Vector] 格式转换完成 ({driver})，{len(gdf)} 个要素，保存至 {output_file}")
 
 
@@ -831,7 +833,7 @@ class Network:
             poly = gpd.GeoDataFrame(geometry=[edges.unary_union.convex_hull], crs="EPSG:4326")
 
         _ensure_dir(str(_resolve(output_file)))
-        poly.to_file(_resolve(output_file))
+        save_vector_file(poly, _resolve(output_file))
         print(f"✅ [Network] {walk_time_mins}分钟等时圈已生成，{len(poly)} 个面要素，保存至 {output_file}")
 
     @staticmethod
@@ -878,7 +880,7 @@ class Network:
 
         if output_file:
             _ensure_dir(str(_resolve(output_file)))
-            route_gdf.to_file(_resolve(output_file))
+            route_save_vector_file(gdf, _resolve(output_file))
             print(f"✅ [Network] 最短路径已生成，长度 {route_length:.0f}m，保存至 {output_file}")
         else:
             print(f"✅ [Network] 最短路径已计算，长度 {route_length:.0f}m")
@@ -918,7 +920,7 @@ class Network:
         nodes_gdf = gpd.GeoDataFrame(nodes, geometry=nodes.geometry, crs=subgraph.graph['crs'])
 
         _ensure_dir(str(_resolve(output_file)))
-        nodes_gdf.to_file(_resolve(output_file))
+        nodes_save_vector_file(gdf, _resolve(output_file))
         print(f"✅ [Network] 可达范围分析完成，{len(nodes_gdf)} 个节点，保存至 {output_file}")
         return nodes_gdf
 
@@ -985,7 +987,7 @@ class Stats:
         gdf['Moran_p_sim'] = moran_loc.p_sim
 
         _ensure_dir(str(_resolve(output_file)))
-        gdf.to_file(_resolve(output_file))
+        save_vector_file(gdf, _resolve(output_file))
 
         hh = cluster_types.count('HH')
         ll = cluster_types.count('LL')
@@ -1359,7 +1361,7 @@ class LiDAR:
 
         result = gpd.GeoDataFrame(geometry=[bounds], crs=bounds_crs)
         _ensure_dir(str(_resolve(output_shp)))
-        result.to_file(_resolve(output_shp))
+        save_vector_file(result, _resolve(output_shp))
         print(f"✅ [LiDAR] 点云边界框提取完成（CRS={bounds_crs}），保存至 {output_shp}")
 
     @staticmethod
