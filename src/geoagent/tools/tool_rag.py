@@ -5,7 +5,9 @@ GeoAgent 动态工具检索引擎 (Tool RAG)
 核心思想：不再把所有工具一次性塞给 LLM，
 而是根据用户 Query 动态检索最相关的 3~5 个工具 schema 注入。
 
-检索策略：BM25 (轻量、无需 Embedding 模型、对 GIS 术语匹配效果好)
+检索策略（优先级顺序）：
+1. Embedding 语义检索（高准确率，低延迟）
+2. BM25 关键词检索（兜底，无需模型）
 """
 
 from __future__ import annotations
@@ -14,6 +16,27 @@ import re
 import math
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+
+
+# =============================================================================
+# Embedding 路由器导入（延迟加载）
+# =============================================================================
+
+_embedding_router = None
+
+
+def _get_embedding_router():
+    """延迟加载 Embedding 路由器"""
+    global _embedding_router
+    if _embedding_router is None:
+        try:
+            from geoagent.tools.embedding_router import get_embedding_router
+            import os
+            if os.getenv("GEOAGENT_USE_EMBEDDING", "1").lower() in ("1", "true", "yes"):
+                _embedding_router = get_embedding_router(precompute=False)
+        except ImportError:
+            pass
+    return _embedding_router
 
 
 # =============================================================================
@@ -692,37 +715,92 @@ def retrieve_gis_tools(
     query: str,
     top_k: int = 5,
     min_score: float = 0.1,
+    use_embedding: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     根据用户 Query 检索最相关的 GIS 工具。
 
+    混合检索策略：
+    1. Embedding 语义检索（优先）
+    2. BM25 关键词检索（兜底）
+
     Args:
         query: 用户自然语言查询（如 "提取 DEM 的水系网络并计算汇水面积"）
         top_k: 返回的最相关工具数量（默认 5）
-        min_score: 最低 BM25 得分阈值
+        min_score: 最低得分阈值
+        use_embedding: 是否使用 Embedding 检索
 
     Returns:
         List of dicts with keys: tool_name, description, category, score, schema
     """
-    bm25 = _get_bm25()
-    results = bm25.retrieve(query, top_k=top_k)
-
     tools = []
-    for entry, score in results:
+
+    # ── 阶段 1: Embedding 语义检索 ────────────────────────────────
+    if use_embedding:
+        try:
+            embed_router = _get_embedding_router()
+            if embed_router:
+                # 确保预计算
+                if not embed_router._is_precomputed:
+                    embed_router.precompute()
+
+                # 检索工具
+                result = embed_router.route(query, top_k=top_k * 2, include_tools=True)
+
+                for match in result.matches:
+                    if match.match_type == "tool" and match.score >= min_score:
+                        # 获取 ToolEntry
+                        tool_entry = next(
+                            (t for t in _TOOL_DESCRIPTIONS if t.tool_name == match.name),
+                            None
+                        )
+                        if tool_entry:
+                            tools.append({
+                                "tool_name": tool_entry.tool_name,
+                                "description": tool_entry.description,
+                                "category": tool_entry.category,
+                                "score": round(match.score, 3),
+                                "schema": tool_entry.schema,
+                                "retrieval_method": "embedding",
+                            })
+
+                # 如果 Embedding 检索结果足够，直接返回
+                if len(tools) >= top_k:
+                    tools = tools[:top_k]
+                    return tools
+
+        except Exception:
+            pass  # Embedding 失败，降级到 BM25
+
+    # ── 阶段 2: BM25 关键词检索（兜底）───────────────────────────
+    bm25 = _get_bm25()
+    bm25_results = bm25.retrieve(query, top_k=top_k)
+
+    for entry, score in bm25_results:
         if score < min_score:
             break
-        schema = entry.schema
-        if not schema:
+
+        # 检查是否已经在 Embedding 结果中
+        existing = next((t for t in tools if t["tool_name"] == entry.tool_name), None)
+        if existing:
+            # 取较高分数
+            if score > existing["score"]:
+                existing["score"] = round(score, 3)
+                existing["retrieval_method"] = "bm25"
             continue
+
         tools.append({
             "tool_name": entry.tool_name,
             "description": entry.description,
             "category": entry.category,
             "score": round(score, 3),
-            "schema": schema,
+            "schema": entry.schema,
+            "retrieval_method": "bm25",
         })
 
-    return tools
+    # 按分数降序
+    tools.sort(key=lambda x: x["score"], reverse=True)
+    return tools[:top_k]
 
 
 def get_retrieved_tool_schemas(query: str, top_k: int = 5) -> List[Dict[str, Any]]:

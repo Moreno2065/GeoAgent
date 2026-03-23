@@ -15,11 +15,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 from openai import OpenAI
 import threading
-
-from geoagent.layers.pipeline import SixLayerPipeline, PipelineConfig, run_pipeline as run_six_layer
 
 
 # API Key 持久化存储
@@ -96,6 +94,7 @@ class GeoAgent:
     def run(
         self,
         user_input: str,
+        files: Optional[List[Dict[str, Any]]] = None,
         event_callback: Callable[[str, dict], None] = None,
     ) -> Dict[str, Any]:
         """
@@ -103,6 +102,7 @@ class GeoAgent:
 
         Args:
             user_input: 用户输入的自然语言
+            files: 上传的文件列表
             event_callback: 事件回调函数
 
         Returns:
@@ -110,13 +110,9 @@ class GeoAgent:
         """
         self.stats["total_requests"] += 1
 
-        config = PipelineConfig(
-            enable_clarification=True,
-            enable_fallback=self.enable_fallback,
-            max_retries=self.max_retries,
-            event_callback=event_callback,
-        )
-        result = run_six_layer(user_input, event_callback)
+        # 使用 pipeline 的 run_pipeline 函数
+        from geoagent.pipeline import run_pipeline
+        result = run_pipeline(user_input, files=files, event_callback=event_callback)
 
         if result.success:
             self.stats["successful"] += 1
@@ -128,6 +124,7 @@ class GeoAgent:
     def run_stream(
         self,
         user_input: str,
+        files: Optional[List[Dict[str, Any]]] = None,
         event_callback: Callable[[str, dict], None] = None,
     ):
         """
@@ -135,6 +132,7 @@ class GeoAgent:
 
         Args:
             user_input: 用户输入
+            files: 上传的文件列表
             event_callback: 事件回调
 
         Yields:
@@ -142,14 +140,14 @@ class GeoAgent:
         """
         self.stats["total_requests"] += 1
 
-        config = PipelineConfig(event_callback=event_callback)
-        pipeline = SixLayerPipeline(config)
+        from geoagent.pipeline import GeoAgentPipeline
+        pipeline = GeoAgentPipeline()
 
         success = False
-        for event in pipeline.run_stream(user_input):
+        for event in pipeline.run_stream(user_input, files=files):
             yield event
-            if event.get("event") == "layer6_completed":
-                success = event.get("status") == "completed"
+            if event.get("event") == "complete":
+                success = event.get("success", False)
 
         if success:
             self.stats["successful"] += 1
@@ -172,27 +170,33 @@ class GeoAgent:
 
     # ── 便捷方法 ───────────────────────────────────────────────────────────
 
-    def chat(self, user_input: str, event_callback: Callable[[str, dict], None] = None) -> Dict[str, Any]:
+    def chat(self, user_input: str, files: Optional[List[Dict[str, Any]]] = None, event_callback: Callable[[str, dict], None] = None) -> Dict[str, Any]:
         """
         简单的 chat 接口（等同于 run）
 
         Args:
             user_input: 用户输入
+            files: 上传的文件列表
             event_callback: 事件回调
 
         Returns:
             执行结果
         """
-        return self.run(user_input, event_callback)
+        return self.run(user_input, files=files, event_callback=event_callback)
 
-    def chat_stream(self, user_input: str, event_callback: Callable[[str, dict], None] = None):
+    def chat_stream(self, user_input: str, files: Optional[List[Dict[str, Any]]] = None, event_callback: Callable[[str, dict], None] = None):
         """
         流式 chat 接口
+
+        Args:
+            user_input: 用户输入
+            files: 上传的文件列表
+            event_callback: 事件回调
 
         Yields:
             各阶段事件
         """
-        yield from self.run_stream(user_input, event_callback)
+        yield from self.run_stream(user_input, files=files, event_callback=event_callback)
 
 
 # ── 向后兼容别名 ────────────────────────────────────────────────────────────

@@ -143,11 +143,10 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             poi_types = set()
             for cond in parsed.get("distance_conditions", []):
                 poi = cond.get("poi_type", "")
-                if any(kw in poi for kw in ["星巴克", "咖啡", "咖啡厅"]):
-                    poi_types.add("星巴克")
-                elif any(kw in poi for kw in ["地铁", "地铁站", "metro"]):
-                    poi_types.add("地铁站")
-            parsed["poi_types"] = list(poi_types)
+                normalized = self._normalize_poi_type(poi)
+                if normalized:
+                    poi_types.add(normalized)
+            parsed["poi_types"] = list(poi_types) if poi_types else ["星巴克", "地铁站"]
 
         return parsed
 
@@ -349,34 +348,83 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         return results
 
     def _get_poi_types(self, parsed: Dict[str, Any]) -> List[str]:
-        """获取要搜索的 POI 类型"""
+        """获取要搜索的 POI 类型（泛化版）"""
         poi_types = parsed.get("poi_types", [])
 
         # 如果没有明确指定，根据距离条件推断
         if not poi_types:
             for cond in parsed.get("distance_conditions", []):
                 poi = cond.get("poi_type", "")
-                if "星巴克" in poi or "咖啡" in poi:
-                    if "星巴克" not in poi_types:
-                        poi_types.append("星巴克")
-                elif "地铁" in poi:
-                    if "地铁站" not in poi_types:
-                        poi_types.append("地铁站")
+                normalized = self._normalize_poi_type(poi)
+                if normalized and normalized not in poi_types:
+                    poi_types.append(normalized)
 
-        # 默认搜索星巴克
+        # 默认搜索星巴克和地铁站
         if not poi_types:
             poi_types = ["星巴克", "地铁站"]
 
         return poi_types
 
     def _get_poi_keywords(self, poi_type: str) -> str:
-        """获取 POI 搜索关键词"""
+        """
+        获取 POI 搜索关键词（泛化版）
+
+        支持所有常见的 POI 类型
+        """
         keywords_map = {
+            # 餐饮类
             "星巴克": "星巴克",
-            "地铁站": "地铁站",
-            "便利店": "便利店|7-11|全家|罗森",
             "餐厅": "餐厅|饭店",
+            "快餐": "快餐|KFC|麦当劳",
+            "火锅": "火锅|串串",
+            "酒吧": "酒吧|酒馆",
+            "便利店": "便利店|7-11|全家|罗森",
+            "咖啡": "咖啡|咖啡厅",
+            "餐厅": "餐厅",
+            "快餐": "快餐",
+            "火锅": "火锅",
+            "酒吧": "酒吧",
+
+            # 交通类
+            "地铁站": "地铁站",
+            "公交站": "公交站",
+            "火车站": "火车站",
+            "机场": "机场",
+
+            # 商业类
+            "商场": "商场|购物中心",
+            "超市": "超市",
+            "药店": "药店|药房",
+            "银行": "银行",
+            "商店": "商店|店铺",
+
+            # 居住类
+            "酒店": "酒店|宾馆|旅馆",
+            "住宅": "小区|住宅|公寓",
+
+            # 教育类
+            "大学": "大学|学院",
+            "中学": "中学|高中",
+            "小学": "小学",
+            "幼儿园": "幼儿园",
+            "学校": "学校|培训",
+
+            # 医疗类
+            "医院": "医院",
+            "诊所": "诊所|门诊",
+
+            # 休闲类
             "公园": "公园|绿地",
+            "景点": "景点|景区",
+            "电影院": "电影院",
+            "健身房": "健身房",
+
+            # 工业类
+            "工厂": "工厂|工业园",
+            "仓库": "仓库",
+
+            # 办公类
+            "写字楼": "写字楼|办公",
         }
         return keywords_map.get(poi_type, poi_type)
 
@@ -441,13 +489,16 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         parsed: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        根据距离条件筛选 POI
+        根据距离条件筛选 POI（泛化版）
 
         核心逻辑：
-        1. 找到所有距离条件中涉及的 POI 类型
-        2. 确定候选点（作为"摸鱼地点"的 POI，如公园、咖啡厅等）
-        3. 计算每个候选点到各目标 POI 的距离
-        4. 按条件筛选返回最优候选点
+        1. 分析条件：区分"必须近"(near)和"必须远"(far)的 POI 类型
+        2. 候选点生成：
+           - 如果有 near 类型：以 near POI 为候选点，验证是否满足 far 条件
+           - 如果只有 far 类型：以 far POI 为候选点
+           - 还可以枚举中心点附近的任意位置
+        3. 验证所有条件
+        4. 多维度评分排序
 
         Args:
             poi_results: 按类型分组的 POI 搜索结果
@@ -458,6 +509,7 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             符合条件的候选点列表
         """
         conditions = parsed.get("distance_conditions", [])
+        search_radius = parsed.get("search_radius", 3000)
 
         if not conditions:
             # 没有明确条件，返回所有 POI
@@ -472,93 +524,402 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             all_pois.sort(key=lambda x: x.get("calc_distance", float("inf")))
             return all_pois[:10]
 
-        # 提取所有涉及的目标 POI 类型
-        target_types = set()
+        # ── 步骤1：分析条件 ──────────────────────────────────────────────
+        near_conditions = []   # 距离必须 < threshold
+        far_conditions = []    # 距离必须 > threshold
+
         for cond in conditions:
             poi_type = cond.get("poi_type", "")
-            if "星巴克" in poi_type or "咖啡" in poi_type:
-                target_types.add("星巴克")
-            elif "地铁" in poi_type or "地铁站" in poi_type:
-                target_types.add("地铁站")
+            threshold = cond.get("threshold", 0)
+            operator = cond.get("operator", "<")
 
-        # 确定候选点来源（可能同时有多个来源）
-        # 优先使用非目标类型的 POI（如公园），如果没有则以目标类型为候选
-        candidate_pois = []
-        other_types = [t for t in poi_results.keys() if t not in target_types]
+            # 标准化 POI 类型
+            normalized_type = self._normalize_poi_type(poi_type) or poi_type
 
-        if other_types:
-            # 有其他类型的 POI，用它们作为候选点
-            for poi_type in other_types:
-                for poi in poi_results.get(poi_type, []):
-                    if poi.get("lon") and poi.get("lat"):
-                        candidate_pois.append(poi)
-        else:
-            # 没有其他类型，用所有 POI 作为候选点
-            for poi_type, pois in poi_results.items():
+            condition_entry = {
+                "poi_type": normalized_type,
+                "threshold": threshold,
+                "operator": operator,
+            }
+
+            if operator in ("<", "<="):
+                near_conditions.append(condition_entry)
+            else:
+                far_conditions.append(condition_entry)
+
+        # ── 步骤2：收集所有涉及的 POI ────────────────────────────────────
+        all_pois_by_type = {}
+        for cond in near_conditions + far_conditions:
+            poi_type = cond["poi_type"]
+            if poi_type not in all_pois_by_type:
+                pois = poi_results.get(poi_type, [])
+                if pois:
+                    all_pois_by_type[poi_type] = pois
+
+        # ── 步骤3：生成候选点 ────────────────────────────────────────────
+        candidate_locations = []
+
+        # 策略A：如果有 near 类型，以 near POI 为候选点
+        for near_cond in near_conditions:
+            poi_type = near_cond["poi_type"]
+            threshold = near_cond["threshold"]
+            pois = all_pois_by_type.get(poi_type, [])
+
+            for poi in pois:
+                if poi.get("lon") and poi.get("lat"):
+                    candidate = {
+                        "name": poi.get("name", f"{poi_type}附近"),
+                        "address": poi.get("address", ""),
+                        "lon": poi["lon"],
+                        "lat": poi["lat"],
+                        "source_poi_type": poi_type,
+                        "type": poi_type,
+                        "calc_distance": self._haversine_distance(
+                            center_coords, (poi["lon"], poi["lat"])
+                        ),
+                    }
+                    # 预计算到本类型 POI 的距离
+                    candidate[f"dist_to_{poi_type}"] = 0  # 自身为 0
+                    candidate_locations.append(candidate)
+
+        # 策略B：如果没有 near 类型但有 far 类型，以 far POI 为候选点
+        if not near_conditions and far_conditions:
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                pois = all_pois_by_type.get(poi_type, [])
+
                 for poi in pois:
                     if poi.get("lon") and poi.get("lat"):
-                        candidate_pois.append(poi)
+                        dist_to_center = self._haversine_distance(
+                            center_coords, (poi["lon"], poi["lat"])
+                        )
+                        if dist_to_center <= search_radius:
+                            candidate = {
+                                "name": poi.get("name", f"{poi_type}附近"),
+                                "address": poi.get("address", ""),
+                                "lon": poi["lon"],
+                                "lat": poi["lat"],
+                                "source_poi_type": poi_type,
+                                "type": "候选点",
+                                "calc_distance": dist_to_center,
+                            }
+                            candidate_locations.append(candidate)
 
-        # 计算每个候选点到各目标 POI 的距离
-        for candidate in candidate_pois:
-            candidate_coords = (candidate["lon"], candidate["lat"])
+        # 策略C：生成网格候选点（作为兜底）
+        # 在中心点附近生成规则网格，作为潜在候选位置
+        grid_candidates = self._generate_grid_candidates(center_coords, search_radius, 50)
+        for gc in grid_candidates:
+            candidate_locations.append(gc)
 
-            # 计算到中心点的距离
-            candidate["calc_distance"] = self._haversine_distance(
-                center_coords, candidate_coords
-            )
-
-            # 计算到各目标 POI 类型的距离
-            for target_type in target_types:
-                target_pois = poi_results.get(target_type, [])
-                if target_pois:
-                    min_dist = float("inf")
-                    for target in target_pois:
-                        if target.get("lon") and target.get("lat"):
-                            dist = self._haversine_distance(
-                                candidate_coords,
-                                (target["lon"], target["lat"])
-                            )
-                            min_dist = min(min_dist, dist)
-                    candidate[f"dist_to_{target_type}"] = min_dist
-
-        # 按条件筛选
+        # ── 步骤4：验证所有条件 ──────────────────────────────────────────
         valid_candidates = []
-        for candidate in candidate_pois:
+        seen_locations = set()  # 用于去重
+
+        for candidate in candidate_locations:
+            if not candidate.get("lon") or not candidate.get("lat"):
+                continue
+
+            # 去重检查
+            loc_key = f"{candidate['lon']:.6f},{candidate['lat']:.6f}"
+            if loc_key in seen_locations:
+                continue
+            seen_locations.add(loc_key)
+
+            candidate_coords = (candidate["lon"], candidate["lat"])
             meets_all = True
-            for cond in conditions:
-                poi_type = cond.get("poi_type", "")
-                threshold = cond.get("threshold", 0)
-                operator = cond.get("operator", "<")
 
-                # 确定目标类型
-                target_type = None
-                if "星巴克" in poi_type or "咖啡" in poi_type:
-                    target_type = "星巴克"
-                elif "地铁" in poi_type or "地铁站" in poi_type:
-                    target_type = "地铁站"
+            # 验证 near 条件（距离必须 < threshold）
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                threshold = near_cond["threshold"]
+                pois = all_pois_by_type.get(poi_type, [])
 
-                if not target_type:
-                    continue
+                if not pois:
+                    # 没有这种 POI，不满足条件
+                    meets_all = False
+                    break
 
-                dist = candidate.get(f"dist_to_{target_type}", float("inf"))
+                # 找最近的
+                min_dist = float("inf")
+                nearest_poi = None
+                for poi in pois:
+                    if poi.get("lon") and poi.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (poi["lon"], poi["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_poi = poi
 
-                # 检查是否满足条件
-                if operator == "<" or operator == "<=":
-                    if dist > threshold:
-                        meets_all = False
-                        break
-                else:  # ">" 或 ">="
-                    if dist < threshold:
-                        meets_all = False
-                        break
+                candidate[f"dist_to_{poi_type}"] = min_dist
+                candidate["nearest_poi"] = nearest_poi
+
+                if min_dist > threshold:
+                    meets_all = False
+                    break
+
+            if not meets_all:
+                continue
+
+            # 验证 far 条件（距离必须 > threshold）
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                threshold = far_cond["threshold"]
+                pois = all_pois_by_type.get(poi_type, [])
+
+                if not pois:
+                    continue  # 没有这种 POI，可能满足条件
+
+                # 找最近的
+                min_dist = float("inf")
+                nearest_poi = None
+                for poi in pois:
+                    if poi.get("lon") and poi.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (poi["lon"], poi["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+                            nearest_poi = poi
+
+                candidate[f"dist_to_{poi_type}"] = min_dist
+                candidate[f"nearest_{poi_type}"] = nearest_poi
+
+                if min_dist < threshold:
+                    meets_all = False
+                    break
 
             if meets_all:
                 valid_candidates.append(candidate)
 
-        # 按到中心点的距离排序
-        valid_candidates.sort(key=lambda x: x.get("calc_distance", float("inf")))
-        return valid_candidates
+        # ── 步骤5：多维度评分排序 ────────────────────────────────────────
+        def score_candidate(candidate):
+            s = 0.0
+
+            # 优先选择更接近中心的（权重：-1）
+            s -= candidate.get("calc_distance", 0) / 100
+
+            # 优先选择更接近"必须近"POI 的（权重：-1）
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s -= dist / 100
+
+            # 优先选择更远离"必须远"POI 的（权重：+2）
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s += dist / 50  # 远离更重要
+
+            return s
+
+        valid_candidates.sort(key=score_candidate, reverse=True)
+
+        # 去除重复点（保留评分最高的）
+        unique_candidates = []
+        seen_names = set()
+        for c in valid_candidates:
+            name = c.get("name", "")
+            if name not in seen_names:
+                unique_candidates.append(c)
+                seen_names.add(name)
+                if len(unique_candidates) >= 10:
+                    break
+
+        return unique_candidates
+
+    def _generate_grid_candidates(
+        self,
+        center_coords: Tuple[float, float],
+        radius: int,
+        grid_size: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        在中心点附近生成网格候选点
+
+        用于补充 POI 候选点的不足，覆盖任意位置
+
+        Args:
+            center_coords: 中心点坐标 (lon, lat)
+            radius: 搜索半径（米）
+            grid_size: 网格大小（生成 grid_size x grid_size 个点）
+
+        Returns:
+            候选点列表
+        """
+        candidates = []
+        lon, lat = center_coords
+
+        # 将半径转换为度数（粗略估算）
+        # 1度纬度 ≈ 111km，1度经度 ≈ 111km * cos(lat)
+        lat_step = radius / 111000 / grid_size
+        lon_step = radius / 111000 / grid_size / max(abs(math.cos(math.radians(lat))), 0.1)
+
+        for i in range(-grid_size // 2, grid_size // 2 + 1):
+            for j in range(-grid_size // 2, grid_size // 2 + 1):
+                p_lon = lon + j * lon_step
+                p_lat = lat + i * lat_step
+
+                dist = self._haversine_distance(center_coords, (p_lon, p_lat))
+                if dist <= radius:
+                    candidates.append({
+                        "name": f"网格点({i},{j})",
+                        "address": "",
+                        "lon": p_lon,
+                        "lat": p_lat,
+                        "type": "网格候选",
+                        "calc_distance": dist,
+                    })
+
+        return candidates
+
+    def _normalize_poi_type(self, poi_type: str) -> Optional[str]:
+        """
+        标准化 POI 类型（泛化版）
+
+        支持的类型：
+        - 餐饮类：星巴克、咖啡、咖啡厅、餐厅、饭店、快餐、火锅、烧烤、酒吧
+        - 交通类：地铁站、地铁、公交站、火车站、高铁站、机场
+        - 商业类：商场、超市、便利店、商店、药店、银行
+        - 居住类：小区、住宅、公寓、酒店、宾馆、旅馆
+        - 教育类：学校、幼儿园、小学、中学、大学、培训机构
+        - 医疗类：医院、诊所、药店、卫生站
+        - 休闲类：公园、景点、电影院、健身房、游乐场
+        - 工业类：工厂、仓库、工业园
+        """
+        poi = poi_type.strip()
+
+        # 餐饮类
+        if any(kw in poi for kw in ["星巴克", "咖啡", "咖啡厅", "瑞幸", "luckin"]):
+            return "星巴克"
+        if any(kw in poi for kw in ["餐厅", "饭店", "酒楼", "食府"]):
+            return "餐厅"
+        if any(kw in poi for kw in ["快餐", "KFC", "麦当劳", " burger"]):
+            return "快餐"
+        if any(kw in poi for kw in ["火锅", "串串", "麻辣烫"]):
+            return "火锅"
+        if any(kw in poi for kw in ["酒吧", "酒馆", "bar"]):
+            return "酒吧"
+        if any(kw in poi for kw in ["便利店", "7-11", "全家", "罗森", "711"]):
+            return "便利店"
+
+        # 交通类
+        if any(kw in poi for kw in ["地铁", "metro"]):
+            return "地铁站"
+        if any(kw in poi for kw in ["公交", "公交站", "巴士"]):
+            return "公交站"
+        if any(kw in poi for kw in ["火车", "火车站", "railway"]):
+            return "火车站"
+        if any(kw in poi for kw in ["机场", "airport"]):
+            return "机场"
+
+        # 商业类
+        if any(kw in poi for kw in ["商场", "购物中心", "mall"]):
+            return "商场"
+        if any(kw in poi for kw in ["超市", "supermarket"]):
+            return "超市"
+        if any(kw in poi for kw in ["药店", "药房", "pharmacy"]):
+            return "药店"
+        if any(kw in poi for kw in ["银行", "bank"]):
+            return "银行"
+
+        # 居住类
+        if any(kw in poi for kw in ["酒店", "宾馆", "旅馆", "民宿", "hotel"]):
+            return "酒店"
+        if any(kw in poi for kw in ["小区", "住宅", "公寓", "housing"]):
+            return "住宅"
+
+        # 教育类
+        if any(kw in poi for kw in ["大学", "学院", "university"]):
+            return "大学"
+        if any(kw in poi for kw in ["中学", "高中", "初中"]):
+            return "中学"
+        if any(kw in poi for kw in ["小学", "primary"]):
+            return "小学"
+        if any(kw in poi for kw in ["幼儿园", "kindergarten"]):
+            return "幼儿园"
+        if any(kw in poi for kw in ["学校", "school", "培训"]):
+            return "学校"
+
+        # 医疗类
+        if any(kw in poi for kw in ["医院", "hospital"]):
+            return "医院"
+        if any(kw in poi for kw in ["诊所", "门诊", "clinic"]):
+            return "诊所"
+
+        # 休闲类
+        if any(kw in poi for kw in ["公园", "绿地", "广场", "park"]):
+            return "公园"
+        if any(kw in poi for kw in ["景点", "景区", "tourist"]):
+            return "景点"
+        if any(kw in poi for kw in ["电影院", "cinema"]):
+            return "电影院"
+        if any(kw in poi for kw in ["健身房", "gym", "健身"]):
+            return "健身房"
+
+        # 工业类
+        if any(kw in poi for kw in ["工厂", "factory", "工业园"]):
+            return "工厂"
+        if any(kw in poi for kw in ["仓库", "warehouse"]):
+            return "仓库"
+
+        # 办公类
+        if any(kw in poi for kw in ["写字楼", "办公", "office"]):
+            return "写字楼"
+
+        # 如果无法识别，返回原值（可能用户提供了具体名称如"天河公园"）
+        if poi:
+            return poi
+
+        return None
+
+    def _get_fallback_candidates(
+        self,
+        poi_results: Dict[str, List[Dict[str, Any]]],
+        center_coords: Tuple[float, float],
+        near_types: Dict[str, float],
+        far_types: Dict[str, float],
+        parsed: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        兜底逻辑：当无法生成候选区域时，使用原有 POI 作为候选
+
+        策略：如果需求是"找离地铁远的星巴克"，则返回满足条件的星巴克
+        """
+        # 确定候选来源：优先使用"必须近"的 POI
+        candidate_pois = []
+
+        for near_type in near_types:
+            pois = poi_results.get(near_type, [])
+            for poi in pois:
+                if poi.get("lon") and poi.get("lat"):
+                    poi["calc_distance"] = self._haversine_distance(
+                        center_coords, (poi["lon"], poi["lat"])
+                    )
+                    candidate_pois.append(poi)
+
+        # 如果没有"必须近"的 POI，使用所有 POI
+        if not candidate_pois:
+            for poi_type, pois in poi_results.items():
+                for poi in pois:
+                    if poi.get("lon") and poi.get("lat"):
+                        poi["calc_distance"] = self._haversine_distance(
+                            center_coords, (poi["lon"], poi["lat"])
+                        )
+                        candidate_pois.append(poi)
+
+        # 计算到"必须远"POI 的距离
+        for candidate in candidate_pois:
+            candidate_coords = (candidate["lon"], candidate["lat"])
+            for far_type in far_types:
+                pois = poi_results.get(far_type, [])
+                if pois:
+                    min_dist = float("inf")
+                    for poi in pois:
+                        if poi.get("lon") and poi.get("lat"):
+                            dist = self._haversine_distance(
+                                candidate_coords, (poi["lon"], poi["lat"])
+                            )
+                            min_dist = min(min_dist, dist)
+                    candidate[f"dist_to_{far_type}"] = min_dist
+
+        return candidate_pois
 
     def _haversine_distance(
         self,

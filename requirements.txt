@@ -24,6 +24,10 @@ json-repair>=0.27.0       # 智能修复破损 JSON（替代手写正则）
 tenacity>=8.2.0           # 专业级重试控制（指数退避）
 aiohttp>=3.9.0            # 异步 HTTP 支持（可选，用于 async 改造）
 
+# Embedding 语义路由（可选，提升工具识别准确率）
+sentence-transformers>=2.2.0  # 本地 Embedding 模型（推荐）
+# scikit-learn>=1.3.0          # 用于工具聚类分析（可选）
+
 # GIS 核心库
 geopandas>=0.14.0
 shapely>=2.0.0

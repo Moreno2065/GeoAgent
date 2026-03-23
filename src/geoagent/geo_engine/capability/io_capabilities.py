@@ -45,21 +45,35 @@ def _read_gdf_with_crs(file_path: Path, target_crs: str = "EPSG:4326") -> gpd.Ge
     
     如果文件没有 CRS，基于坐标值智能推断：
     - 经度范围 [-180, 180]，纬度 [-90, 90] → 设为 EPSG:4326
-    - 其他情况 → 设为 EPSG:3857 (Web Mercator)
+    - 其他情况 → 需要用户指定 CRS，发出警告
     """
+    import warnings
     gdf = gpd.read_file(file_path)
     
     if gdf.crs is None:
         bounds = gdf.total_bounds
         minx, miny, maxx, maxy = bounds
         
-        if -180 <= minx <= 180 and -180 <= maxx <= 180 and -90 <= miny <= 90 and -90 <= maxy <= 90:
-            inferred_crs = "EPSG:4326"
-        else:
-            inferred_crs = "EPSG:3857"
+        # 判断是否是经纬度坐标（WGS84 范围）
+        is_wgs84 = (
+            -180 <= minx <= 180 and 
+            -180 <= maxx <= 180 and 
+            -90 <= miny <= 90 and 
+            -90 <= maxy <= 90 and
+            # 额外检查：确保经度范围合理（不超过 360 度）
+            (maxx - minx) <= 360
+        )
         
-        print(f"[警告] 文件 {file_path.name} 缺少 CRS，已自动设为 {inferred_crs}")
-        gdf = gdf.set_crs(inferred_crs, allow_override=True)
+        if is_wgs84:
+            inferred_crs = "EPSG:4326"
+            print(f"[警告] 文件 {file_path.name} 缺少 CRS，已自动设为 {inferred_crs}（基于坐标值推断）")
+            gdf = gdf.set_crs(inferred_crs, allow_override=True)
+        else:
+            # 投影坐标或其他坐标系，无法自动推断
+            # 保留 None，让后续处理要求用户指定 CRS
+            print(f"[警告] 文件 {file_path.name} 缺少 CRS，且坐标值超出经纬度范围（minx={minx:.2f}, maxx={maxx:.2f}）")
+            print(f"[警告] 无法自动推断 CRS。请在 shapefile 的 .prj 文件中指定坐标系，或手动指定 CRS。")
+            # 不武断设置 CRS，保持 None 让用户知道有问题
     
     if target_crs and gdf.crs != target_crs:
         gdf = gdf.to_crs(target_crs)

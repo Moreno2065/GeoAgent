@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 import json
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 from pathlib import Path
 
 from openai import OpenAI
@@ -176,6 +176,7 @@ class GeoAgentV2:
     def run(
         self,
         user_input: str,
+        files: Optional[List[Dict[str, Any]]] = None,
         context: Optional[Dict[str, Any]] = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
     ) -> PipelineResult:
@@ -184,6 +185,10 @@ class GeoAgentV2:
 
         Args:
             user_input: 用户输入的自然语言
+            files: 上传的文件列表，每个元素为 Dict，包含：
+                   - path: 文件路径（必需）
+                   - filename: 文件名（可选）
+                   - conversation_id: 对话ID（可选）
             context: 上下文信息（如地图点击位置、已选图层等）
             event_callback: 事件回调函数
 
@@ -191,7 +196,7 @@ class GeoAgentV2:
             PipelineResult 标准化结果
         """
         self.stats["total_requests"] += 1
-        result = self._pipeline.run(user_input, context, event_callback)
+        result = self._pipeline.run(user_input, files=files, context=context, event_callback=event_callback)
 
         if result.success:
             self.stats["successful"] += 1
@@ -231,18 +236,19 @@ class GeoAgentV2:
 
     # ── 便捷方法 ───────────────────────────────────────────────────────────
 
-    def chat(self, user_input: str, **kwargs) -> PipelineResult:
+    def chat(self, user_input: str, files: Optional[List[Dict[str, Any]]] = None, **kwargs) -> PipelineResult:
         """
         简单的 chat 接口（等同于 run）
 
         Args:
             user_input: 用户输入
-            **kwargs: 额外参数
+            files: 上传的文件列表
+            **kwargs: 额外参数（context, event_callback）
 
         Returns:
             PipelineResult
         """
-        return self.run(user_input, **kwargs)
+        return self.run(user_input, files=files, **kwargs)
 
     def route(self, start: str, end: str, mode: str = "walking") -> PipelineResult:
         """

@@ -198,9 +198,9 @@ class FileFallbackHandler:
                     logger.debug(f"推断数据类型: {dtype} (关键词 '{kw}' in '{name_lower}')")
                     return dtype
 
-        # 默认返回 network（最常用）
-        logger.debug(f"无法推断数据类型，默认使用 'network'")
-        return "network"
+        # 无法推断类型，返回 unknown（让调用方决定如何处理）
+        logger.debug(f"无法推断数据类型，返回 'unknown'")
+        return "unknown"
 
     # -------------------------------------------------------------------------
     # OSM 下载

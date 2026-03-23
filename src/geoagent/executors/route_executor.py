@@ -218,9 +218,9 @@ class RouteExecutor(BaseExecutor):
             }
             net_type = network_type_map.get(mode, "drive")
 
-            # 地理编码
-            gdf_o = ox.geocode(start)
-            gdf_d = ox.geocode(end)
+            # 地理编码 (使用 geocode_to_gdf 获取 GeoDataFrame)
+            gdf_o = ox.geocode_to_gdf(start)
+            gdf_d = ox.geocode_to_gdf(end)
             if gdf_o is None or gdf_o.empty or gdf_d is None or gdf_d.empty:
                 return ExecutorResult.err(
                     self.task_type,
@@ -228,16 +228,16 @@ class RouteExecutor(BaseExecutor):
                     engine="osmnx"
                 )
 
-            lon_o = float(gdf_o.iloc[0]["x"])
-            lat_o = float(gdf_o.iloc[0]["y"])
-            lon_d = float(gdf_d.iloc[0]["x"])
-            lat_d = float(gdf_d.iloc[0]["y"])
+            # 从 GeoDataFrame 提取坐标 (lon, lat)
+            lon_o = float(gdf_o.iloc[0]["lon"])
+            lat_o = float(gdf_o.iloc[0]["lat"])
+            lon_d = float(gdf_d.iloc[0]["lon"])
+            lat_d = float(gdf_d.iloc[0]["lat"])
 
             # 获取路网
             G = ox.graph_from_address(
                 address=start,
                 dist=dist,
-                dist_unit="m",
                 network_type=net_type,
                 simplify=True
             )

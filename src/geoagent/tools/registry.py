@@ -3,6 +3,102 @@ GeoAgent 工具注册表与执行器
 """
 
 import json
+from typing import List, Dict, Set, Optional
+
+
+# =============================================================================
+# 工具分类：核心工具 + 虚拟工具组
+# 参考 GitHub Copilot 2025 的工具精简策略
+# =============================================================================
+
+# 核心工具（始终可用，启动时加载）
+CORE_TOOLS: Set[str] = {
+    "get_data_info",
+    "route",  # 通过 amap/osmnx_routing 实现
+    "buffer",  # 通过 amap 实现
+    "overlay",  # 通过 amap/clip 实现
+    "run_python_code",
+    "search_gis_knowledge",
+    "deepseek_search",
+}
+
+# 虚拟工具组（按需加载，节省上下文）
+TOOL_CLUSTERS: Dict[str, List[str]] = {
+    "geo_processing": [
+        "ndvi", "ndwi", "evi", "savi",
+        "zonal_stats", "slope", "aspect", "hillshade",
+        "hotspot", "morans_i", "kernel_density",
+        "terrain_analysis", "watershed", "flow_accumulation",
+    ],
+    "data_fetch": [
+        "fetch_osm", "search_online_data", "access_layer_info",
+        "download_features", "query_features", "get_layer_statistics",
+        "search_stac", "search_stac_imagery", "read_cog_remote",
+    ],
+    "visualization": [
+        "render_3d_map", "render_accessibility_map", "stac_to_visualization",
+        "map_folium_interactive", "map_static_plot", "map_raster_plot",
+    ],
+    "advanced_analysis": [
+        "spatial_autocorrelation", "facility_accessibility",
+        "multi_criteria_site_selection", "geospatial_hotspot_analysis",
+        "terrain_analysis", "render_accessibility_map",
+    ],
+    "format_conversion": [
+        "geotiff_to_cog", "vector_to_geoparquet", "db_convert_format",
+        "db_read_postgis", "db_write_postgis",
+    ],
+    "raster_tools": [
+        "get_raster_metadata", "calculate_raster_index", "run_gdal_algorithm",
+        "compute_all_vegetation_indices", "raster_clip", "raster_mosaic",
+        "raster_resample", "raster_reproject", "raster_reclassify",
+        "raster_slope", "raster_aspect", "raster_hillshade", "raster_contour",
+        "raster_statistics",
+    ],
+    "vector_tools": [
+        "vector_buffer", "vector_clip", "vector_intersect", "vector_union",
+        "vector_spatial_join", "vector_dissolve", "vector_simplify", "vector_erase",
+    ],
+    "crs_tools": [
+        "crs_define", "crs_transform", "crs_convert_coords",
+    ],
+}
+
+
+def get_tools_for_cluster(cluster: str) -> List[str]:
+    """获取工具组中的所有工具"""
+    return TOOL_CLUSTERS.get(cluster, [])
+
+
+def get_all_tools_in_clusters() -> Set[str]:
+    """获取所有工具组中的工具"""
+    tools = set()
+    for cluster_tools in TOOL_CLUSTERS.values():
+        tools.update(cluster_tools)
+    return tools
+
+
+def get_all_registered_tools() -> Set[str]:
+    """获取所有已注册的工具（包括核心和工具组）"""
+    return CORE_TOOLS | get_all_tools_in_clusters()
+
+
+def is_core_tool(tool_name: str) -> bool:
+    """检查是否为核心工具"""
+    return tool_name in CORE_TOOLS
+
+
+def get_tool_cluster(tool_name: str) -> Optional[str]:
+    """获取工具所属的工具组"""
+    for cluster, tools in TOOL_CLUSTERS.items():
+        if tool_name in tools:
+            return cluster
+    return None
+
+
+# =============================================================================
+# 工具执行实现
+# =============================================================================
 
 
 def _get_data_info_impl(file_name: str) -> str:
@@ -168,27 +264,27 @@ def _osmnx_routing_impl(
         print(f"[OSMnx] Road network loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
 
         if origin_address and destination_address:
-            gdf_o = ox.geocode(origin_address)
-            gdf_d = ox.geocode(destination_address)
+            gdf_o = ox.geocode_to_gdf(origin_address)
+            gdf_d = ox.geocode_to_gdf(destination_address)
             if gdf_o is None or gdf_o.empty or gdf_d is None or gdf_d.empty:
                 return json.dumps({
                     "success": False,
                     "error": f"无法解析起点或终点地址"
                 }, ensure_ascii=False)
-            lon_o, lat_o = float(gdf_o.iloc[0]["x"]), float(gdf_o.iloc[0]["y"])
-            lon_d, lat_d = float(gdf_d.iloc[0]["x"]), float(gdf_d.iloc[0]["y"])
+            lon_o, lat_o = float(gdf_o.iloc[0]["lon"]), float(gdf_o.iloc[0]["lat"])
+            lon_d, lat_d = float(gdf_d.iloc[0]["lon"]), float(gdf_d.iloc[0]["lat"])
             orig_node = ox.distance.nearest_nodes(G, lon_o, lat_o)
             dest_node = ox.distance.nearest_nodes(G, lon_d, lat_d)
             origin_label = origin_address
             dest_label = destination_address
         elif origin_address:
-            gdf_o = ox.geocode(origin_address)
+            gdf_o = ox.geocode_to_gdf(origin_address)
             if gdf_o is None or gdf_o.empty:
                 return json.dumps({
                     "success": False,
                     "error": f"无法解析起点地址: {origin_address}"
                 }, ensure_ascii=False)
-            lon_o, lat_o = float(gdf_o.iloc[0]["x"]), float(gdf_o.iloc[0]["y"])
+            lon_o, lat_o = float(gdf_o.iloc[0]["lon"]), float(gdf_o.iloc[0]["lat"])
             orig_node = ox.distance.nearest_nodes(G, lon_o, lat_o)
             dest_node = nodes[-1]
             origin_label = origin_address
@@ -231,7 +327,10 @@ def _osmnx_routing_impl(
                 "map_saved": str(output_path),
             }
         else:
-            route_gdf = ox.route_to_gdf(G, route)
+            from shapely.geometry import LineString
+            import geopandas as gpd
+            coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in route]
+            route_gdf = gpd.GeoDataFrame(geometry=[LineString(coords)], crs=G.graph.get('crs', 'EPSG:4326'))
             route_gdf_4326 = route_gdf.to_crs("EPSG:4326")
 
             center_lat = route_gdf_4326.geometry.centroid.y.mean()

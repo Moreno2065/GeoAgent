@@ -7,8 +7,8 @@
 3. 提供置信度和匹配的关键词
 
 设计原则：
-- 不依赖 LLM，用关键词匹配实现意图分类
-- 返回固定枚举，不让 LLM 自由发挥
+- Embedding 语义匹配优先（参考 Copilot 94.5% Tool Use Coverage）
+- LLM 作为降级方案
 - 支持多意图识别（但 MVP 只返回单意图）
 - 稳定高效，可测试
 """
@@ -21,6 +21,27 @@ from dataclasses import dataclass
 from typing import List, Dict, Set, Optional
 
 from geoagent.layers.architecture import Scenario
+
+
+# =============================================================================
+# Embedding 路由器导入（延迟加载，避免循环导入）
+# =============================================================================
+
+_embedding_router = None
+
+
+def _get_embedding_router():
+    """延迟加载 Embedding 路由器"""
+    global _embedding_router
+    if _embedding_router is None:
+        try:
+            from geoagent.tools.embedding_router import get_embedding_router
+            # 设置环境变量控制是否启用 Embedding
+            if os.getenv("GEOAGENT_USE_EMBEDDING", "1").lower() in ("1", "true", "yes"):
+                _embedding_router = get_embedding_router(precompute=True)
+        except ImportError:
+            pass
+    return _embedding_router
 
 
 # =============================================================================
@@ -527,9 +548,9 @@ class IntentClassifier:
 
     def _classify_by_keywords(self, query: str, multi: bool = False) -> IntentResult:
         """
-        关键词匹配兜底方法（原 classify 核心逻辑）。
+        关键词匹配兜底方法。
 
-        当 LLM 不可用或调用失败时使用。
+        当 Embedding 和 LLM 都不可用时使用。
 
         Args:
             query: 用户输入的自然语言查询
@@ -538,35 +559,12 @@ class IntentClassifier:
         Returns:
             IntentResult 对象
         """
-        # ==========================================
-        # 🚨 哈基米前置拦截器 (Early Exit Pattern)
-        # ==========================================
-        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算"]
-
-        if any(trigger in query for trigger in sandbox_dictators):
-            return IntentResult(
-                primary=Scenario.CODE_SANDBOX,
-                confidence=1.0,
-                matched_keywords=["显式编程触发词"],
-                all_intents={Scenario.CODE_SANDBOX}
-            )
-        # ==========================================
-
-        # 🚀 下载前置拦截器（凡含"下载"均重定向至 FETCH_OSM）
-        download_dictators = ["下载", "下载地图", "地图下载", "下载数据", "download",
-                            "下载osm", "osm下载", "抓取地图", "下载路网", "下载建筑",
-                            "下载区域", "下载矢量", "导出数据", "导出地图"]
-
-        if any(trigger in query_lower for trigger in download_dictators):
-            return IntentResult(
-                primary=Scenario.FETCH_OSM,
-                confidence=1.0,
-                matched_keywords=["下载触发词"],
-                all_intents={Scenario.FETCH_OSM}
-            )
-        # ==========================================
+        # 注意：硬编码拦截器已经在 classify() 中处理，这里不需要重复
 
         query_lower = query.lower()
+
+        # 注意：下载拦截器已经在 classify() 中通过 _check_interceptors 处理
+
         matched: Dict[Scenario, List[str]] = {}
 
         # 精确匹配
@@ -683,10 +681,12 @@ class IntentClassifier:
 
     def classify(self, query: str, multi: bool = False) -> IntentResult:
         """
-        对用户 query 进行意图分类（两阶段架构）。
+        对用户 query 进行意图分类（三阶段架构）。
 
-        1. 第一阶段：LLM 语义理解（优先）
-        2. 第二阶段：关键词匹配兜底（降级）
+        1. 硬编码拦截器（立即返回，无延迟）
+        2. Embedding 语义匹配（低延迟，高准确率）
+        3. LLM 语义理解（降级方案）
+        4. 关键词匹配兜底（最终降级）
 
         Args:
             query: 用户输入的自然语言查询
@@ -703,7 +703,22 @@ class IntentClassifier:
                 all_intents=set()
             )
 
-        # ===== 第一阶段：LLM 语义理解（降维打击）=====
+        # ===== 阶段 1: 硬编码拦截器（最高优先级，无延迟）=====
+        intercept_result = self._check_interceptors(query)
+        if intercept_result:
+            return intercept_result
+
+        # ===== 阶段 2: Embedding 语义匹配（低延迟，高准确率）=====
+        try:
+            embed_router = _get_embedding_router()
+            if embed_router:
+                embed_result = self._classify_by_embedding(query)
+                if embed_result and embed_result.confidence > 0.7:
+                    return embed_result
+        except Exception:
+            pass  # Embedding 失败，继续降级
+
+        # ===== 阶段 3: LLM 语义理解（降级方案）=====
         try:
             llm_reply = self._call_llm_intent(query)
             if llm_reply:
@@ -711,8 +726,69 @@ class IntentClassifier:
         except Exception:
             pass  # LLM 失败，默默降级
 
-        # ===== 第二阶段：关键词匹配兜底（保留原逻辑）=====
+        # ===== 阶段 4: 关键词匹配兜底（最终降级）=====
         return self._classify_by_keywords(query, multi)
+
+    def _check_interceptors(self, query: str) -> Optional[IntentResult]:
+        """
+        检查硬编码拦截器
+
+        这些是必须立即拦截的场景，用于处理特殊指令。
+        """
+        query_lower = query.lower()
+
+        # ── 代码沙盒拦截器 ────────────────────────────────
+        sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算",
+                            "写段代码", "python代码", "python实现", "用python"]
+
+        if any(trigger in query_lower for trigger in sandbox_dictators):
+            return IntentResult(
+                primary=Scenario.CODE_SANDBOX,
+                confidence=1.0,
+                matched_keywords=["显式编程触发词"],
+                all_intents={Scenario.CODE_SANDBOX}
+            )
+
+        # ── 下载拦截器 ────────────────────────────────
+        download_dictators = ["下载", "download", "下载地图", "地图下载",
+                            "下载osm", "osm下载", "抓取地图", "下载路网", "下载建筑",
+                            "下载区域", "下载矢量", "导出数据", "导出地图"]
+
+        if any(trigger in query_lower for trigger in download_dictators):
+            return IntentResult(
+                primary=Scenario.FETCH_OSM,
+                confidence=1.0,
+                matched_keywords=["下载触发词"],
+                all_intents={Scenario.FETCH_OSM}
+            )
+
+        return None
+
+    def _classify_by_embedding(self, query: str) -> Optional[IntentResult]:
+        """
+        Embedding 语义匹配
+
+        使用预计算的 Embedding 向量进行快速语义匹配。
+        参考 GitHub Copilot 2025 的 Embedding-guided Tool Routing。
+        """
+        try:
+            embed_router = _get_embedding_router()
+            if not embed_router:
+                return None
+
+            result = embed_router.route(query, top_k=3, include_tools=False)
+
+            if result.primary_scenario:
+                return IntentResult(
+                    primary=result.primary_scenario,
+                    confidence=result.primary.score,
+                    matched_keywords=[f"embedding:{result.primary.name}"],
+                    all_intents={result.primary_scenario}
+                )
+        except Exception:
+            pass
+
+        return None
 
     def classify_simple(self, query: str) -> Scenario:
         """

@@ -25,18 +25,18 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
         # 中文
         "路径", "route", "步行", "导航", "最短路径", "寻路", "routing",
         "从...到", "到...的", "出发地", "目的地", "起点", "终点",
+        "到", "前往", "去", "怎么走", "路线",
         # 英文
         "driving", "walking", "walk", "drive", "bike", "cycling",
         "shortest path", "shortest route", "navigation", "directions",
-        "origin", "destination", "from to",
+        "origin", "destination", "from to", "how to get", "directions",
     ],
     "buffer": [
-        # 中文
-        "缓冲", "buffer", "缓冲区", "方圆", "附近范围",
-        "500米范围", "1公里内", "xx米", "xx公里",
+        # 中文 — 仅限明确包含"缓冲"或"缓冲区"的场景
+        "缓冲", "buffer", "缓冲区", "生成缓冲区", "缓冲区分析",
+        "做缓冲区", "做个缓冲区", "缓冲分析",
         # 英文
-        "buffer zone", "buffering", "proximity", "within distance",
-        "within radius", "buffer analysis",
+        "buffer zone", "buffering", "buffer analysis",
     ],
     "overlay": [
         # 中文
@@ -86,11 +86,11 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
     ],
     "visualization": [
         # 中文
-        "可视化", "地图", "可视化地图", "3d地图", "交互地图",
+        "可视化", "可视化地图", "3d地图", "交互地图",
         "folium", "热力图", "choropleth", "出图", "渲染",
         "绘制地图", "展示地图", "web地图", "html地图",
         # 英文
-        "visualization", "map", "3d map", "interactive map",
+        "visualization", "3d map", "interactive map",
         "folium", "heatmap", "choropleth", "render", "plot map",
         "web map", "html map", "deck.gl", "pydeck",
     ],
@@ -153,7 +153,8 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
         "写个函数", "代码计算", "脚本", "计算一下",
         "代码生成", "python编程", "写段代码",
         # 中文 — 隐式/计算类触发（空间数学疑难杂症）
-        "生成", "随机生成", "随机点", "面积计算", "长度计算", "距离计算",
+        # 🛡️ 移除过于通用的"生成"，避免误捕获"生成地图"等GIS意图
+        "随机生成", "随机点", "面积计算", "长度计算", "距离计算",
         "统计", "算法", "提取坐标", "自定义公式", "加权", "加权求和",
         "坐标转换", "数学公式", "自定义逻辑", "迭代计算",
         "拟合", "插值自定义", "算一下", "帮我算", "帮我生成",
@@ -170,15 +171,71 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
     ],
     # ── 🟣 OSM 地图下载 ───────────────────────────────────────────────
     "fetch_osm": [
-        # 中文
-        "osm下载", "用osm", "osm抓取", "下载地图", "抓取地图",
-        "下载osm", "osm数据", "osm地图", "openstreetmap下载",
-        "获取osm", "获取地图数据", "下载路网", "下载建筑",
-        "周边地图", "周围地图", "地图下载",
-        # 英文
-        "osm download", "osm fetch", "fetch osm", "download osm",
-        "osm data", "openstreetmap", "download map", "fetch map",
+        # 中文 — 显式关键词
+        "osm下载", "用osm", "osm抓取", "下载osm", "osm数据", "osm地图",
+        "openstreetmap下载", "获取osm", "osm周围", "osm地图下载",
+        "openstreetmap", "open street map",  # 英文 OSM 全称
+        # 扩展：更口语化的表达
+        "osm范围", "osm区域", "osm附近", "osm周边",
+        # 英文扩展
+        "osm", "osm fetch", "osm download", "fetch osm", "download osm",
+        "osm data", "download map", "fetch map",
         "download buildings", "download network", "download roads",
+        "osm map", "osm area",
+        # ── 🆕 隐式下载意图（无需显式 "osm" 关键词）────────────────────
+        # 核心下载动作词
+        "下载地图", "下载周边", "下载周围", "下载附近", "下载这个区域",
+        "下载天安门", "下载复旦大学", "下载上海", "下载北京",
+        "抓取地图", "抓取周边", "抓取周围", "抓取附近",
+        "获取地图", "获取周边", "获取周围", "获取附近",
+        # 下载 + 地点 + 地图
+        "下载天安门地图", "下载故宫地图", "下载长城地图",
+        "下载上海地图", "下载北京地图", "下载广州地图",
+        "下载复旦大学周边地图", "下载交大附近地图",
+        # 通用下载请求
+        "下载这个地方的地图", "下载那个区域的地图",
+        "下载这块区域的", "下载这片区域",
+        # 生成/显示/展示地图（隐式下载）
+        "生成地图", "生成周边地图", "生成周围地图", "生成附近地图",
+        "显示地图", "显示周边", "显示周围", "显示附近",
+        "展示地图", "展示周边", "展示周围", "展示附近",
+        "看看这里", "看看这里周边", "看看这里附近",
+        "看看那里", "看看那周边", "看看那附近",
+        # 看看 + 地点
+        "看看天安门", "看看故宫", "看看长城",
+        "看看复旦大学", "看看上海", "看看琶洲",
+        # 给我看 + 地点
+        "给我看天安门", "给我看故宫", "给我看这里",
+        # 高优先级数字 + 米/公里 + 地图（优先于 buffer）
+        "五百米地图", "500米地图", "1公里地图", "1000米地图",
+        "五百米osm", "500mosm", "1公里osm",
+        "米范围内的地图", "米范围地图", "米地图",
+        # 周边/周围/附近 + 地图（无明确中心点时用当前位置或上次位置）
+        "周边地图", "周围地图", "附近地图",
+        "周边osm地图", "周围osm地图", "附近osm地图",
+        # ── 🆕 泛化隐式下载：任意"下载"或"生成" + 地名
+        # 下载/生成 + 任意地标/POI（不限定具体地点）
+        "下载", "下载地图", "下载周边", "下载周围", "下载附近",
+        "生成", "生成地图", "生成周边", "生成周围", "生成附近",
+        "查看", "查看地图", "查看周边", "查看周围", "查看附近",
+        "显示", "显示地图", "显示周边", "显示周围", "显示附近",
+        "展示", "展示地图", "展示周边", "展示周围", "展示附近",
+        "看看", "看看地图", "看看周边", "看看周围", "看看附近",
+        "获取", "获取地图", "获取周边", "获取周围", "获取附近",
+        "抓取", "抓取地图", "抓取周边", "抓取周围", "抓取附近",
+        # 任意动作 + 地名（POI/地标自动触发）
+        "到", "去", "前往",  # "到天安门"、"去复旦大学"等隐含需要地图
+        # 地名类关键词（可与上面的动作词组合）
+        "天安门", "故宫", "长城", "天坛", "颐和园",
+        "复旦大学", "交通大学", "华东师范大学", "同济大学",
+        "上海", "北京", "广州", "深圳", "杭州", "成都",
+        "琶洲", "珠江新城", "陆家嘴", "外滩",
+        "武汉", "黄鹤楼", "珞珈山", "光谷",
+        "内蒙古", "包头", "呼和浩特",
+        "首钢", "鞍钢", "马钢", "宝钢",
+        "师范大学", "理工大学", "工业大学",
+        # 无动作的纯地名（默认需要地图）
+        "附近", "周边", "周围",
     ],
 }
 
@@ -262,17 +319,29 @@ class IntentClassifier:
             )
 
         # ==========================================
-        # 🚨 哈基米前置拦截器 (Early Exit Pattern)
+        # 🚨 前置拦截器 (Early Exit Pattern)
         # ==========================================
         sandbox_dictators = ["用代码", "沙盒", "写一段代码", "写脚本", "写python", "代码算"]
 
         if any(trigger in query for trigger in sandbox_dictators):
-            print("⚡ [前置拦截] 检测到最高编程指令，跳过词袋匹配，锁定为 code_sandbox！")
+            print("[SANDBOX INTERCEPTOR] Detected code sandbox trigger, routing to 'code_sandbox'")
             return IntentResult(
                 primary="code_sandbox",
                 confidence=1.0,
                 matched_keywords=["显式编程触发词"],
                 all_intents={"code_sandbox"}
+            )
+
+        # ── 🆕 BUFFER 拦截器（优先级高于 fetch_osm）────────────────────
+        # 如果 query 中包含"缓冲"或"缓冲区"，强制路由到 buffer
+        buffer_triggers = ["缓冲", "缓冲区"]
+        if any(trigger in query for trigger in buffer_triggers):
+            print("[BUFFER INTERCEPTOR] Detected buffer trigger, routing to 'buffer'")
+            return IntentResult(
+                primary="buffer",
+                confidence=1.0,
+                matched_keywords=["缓冲区触发词"],
+                all_intents={"buffer"}
             )
         # ==========================================
 
@@ -312,26 +381,33 @@ class IntentClassifier:
         # 计算每个意图的得分
         scores: Dict[str, float] = {}
         for intent, keywords in matched.items():
-            # 得分 = 匹配关键词数量 * 关键词长度权重（归一化）
+            # 得分计算（改进版）：
+            # 1. 绝对字符得分：所有匹配关键词的字符总数
+            # 2. 数量得分：匹配关键词数量
+            # 3. 平均长度奖励：鼓励更长的关键词匹配
             n_matched = len(keywords)
-            # 关键词总字符长度
             total_kw_chars = sum(len(kw) for kw in keywords)
-            # 长关键词匹配给予更高权重
-            char_score = total_kw_chars / max(sum(len(k) for k in self._intent_keywords.get(intent, [])), 1)
-            # 关键词数量得分
-            count_score = n_matched / max(len(self._intent_keywords.get(intent, [])), 1)
-            # 综合得分：字符权重 + 数量权重
-            scores[intent] = char_score * 0.6 + count_score * 0.4
+            avg_kw_length = total_kw_chars / n_matched if n_matched > 0 else 0
+            
+            # 绝对得分（主要）：匹配关键词的字符总数
+            abs_char_score = total_kw_chars
+            # 数量得分（次要）：匹配关键词数量
+            count_score = n_matched * 2  # 乘以2平衡权重
+            # 长关键词额外奖励（超过5字符的关键词）
+            long_kw_bonus = sum(1 for kw in keywords if len(kw) >= 5)
+            
+            # 综合得分
+            scores[intent] = abs_char_score + count_score + long_kw_bonus * 2
 
         # 按得分排序
         sorted_intents = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
         # 置信度：使用 sigmoid 变换使得分更合理
-        # 1个匹配关键词约 0.5 分，2个约 0.8 分，3个以上接近 1.0
+        # 新的绝对得分：5分左右约0.5，10分约0.9，15分接近1.0
         def _sigmoid(x):
-            return 1 / (1 + 2 ** (-x))
+            return 1 / (1 + 2 ** (-x / 5))
         raw_score = sorted_intents[0][1] if sorted_intents else 0
-        confidence = _sigmoid(raw_score * 10)
+        confidence = _sigmoid(raw_score)
 
         if multi:
             all_intents = {intent for intent, _ in sorted_intents}

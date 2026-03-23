@@ -2,9 +2,9 @@
 第1层：用户输入层（Input Layer）
 ================================
 统一接收来自各种来源的用户输入：
-- 文本（最常见，MVP 只做这个）
+- 文本（最常见）
 - 语音转文字（未来扩展）
-- 文件上传（未来扩展）
+- 文件上传（支持 PDF、图片、CSV、GeoJSON 等）
 - 地图框选（未来扩展）
 - 图层点击（未来扩展）
 
@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Any, Dict
+from typing import Literal, Optional, Any, Dict, List, TYPE_CHECKING
 from enum import Enum
+
+if TYPE_CHECKING:
+    from geoagent.file_processor import ContentContainer
 
 
 # =============================================================================
@@ -48,8 +51,6 @@ class UserInput:
 
     所有来源的输入都会被标准化为这个格式，
     传递给第2层意图识别层。
-
-    MVP 阶段只支持 TEXT 模式。
     """
     # 输入来源
     source: InputSource = InputSource.TEXT
@@ -68,6 +69,10 @@ class UserInput:
     # 原始数据（用于非文本输入）
     raw_data: Optional[Any] = None
 
+    # 文件上传支持
+    uploaded_files: List[str] = field(default_factory=list)  # 上传的文件路径列表
+    file_contents: Optional["ContentContainer"] = None  # 解析后的文件内容
+
     def __post_init__(self):
         """后处理"""
         if self.text:
@@ -78,18 +83,55 @@ class UserInput:
         """检查输入是否有效"""
         if self.source == InputSource.TEXT:
             return len(self.text) >= 2
+        if self.source == InputSource.FILE:
+            return len(self.uploaded_files) > 0
         return self.raw_data is not None
+
+    def has_files(self) -> bool:
+        """检查是否有上传的文件"""
+        return len(self.uploaded_files) > 0
+
+    def get_file_content_context(self) -> str:
+        """获取上传文件的内容文本（用于 LLM 上下文）"""
+        if not self.file_contents:
+            return ""
+        return self.file_contents.to_llm_context()
+
+    def get_geo_context(self) -> str:
+        """获取地理数据文件的上下文"""
+        if not self.file_contents:
+            return ""
+        return self.file_contents.to_geo_context()
+
+    def get_data_context(self) -> str:
+        """获取数据表格文件的上下文"""
+        if not self.file_contents:
+            return ""
+        return self.file_contents.to_data_context()
+
+    def build_full_context(self) -> str:
+        """构建完整的上下文文本（用户输入 + 文件内容）"""
+        parts = []
+        if self.text:
+            parts.append(f"【用户问题】{self.text}")
+        if self.file_contents:
+            parts.append(self.file_contents.to_llm_context())
+        return "\n\n".join(parts)
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "source": self.source.value,
             "text": self.text,
             "context": self.context,
             "user_id": self.user_id,
             "session_id": self.session_id,
             "timestamp": self.timestamp,
+            "uploaded_files": self.uploaded_files,
         }
+        if self.file_contents:
+            result["file_contents"] = self.file_contents.to_dict()
+        return result
 
 
 # =============================================================================
@@ -220,15 +262,57 @@ class InputParser:
 
     def parse_file(self, file_path: str, **kwargs) -> UserInput:
         """
-        解析文件输入（未来扩展）
+        解析文件输入
 
-        目前返回占位对象。
+        解析单个文件路径，返回占位文本。
+        完整的文件解析由 FileUploadHandler 处理。
         """
         return UserInput(
             source=InputSource.FILE,
             text=f"[文件输入：{file_path}]",
             raw_data=file_path,
+            uploaded_files=[file_path] if isinstance(file_path, str) else file_path,
             **kwargs,
+        )
+
+    def parse_file_with_content(
+        self,
+        text: str,
+        file_paths: List[str],
+        **kwargs
+    ) -> UserInput:
+        """
+        解析带文件的用户输入（完整实现）
+
+        Args:
+            text: 用户输入的文本
+            file_paths: 上传的文件路径列表
+            **kwargs: 额外参数
+
+        Returns:
+            UserInput 标准化对象，包含解析后的文件内容
+        """
+        # 验证文本
+        is_valid, _ = self.validator.validate(text)
+        if is_valid:
+            text = self.validator.sanitize(text)
+
+        # 处理文件
+        file_contents = None
+        if file_paths:
+            from geoagent.file_processor import FileUploadHandler
+            handler = FileUploadHandler()
+            file_contents = handler.process_multiple(file_paths)
+
+        return UserInput(
+            source=InputSource.FILE if file_paths else InputSource.TEXT,
+            text=text,
+            uploaded_files=file_paths,
+            file_contents=file_contents,
+            user_id=kwargs.get("user_id"),
+            session_id=kwargs.get("session_id"),
+            context=kwargs.get("context", {}),
+            timestamp=kwargs.get("timestamp"),
         )
 
     def parse_map_click(self, lng: float, lat: float, **kwargs) -> UserInput:
@@ -319,6 +403,26 @@ def parse_user_input(text: str, **kwargs) -> UserInput:
     return parser.parse_text(text, **kwargs)
 
 
+def parse_file_input(
+    text: str,
+    file_paths: List[str],
+    **kwargs
+) -> UserInput:
+    """
+    便捷函数：解析带文件的用户输入
+
+    Args:
+        text: 用户输入的自然语言
+        file_paths: 上传的文件路径列表
+        **kwargs: 额外参数
+
+    Returns:
+        UserInput 标准化对象
+    """
+    parser = get_parser()
+    return parser.parse_file_with_content(text, file_paths, **kwargs)
+
+
 __all__ = [
     "InputSource",
     "UserInput",
@@ -326,4 +430,5 @@ __all__ = [
     "InputParser",
     "get_parser",
     "parse_user_input",
+    "parse_file_input",
 ]

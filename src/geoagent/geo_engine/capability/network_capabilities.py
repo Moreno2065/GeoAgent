@@ -23,10 +23,22 @@ Network Engine Capabilities - 路网分析能力节点
 from __future__ import annotations
 
 from pathlib import Path
+from shapely.geometry import LineString
 from typing import Any, Dict, List, Optional
 
 import geopandas as gpd
 from geoagent.geo_engine.data_utils import resolve_path, ensure_dir
+
+
+def _ox_route_to_gdf(G, route):
+    """
+    将路由节点列表转换为 GeoDataFrame（兼容 osmnx 2.x）
+    
+    osmnx 2.x 移除了 route_to_gdf，本函数提供兼容实现。
+    """
+    coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in route]
+    route_line = LineString(coords)
+    return gpd.GeoDataFrame(geometry=[route_line], crs=G.graph.get('crs', 'EPSG:4326'))
 
 
 def _resolve(file_name: str) -> Path:
@@ -161,7 +173,7 @@ def network_shortest_path(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dic
         if route is None:
             return _std_result(False, error="未找到有效路径")
 
-        route_gdf = ox.route_to_gdf(G, route)
+        route_gdf = _ox_route_to_gdf(G, route)
 
         # 计算路径长度
         route_length = sum(
@@ -251,7 +263,7 @@ def network_k_shortest_paths(inputs: Dict[str, Any], params: Dict[str, Any]) -> 
 
         output_paths = []
         for i, route in enumerate(routes):
-            route_gdf = ox.route_to_gdf(G, route)
+            route_gdf = _ox_route_to_gdf(G, route)
             out_path = Path(output_dir) / f"route_{i+1}.shp"
             out_path.parent.mkdir(parents=True, exist_ok=True)
             route_gdf.to_file(out_path)

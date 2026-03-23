@@ -71,8 +71,12 @@ def _write_key(name: str, value: str):
     (_KEY_DIR / name).write_text(value, encoding="utf-8")
 
 
-@st.cache_data(ttl=60)
 def _get_workspace_file_stats() -> dict:
+    """获取工作区文件统计（无缓存，每次调用都重新读取）"""
+    # 不使用缓存！因为文件列表可能随时更新
+    cid = st.session_state.get("active_conv_id")
+    if cid:
+        set_conversation_workspace(cid)
     files = list_workspace_files()
     stats = {}
     for fname in files:
@@ -299,18 +303,41 @@ def _render_charts_tab():
                 st.warning(f"栅格预览失败: {e}")
 
 
-def _get_conv_files(cid: str) -> list[Path]:
+def _get_conv_files(cid: str, include_all_types: bool = True) -> list[Path]:
     """
-    获取指定对话目录下的所有 GIS 文件
+    获取指定对话目录下的所有文件
+
+    Args:
+        cid: 对话ID
+        include_all_types: 是否包含所有支持的文件类型，False 则只返回 GIS 文件
     """
     base = _WORKSPACE_DIR / "conversation_files" / cid
     if not base.exists():
         return []
-    gis_exts = {".shp", ".json", ".geojson", ".gpkg", ".gjson",
-                ".tif", ".tiff", ".img", ".asc", ".rst", ".nc"}
+
+    if include_all_types:
+        # 所有支持的文件类型
+        all_exts = {
+            # GIS 文件
+            ".shp", ".json", ".geojson", ".gpkg", ".gjson",
+            ".tif", ".tiff", ".img", ".asc", ".rst", ".nc",
+            # 文档
+            ".pdf", ".docx", ".doc", ".txt", ".md", ".rtf",
+            # 表格
+            ".csv", ".xlsx", ".xls",
+            # 图片
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif",
+        }
+    else:
+        # 仅 GIS 文件
+        all_exts = {
+            ".shp", ".json", ".geojson", ".gpkg", ".gjson",
+            ".tif", ".tiff", ".img", ".asc", ".rst", ".nc",
+        }
+
     return sorted(
         f for f in base.iterdir()
-        if f.is_file() and f.suffix.lower() in gis_exts
+        if f.is_file() and f.suffix.lower() in all_exts
     )
 
 
@@ -755,9 +782,9 @@ def _render_sidebar():
             st.caption("上传文件到当前对话")
             uploaded = st.file_uploader(
                 "📤 上传 GIS 数据",
-                type=["shp", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
+                type=["zip", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
                 key=f"conv_file_uploader_{cid}_{st.session_state.get('_file_upload_key', 0)}",
-                help="上传的文件仅供当前对话使用",
+                help="支持 GeoJSON / GeoPackage / GeoTIFF 单文件上传；Shapefile 需打包为 .ZIP 后上传（含 .shp/.dbf/.shx 等）",
             )
             # 防止 file_uploader + rerun 死循环：用标志位跳过已处理的文件
             _upload_key = "_last_upload_check"
@@ -1747,17 +1774,37 @@ def _handle_user_message(prompt: str, agent):
     conv_files = _get_conv_files(cid)
     if conv_files:
         available_files = [f.name for f in conv_files]
+        # 获取文件详细情报
+        try:
+            from geoagent.layers.layer3_orchestrate import _build_workspace_profile_block
+            workspace_profile = _build_workspace_profile_block()
+        except Exception:
+            workspace_profile = ""
+        
         injected_ctx += (
             f"\n\n"
             f"【工作区文件动态清单】：{', '.join(available_files)}\n\n"
+        )
+        
+        # 注入详细情报（字段名/类型/样本）
+        if workspace_profile:
+            injected_ctx += (
+                f"【工作区文件详细情报（必须严格使用这些字段名）】\n"
+                f"{workspace_profile}\n\n"
+            )
+        
+        injected_ctx += (
             f"【参数提取铁律】\n"
             f"1. 当参数涉及「输入图层(layer/input_file)」时，请优先从上述清单中匹配真实文件名，"
-            f"如有必要自动补全 .shp/.geojson 等扩展名。\n"
+            f"如有必要自动补全 .shp/.geojson 等扩展名。例如「河流缓冲区」应使用工作区中的河流.shp文件，"
+            f"而不是尝试地理编码「河流」这个词！\n"
             f"2. 当参数涉及「搜索关键词(keyword/poi_name)」时，它是现实世界的实体（如'星巴克'、"
             f"'便利店'、'餐厅'），绝对不在文件清单中，请直接从用户原话中提取，"
             f"不要尝试从文件名列表中匹配！\n"
             f"3. 中心点(center_point/keywords)如果是地名词（如'静安寺'、'芜湖南站'），"
-            f"系统会自动地理编码，不需要用户显式提供坐标。"
+            f"系统会自动地理编码，不需要用户显式提供坐标。\n"
+            f"4. ⚠️【重要】文件名（如「河流.shp」）是工作区文件，不是真实世界的地名！"
+            f"绝对不要将文件名作为地理编码的输入，应该直接使用文件路径进行分析。"
         )
 
     prompt = prompt + injected_ctx
@@ -2013,7 +2060,28 @@ def _handle_user_message(prompt: str, agent):
                     _captured_events.append({"event": ev_type, **payload})
                     on_event(ev_type, payload)
 
-                result = agent_v2.run(prompt, event_callback=v2_event_callback)
+                # ── 获取当前对话的上传文件 ────────────────────────────────
+                files_to_process = []
+                if cid:
+                    conv_files = _get_conv_files(cid, include_all_types=True)
+                    for f in conv_files:
+                        files_to_process.append({
+                            "path": str(f),
+                            "filename": f.name,
+                            "conversation_id": cid,
+                        })
+
+                if files_to_process:
+                    _log("info", f"📎 检测到 {len(files_to_process)} 个上传文件，将一并处理")
+                    for fc in files_to_process:
+                        _log("info", f"   - {fc['filename']}")
+
+                # ── 执行 Pipeline（带文件）────────────────────────────────
+                result = agent_v2.run(
+                    prompt,
+                    files=files_to_process if files_to_process else None,
+                    event_callback=v2_event_callback,
+                )
 
                 # ── LLM 流式生成回复 ─────────────────────────────────────────
                 extracted_params = {
@@ -2026,14 +2094,25 @@ def _handle_user_message(prompt: str, agent):
                 llm_client = getattr(agent_v2, "_client", None)
                 llm_model = getattr(agent_v2, "model", None)
 
+                # ── 构建文件上下文 ───────────────────────────────────────────
+                file_context = ""
+                if files_to_process and result.context and result.context.user_input:
+                    user_input_obj = result.context.user_input
+                    if user_input_obj.file_contents:
+                        file_context = user_input_obj.file_contents.to_llm_context(
+                            max_text_length=2000,
+                            include_images_as_base64=True,
+                        )
+
                 if llm_client and llm_model and not stream_state.get("has_error"):
-                    system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求和系统分析结果，用简洁、专业的语言回复用户。
+                    system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求、系统分析结果和上传的文件内容，用简洁、专业的语言回复用户。
 
 回复要求：
 1. 使用中文
 2. 简洁明了，不超过200字
 3. 包含关键数据和结论
-4. 如有必要，给出下一步建议"""
+4. 如有必要，给出下一步建议
+5. 如果用户上传了文件，请结合文件内容进行回复"""
 
                     params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
                     user_message = f"""用户请求：{prompt}
@@ -2046,6 +2125,10 @@ def _handle_user_message(prompt: str, agent):
                     if result.metrics:
                         for k, v in list(result.metrics.items())[:5]:
                             user_message += f"\n- {k}: {v}"
+
+                    # 添加文件上下文
+                    if file_context:
+                        user_message += f"\n\n{file_context}"
 
                     user_message += "\n\n请生成简洁的回复："
 

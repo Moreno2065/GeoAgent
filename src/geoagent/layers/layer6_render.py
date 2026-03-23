@@ -201,6 +201,9 @@ class ResultRenderer:
         """
         渲染执行结果
 
+        注意：本层只做确定性格式化，不调用 LLM 润色。
+        L5 执行成功后，结果直接格式化输出，不再丢给 LLM 二次处理。
+
         Args:
             result: Executor 返回的结果
 
@@ -217,11 +220,34 @@ class ResultRenderer:
         return method(result)
 
     def _render_error(self, result: ExecutorResult) -> RenderResult:
-        """渲染错误结果"""
+        """
+        渲染错误结果 - 强制兜底，禁止调用 LLM 瞎猜
+
+        本方法直接返回固定错误模板，不调用任何 LLM 进行"润色"或"补充"。
+        这是防止空间幻觉（LLM 胡编地理数据）的关键防线。
+        """
+        # 强制兜底模板：明确告知用户计算失败，不给 LLM 瞎编的机会
+        error_template = (
+            "抱歉，分析过程中遇到问题无法完成计算。"
+            f"错误信息：{result.error}"
+            "如需帮助，请重新描述您的需求或检查输入数据。"
+        )
+
         return RenderResult(
             success=False,
-            summary=f"分析失败：{result.error}",
+            summary="分析失败",
             error=result.error,
+            conclusion=BusinessConclusion(
+                summary=error_template,
+                key_findings=[],
+                recommendations=[
+                    "请检查输入数据是否正确",
+                    "请尝试简化分析范围",
+                    "如问题持续，请联系管理员",
+                ],
+                data_quality="failed",
+                confidence="low",
+            ),
             raw_result=result.to_dict(),
         )
 

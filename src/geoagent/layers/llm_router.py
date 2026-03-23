@@ -3,21 +3,7 @@ LLMRouter - LLM 驱动的二次路由
 ================================
 当 L2 意图分类返回 "general"（无法识别为标准 GIS 场景）时，
 交给大模型做二次判断，决定是"闲聊"、"偏门计算"还是"垃圾输入"。
-
-架构定位：
-  L2 Intent Classifier → general → L3 Orchestrator
-                                              ↓
-                                    ┌─ LLMRouter ─┐
-                                    ↓              ↓
-                              闲聊回复       Sandbox 任务
-                                              ↓
-                                    ┌─ CodeSandboxExecutor
-
-设计原则：
-- LLM 只做"翻译/判断"，不做执行
-- 三种输出：闲聊文本 / JSON 指令 / 固定拒绝
-- Prompt 严格约束输出格式，temperature=0.0
-- LLM 不可用时优雅降级为拒绝提示
+增强：支持文件上下文注入。
 """
 
 from __future__ import annotations
@@ -25,9 +11,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from geoagent.layers.architecture import PipelineStatus, Scenario
+
+if TYPE_CHECKING:
+    from geoagent.file_processor import ContentContainer
 
 
 # =============================================================================
@@ -58,13 +47,17 @@ class LLMJudgement:
 
 
 # =============================================================================
-# Prompt 模板
+# Prompt 模板（增强：支持文件上下文）
 # =============================================================================
 
 ROUTING_SYSTEM_PROMPT = """\
 你是一个严格的 GIS 空间智能引擎的路由裁判。
 
-你的职责是判断用户输入属于哪一类：
+## 已知的工作区数据文件
+{workspace_files}
+
+## 用户上传的文件内容
+{file_contents}
 
 ## 三种判决（必须严格遵守）
 
@@ -82,9 +75,11 @@ ROUTING_SYSTEM_PROMPT = """\
 - 统计/聚合操作（求和、平均、计数）
 - 数据格式转换、坐标投影
 - 任何可以用 Python 代码计算的空间/数学问题
+- 从用户上传的文件中提取数据进行分析
 → 输出 JSON：
 ```json
-{{"task": "code_sandbox", "params": {{"code": "你要生成的 Python 代码"}}}}```
+{{"task": "code_sandbox", "params": {{"code": "你要生成的 Python 代码"}}}}
+```
 
 ### 判决3：REJECT（垃圾输入）
 如果用户明确在测试/攻击/乱输入：
@@ -102,9 +97,6 @@ ROUTING_SYSTEM_PROMPT = """\
 2. **如果用户提到了文件、数据、几何、坐标、面积、距离——几乎肯定需要 SANDBOX**
 3. **只有当输入明显是闲聊、问候、乱码时，才判定为 CHAT**
 4. **只有当输入明显是攻击性/垃圾/完全无关时，才判定为 REJECT**
-
-## 已知的工作区数据文件（辅助判断）
-{workspace_files}
 
 ## 输出格式要求
 
@@ -133,7 +125,7 @@ def _extract_json_from_response(raw: str) -> Optional[Dict[str, Any]]:
     从 LLM 响应中提取 JSON。
 
     容忍各种格式问题：
-    - markdown 包裹 ```json ... ```
+    - markdown 包裹 ```json ...
     - 前后有空格/换行
     - 多余的解释文字
     - 嵌套的 JSON
@@ -297,6 +289,9 @@ workspace 中的数据文件可通过 geopandas 读取：
 gdf = gpd.read_file("workspace/文件.shp")
 ```
 
+## 用户上传的文件内容
+{file_contents}
+
 ## 常见计算任务代码模板
 
 ### 1. 计算几何面积
@@ -345,7 +340,11 @@ result = {"mean": float(values.mean()), "std": float(values.std()), "count": len
 """
 
 
-def _generate_sandbox_code(user_input: str, workspace_files: List[str]) -> str:
+def _generate_sandbox_code(
+    user_input: str,
+    workspace_files: List[str],
+    file_contents: Optional["ContentContainer"] = None,
+) -> str:
     """
     为用户输入生成代码沙盒任务的 Python 代码。
 
@@ -357,6 +356,11 @@ def _generate_sandbox_code(user_input: str, workspace_files: List[str]) -> str:
     if not api_key:
         return ""
 
+    # 构建文件内容上下文
+    file_context = ""
+    if file_contents:
+        file_context = file_contents.to_llm_context()
+
     try:
         from openai import OpenAI
 
@@ -365,8 +369,9 @@ def _generate_sandbox_code(user_input: str, workspace_files: List[str]) -> str:
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         )
 
-        prompt = f"""\
-{SANDBOX_SYSTEM_PROMPT}
+        prompt = SANDBOX_SYSTEM_PROMPT.format(
+            file_contents=file_context or "(无上传文件)"
+        ) + f"""
 
 ## 用户需求
 
@@ -437,6 +442,7 @@ class LLMRouter:
     - 三种输出严格约束，temperature=0.0
     - LLM 不可用时优雅降级为拒绝提示
     - 代码生成也由同一 LLM 完成（CodeSandboxExecutor 执行）
+    - 支持文件上下文注入
 
     使用方式：
         router = LLMRouter()
@@ -449,21 +455,36 @@ class LLMRouter:
             print(judgement.chat_text)
     """
 
-    def __init__(self, workspace_files: Optional[List[str]] = None):
+    def __init__(
+        self,
+        workspace_files: Optional[List[str]] = None,
+        file_contents: Optional["ContentContainer"] = None,
+    ):
         """
         初始化 LLM 路由。
 
         Args:
             workspace_files: 工作区文件列表（用于 Prompt 上下文）
+            file_contents: 用户上传的文件内容（用于 Prompt 上下文）
         """
         self._workspace_files = workspace_files or _scan_workspace_files()
+        self._file_contents = file_contents
 
-    def judge(self, user_input: str) -> LLMJudgement:
+    def set_file_contents(self, file_contents: Optional["ContentContainer"]) -> None:
+        """设置文件内容上下文"""
+        self._file_contents = file_contents
+
+    def judge(
+        self,
+        user_input: str,
+        file_contents: Optional["ContentContainer"] = None,
+    ) -> LLMJudgement:
         """
         核心方法：让 LLM 判断用户输入的路由类型。
 
         Args:
             user_input: 用户原始输入
+            file_contents: 文件内容上下文（可选，会覆盖初始化时设置的内容）
 
         Returns:
             LLMJudgement 包含判决结果及相关数据
@@ -475,15 +496,16 @@ class LLMRouter:
                 raw_response=None,
             )
 
+        # 优先使用传入的文件内容，否则使用实例中保存的
+        fc = file_contents or self._file_contents
+
         # 检查 LLM 是否可用
         import os
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
         llm_disabled = os.getenv("GEOAGENT_DISABLE_LLM", "").lower() in ("1", "true", "yes")
 
         if not api_key or llm_disabled:
-            # LLM 不可用时的降级策略：
-            # 只有当输入明显是闲聊/问候时才走 CHAT，
-            # 其他都走 REJECT（保守策略）
+            # LLM 不可用时的降级策略
             text_lower = user_input.lower().strip()
             greetings = ["你好", "您好", "hi", "hello", "hey", "嗨", "哈喽"]
             if any(g in text_lower for g in greetings):
@@ -500,9 +522,18 @@ class LLMRouter:
                 error="LLM 不可用",
             )
 
-        # 构建 Prompt（注入工作区 Profile Block，让 LLM 精准知道文件字段）
+        # 关键修复：每次 judge() 调用时重新扫描工作区
+        # 确保获取最新的文件列表，而不是依赖单例创建时的旧快照
+        self._workspace_files = _scan_workspace_files()
+
+        # 构建 Prompt（注入文件上下文）
         workspace_context = "\n".join(f"- {f}" for f in self._workspace_files) \
             if self._workspace_files else "(无工作区文件)"
+
+        # 构建文件内容上下文
+        file_context = ""
+        if fc:
+            file_context = fc.to_llm_context()
 
         # 尝试导入 data_profiler 获取详细情报
         try:
@@ -511,14 +542,16 @@ class LLMRouter:
         except Exception:
             workspace_profile = ""
 
-        # 拼入 Prompt
-        prompt_base = ROUTING_SYSTEM_PROMPT.format(
-            workspace_files=workspace_context
+        # 填充 Prompt 模板
+        prompt = ROUTING_SYSTEM_PROMPT.format(
+            workspace_files=workspace_context,
+            file_contents=file_context or "(无上传文件)",
         )
-        if workspace_profile:
-            prompt_base += "\n\n## 工作区数据详细情报（字段名/类型/样本）：\n" + workspace_profile
 
-        prompt = prompt_base + f'\n\n用户输入："{user_input}"'
+        if workspace_profile:
+            prompt += "\n\n## 工作区数据详细情报（字段名/类型/样本）：\n" + workspace_profile
+
+        prompt += f'\n\n用户输入："{user_input}"'
 
         # 调用 LLM
         try:
@@ -532,21 +565,16 @@ class LLMRouter:
             )
 
         # 解析 LLM 响应
-        return self._parse_response(raw_response, user_input)
+        return self._parse_response(raw_response, user_input, fc)
 
     def _parse_response(
         self,
         raw_response: str,
         user_input: str,
+        file_contents: Optional["ContentContainer"] = None,
     ) -> LLMJudgement:
         """
         解析 LLM 响应，判断路由类型。
-
-        三种情况：
-        1. 纯文本 → CHAT
-        2. JSON with task="code_sandbox" → SANDBOX
-        3. JSON with task="reject" → REJECT
-        4. 无法解析 → 保守降级为 REJECT（不轻易放过危险输入）
         """
         if not raw_response:
             return LLMJudgement(
@@ -568,13 +596,14 @@ class LLMRouter:
                 # 如果 LLM 没有生成代码，尝试自己生成
                 if not _safe_get(params, "code"):
                     code = _generate_sandbox_code(
-                        user_input, self._workspace_files
+                        user_input,
+                        self._workspace_files,
+                        file_contents,
                     )
                     if code:
                         params["code"] = code
                         params["description"] = user_input
                     else:
-                        # 无法生成代码，降级为 REJECT
                         return LLMJudgement(
                             decision=RouteDecision.REJECT,
                             reject_reason="LLM 判定需要计算，但无法生成代码",
@@ -596,8 +625,7 @@ class LLMRouter:
                     confidence=0.90,
                 )
 
-        # 无法解析 JSON → 判定为 CHAT（LLM 直接输出了文本回复）
-        # 这是最常见的情况：闲聊、问候
+        # 无法解析 JSON → 判定为 CHAT
         return LLMJudgement(
             decision=RouteDecision.CHAT,
             chat_text=stripped,
@@ -612,13 +640,6 @@ class LLMRouter:
     ):
         """
         根据 LLM 判决构建 OrchestrationResult。
-
-        Args:
-            judgement: LLM 判决结果
-            event_callback: 事件回调（可选）
-
-        Returns:
-            OrchestrationResult
         """
         from geoagent.layers.layer3_orchestrate import OrchestrationResult
 
@@ -665,6 +686,7 @@ class LLMRouter:
         self,
         user_input: str,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        file_contents: Optional["ContentContainer"] = None,
     ):
         """
         一站式路由方法。
@@ -676,11 +698,12 @@ class LLMRouter:
         Args:
             user_input: 用户原始输入
             event_callback: 事件回调（可选）
+            file_contents: 文件内容上下文（可选）
 
         Returns:
             OrchestrationResult
         """
-        judgement = self.judge(user_input)
+        judgement = self.judge(user_input, file_contents)
         return self.build_orchestration_result(judgement, event_callback)
 
 
@@ -691,37 +714,48 @@ class LLMRouter:
 _router_instance: Optional[LLMRouter] = None
 
 
-def get_llm_router() -> LLMRouter:
-    """获取 LLMRouter 单例（全局复用，workspace 扫描只执行一次）"""
+def get_llm_router(
+    file_contents: Optional["ContentContainer"] = None,
+) -> LLMRouter:
+    """获取 LLMRouter 单例"""
     global _router_instance
     if _router_instance is None:
-        _router_instance = LLMRouter()
+        _router_instance = LLMRouter(file_contents=file_contents)
+    else:
+        # 更新文件内容
+        if file_contents:
+            _router_instance.set_file_contents(file_contents)
     return _router_instance
 
 
 def llm_route(
     user_input: str,
     event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    file_contents: Optional["ContentContainer"] = None,
 ):
     """
     便捷函数：对用户输入进行 LLM 驱动的二次路由。
 
     等价于：
-        router = get_llm_router()
-        return router.route(user_input, event_callback)
+        router = get_llm_router(file_contents)
+        return router.route(user_input, event_callback, file_contents)
 
     Args:
         user_input: 用户原始输入
         event_callback: 事件回调（可选）
+        file_contents: 文件内容上下文（可选）
 
     Returns:
         OrchestrationResult
     """
-    router = get_llm_router()
-    return router.route(user_input, event_callback)
+    router = get_llm_router(file_contents)
+    return router.route(user_input, event_callback, file_contents)
 
 
-def llm_judge(user_input: str) -> LLMJudgement:
+def llm_judge(
+    user_input: str,
+    file_contents: Optional["ContentContainer"] = None,
+) -> LLMJudgement:
     """
     便捷函数：仅做 LLM 判决，不构建 OrchestrationResult。
 
@@ -729,12 +763,13 @@ def llm_judge(user_input: str) -> LLMJudgement:
 
     Args:
         user_input: 用户原始输入
+        file_contents: 文件内容上下文（可选）
 
     Returns:
         LLMJudgement
     """
-    router = get_llm_router()
-    return router.judge(user_input)
+    router = get_llm_router(file_contents)
+    return router.judge(user_input, file_contents)
 
 
 __all__ = [

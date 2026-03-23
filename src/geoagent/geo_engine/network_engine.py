@@ -93,7 +93,10 @@ class NetworkEngine:
             if route is None:
                 return format_result(False, message="未找到有效路径")
 
-            route_gdf = ox.route_to_gdf(G, route)
+            from shapely.geometry import LineString
+            import geopandas as gpd
+            coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in route]
+            route_gdf = gpd.GeoDataFrame(geometry=[LineString(coords)], crs=G.graph.get('crs', 'EPSG:4326'))
 
             # 计算路径长度
             route_length = sum(

@@ -894,7 +894,19 @@ class ParameterExtractor:
         (r"方圆\s*(\d+(?:\.\d+)?)\s*(?:米|m)", "meters"),
         # 独立数字（语境判断：周边/缓冲/方圆 + 数字）
         (r"(?:周边|方圆|半径|范围|距离|缓冲)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)?", "meters"),
+        # 中文数字距离 - 扩展匹配
+        (r"([一二三四五六七八九十百千]+)\s*(?:公里|km)", "kilometers"),
+        (r"([一二三四五六七八九十百千]+)\s*(?:米|m)", "meters"),
+        (r"五百米", "meters"),  # 特殊处理
+        (r"一千米|一公里", "kilometers"),
     ]
+    
+    # 中文数字到阿拉伯数字的映射
+    CN_NUM_MAP = {
+        "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+        "百": 100, "千": 1000, "万": 10000,
+    }
 
     # ── 时间提取模式──────────────────────────────────────────────────
     TIME_PATTERNS = [
@@ -913,12 +925,51 @@ class ParameterExtractor:
         "cycling": ["骑行", "骑车", "bike", "cycling"],
     }
 
+    def _cn_to_num(self, text: str) -> Optional[float]:
+        """将中文数字转换为阿拉伯数字"""
+        if not text:
+            return None
+        total = 0
+        temp = 0
+        for char in text:
+            if char in self.CN_NUM_MAP:
+                val = self.CN_NUM_MAP[char]
+                if val >= 100:  # 百、千、万
+                    temp = temp * val if temp > 0 else val
+                    total += temp
+                    temp = 0
+                else:
+                    temp += val
+        return total + temp
+
     def extract_distance(self, query: str) -> Optional[Dict[str, Any]]:
         """从查询中提取距离参数"""
+        # 先检查特殊的中文距离表达（无捕获组的）
+        special_patterns = [
+            (r"五百米", 500.0, "meters"),
+            (r"一千米|一公里", 1000.0, "meters"),
+            (r"三百米", 300.0, "meters"),
+            (r"八百米", 800.0, "meters"),
+            (r"二百米", 200.0, "meters"),
+        ]
+        for pattern, value, unit in special_patterns:
+            if re.search(pattern, query):
+                return {"distance": value, "unit": unit}
+        
         for pattern, unit in self.DISTANCE_PATTERNS:
             match = re.search(pattern, query, re.IGNORECASE)
             if match:
-                value = float(match.group(1))
+                value_str = match.group(1) if match.lastindex else None
+                if value_str is None:
+                    continue
+                # 检查是否是中文数字
+                if any(c in self.CN_NUM_MAP for c in value_str):
+                    value = self._cn_to_num(value_str)
+                else:
+                    try:
+                        value = float(value_str)
+                    except ValueError:
+                        continue
                 if unit == "kilometers":
                     value *= 1000  # 转换为米
                     unit = "meters"
@@ -1482,7 +1533,6 @@ class ParameterExtractor:
                     if cleaned.endswith(suffix):
                         cleaned = cleaned[:-len(suffix)].strip()
                 # 提取 "XXX周围" 或 "在XXX" 模式
-                import re
                 patterns = [
                     r"在(.+?)周围",
                     r"在(.+?)附近",
@@ -1563,22 +1613,95 @@ class ParameterExtractor:
                 params["center_point"] = params.get("coordinates")
             else:
                 # 简单直接：从 query 中提取地点名
-                # 模式：XXX周围、XXX附近、下载XXX的地图
-                # 清理常见前缀和后缀词
+                # 策略：使用贪婪匹配，直接提取第一个有意义的中文地点名
+                import re as re_module
+                
                 cleaned = query
-                for prefix in ["用osm下载", "osm下载", "下载osm", "下载地图", "抓取地图", "下载"]:
+                
+                # 清理前缀动作词
+                prefixes_to_remove = [
+                    "用osm", "osm", "用openstreetmap", "openstreetmap", "用 open street map",
+                    "下载osm", "下载openstreetmap", "下载openstreetmap",
+                    "下载", "抓取", "生成", "获取", "导出",
+                    "download osm", "download openstreetmap", "fetch osm",
+                ]
+                for prefix in prefixes_to_remove:
                     if cleaned.startswith(prefix):
                         cleaned = cleaned[len(prefix):].strip()
-                for suffix in ["周围的地图", "附近的地图", "周边的地图", "的地图", "地图", "周围的osm"]:
-                    if cleaned.endswith(suffix):
-                        cleaned = cleaned[:-len(suffix)].strip()
-                if cleaned:
-                    params["center_point"] = cleaned
+                
+                # 提取第一个连续的中文片段（通常是地点名）
+                # 贪婪匹配，找到第一个包含地点的片段
+                match = re_module.search(r'([\u4e00-\u9fff]{2,8}?)(?:五百米|五百|500米|500|米|范围|地图|data|osm|周边|周围|附近|$)', cleaned)
+                if match:
+                    center_name = match.group(1)
+                    # 清理末尾的动作词
+                    for suffix in ["下载", "抓取", "生成", "获取", "导出", "地图"]:
+                        if center_name.endswith(suffix):
+                            center_name = center_name[:-len(suffix)]
+                    # 清理末尾数字
+                    center_name = re_module.sub(r'\d+$', '', center_name).strip()
+                    if center_name and len(center_name) >= 2:
+                        params["center_point"] = center_name
+                
+                # 如果上面方法失败，使用备用方法
+                if "center_point" not in params:
+                    # 直接从查询中找第一个2-6个字符的中文词（排除动作词）
+                    all_chinese = re_module.findall(r'[\u4e00-\u9fff]+', cleaned)
+                    action_chinese = ["下载", "抓取", "生成", "获取", "导出", "地图", "范围内", "附近", "周边", "周围"]
+                    for word in all_chinese:
+                        if len(word) >= 2 and len(word) <= 8:
+                            if not any(word.startswith(a) for a in action_chinese):
+                                params["center_point"] = word
+                                break
+                    # 回退：直接清理前后缀
+                    for prefix in [
+                        "用osm下载", "osm下载", "下载osm", "下载地图", "抓取地图", "下载",
+                        "生成", "获取", "抓取", "导出",
+                        "openstreetmap", "open street map", "osm",
+                    ]:
+                        if cleaned.startswith(prefix):
+                            cleaned = cleaned[len(prefix):].strip()
+                    
+                    for suffix in [
+                        "周围的地图", "附近的地图", "周边的地图", "的地图", "地图", "周围的osm",
+                        "osm地图", "osm下载", "osm数据", "osm",
+                        "范围内", "范围内地图", "内范围",
+                        "500米内", "500米范围", "500米范围内的地图", "五百米内", "五百米范围",
+                        "500米内范围内的地图", "范围内的地图", "500米地图",
+                        "米范围内的地图", "米范围地图", "米地图",
+                        "周边", "周围", "附近", "的周边", "的周围", "的附近",
+                        "的数据", "数据", "500米的数据", "500米数据",
+                    ]:
+                        if cleaned.endswith(suffix):
+                            cleaned = cleaned[:-len(suffix)].strip()
+                    
+                    # 清理数字和特殊字符结尾
+                    cleaned = re_module.sub(r'\d+\s*$', '', cleaned).strip()
+                    cleaned = re_module.sub(r'\d+米', '', cleaned).strip()
+                    cleaned = re_module.sub(r'^\s*[\d\s,，]+', '', cleaned).strip()
+                    cleaned = re_module.sub(r'\s*[°NSEWnsew]\s*[,，]?\s*', ',', cleaned).strip()
+                    cleaned = re_module.sub(r'^[,，\s]+|[,，\s]+$', '', cleaned)
+                    
+                    if cleaned:
+                        params["center_point"] = cleaned
             
-            # 距离信息（半径）
+            # 距离信息（半径）- 扩展支持更多格式
             distance_info = params.get("distance_info")
             if distance_info:
                 params["radius"] = distance_info.get("distance")
+            else:
+                # 备用：直接匹配中文数字和特定格式
+                # "五百米" -> 500
+                cn_patterns = [
+                    ("五百米", 500), ("五百米内", 500), ("五百米范围", 500), ("五百米范围内的地图", 500),
+                    ("一千米", 1000), ("一公里", 1000), ("一千米内", 1000),
+                    ("三百米", 300), ("八百米", 800), ("二百米", 200),
+                ]
+                for cn, num in cn_patterns:
+                    if cn in query:
+                        params["radius"] = num
+                        break
+            
             # 数据类型
             if "路网" in query or "network" in query.lower() or "道路" in query:
                 if "建筑" in query:
@@ -1587,6 +1710,9 @@ class ParameterExtractor:
                     params["data_type"] = "network"
             elif "建筑" in query:
                 params["data_type"] = "building"
+            # 默认下载所有数据（路网+建筑）
+            if "data_type" not in params:
+                params["data_type"] = "all"
             # 网络类型
             if "步行" in query or "walk" in query.lower():
                 params["network_type"] = "walk"
@@ -1594,6 +1720,9 @@ class ParameterExtractor:
                 params["network_type"] = "bike"
             elif "驾车" in query or "drive" in query.lower() or "开车" in query:
                 params["network_type"] = "drive"
+            else:
+                # 默认步行网络（更适合显示地图）
+                params["network_type"] = "walk"
 
         return params
 
@@ -1619,7 +1748,6 @@ class ParameterExtractor:
             "query_text": "...",             # 原始查询
           }
         """
-        import re
         import os
 
         result: Dict[str, Any] = {

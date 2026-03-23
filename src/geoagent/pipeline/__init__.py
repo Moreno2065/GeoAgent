@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Callable, Generator
+from typing import Dict, Any, List, Optional, Callable, Generator
 from enum import Enum
 
 from geoagent.layers.architecture import (
@@ -305,6 +305,7 @@ class GeoAgentPipeline:
     def run(
         self,
         text: str,
+        files: Optional[List[Dict[str, Any]]] = None,
         context: Optional[Dict[str, Any]] = None,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> PipelineResult:
@@ -321,6 +322,10 @@ class GeoAgentPipeline:
 
         Args:
             text: 用户输入的自然语言
+            files: 上传的文件列表，每个元素为 Dict，包含：
+                   - path: 文件路径（必需）
+                   - filename: 文件名（可选）
+                   - conversation_id: 对话ID（可选，用于组织文件）
             context: 上下文信息
             event_callback: 事件回调
 
@@ -331,7 +336,20 @@ class GeoAgentPipeline:
 
         try:
             # ── 第1层：用户输入 ────────────────────────────────────────
-            user_input = self._input_parser.parse_text(text)
+            # 处理文件上传（如果提供了 files 参数）
+            if files and len(files) > 0:
+                file_paths = [f.get("path", "") for f in files if f.get("path")]
+                if file_paths:
+                    user_input = self._input_parser.parse_file_with_content(
+                        text,
+                        file_paths,
+                        session_id=files[0].get("conversation_id") if files else None,
+                    )
+                else:
+                    user_input = self._input_parser.parse_text(text)
+            else:
+                user_input = self._input_parser.parse_text(text)
+            
             ctx.user_input = user_input
             ctx.status = PipelineStatus.INPUT_RECEIVED
 
@@ -339,6 +357,8 @@ class GeoAgentPipeline:
                 event_callback("input_received", {
                     "text": text,
                     "source": user_input.source.value,
+                    "has_files": user_input.has_files(),
+                    "file_count": len(user_input.uploaded_files) if user_input.uploaded_files else 0,
                 })
 
             # ── 第2层：意图分类 ────────────────────────────────────────
@@ -509,10 +529,16 @@ class GeoAgentPipeline:
     def run_stream(
         self,
         text: str,
+        files: Optional[List[Dict[str, Any]]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         流式运行 Pipeline
+
+        Args:
+            text: 用户输入的自然语言
+            files: 上传的文件列表
+            context: 上下文信息
 
         Yields:
             各阶段的事件和最终结果
@@ -524,7 +550,7 @@ class GeoAgentPipeline:
             for item in callback(event_type, payload):
                 yield item
 
-        result = self.run(text, context)
+        result = self.run(text, files=files, context=context)
         yield {"event": "complete", **result.to_dict()}
 
 
@@ -545,6 +571,7 @@ def get_pipeline() -> GeoAgentPipeline:
 
 def run_pipeline(
     text: str,
+    files: Optional[List[Dict[str, Any]]] = None,
     context: Optional[Dict[str, Any]] = None,
     event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> PipelineResult:
@@ -556,11 +583,16 @@ def run_pipeline(
     使用方式：
         from geoagent.pipeline import run_pipeline
 
+        # 仅文本输入
         result = run_pipeline("芜湖南站到方特的步行路径")
         print(result.to_user_text())
+
+        # 带文件输入
+        files = [{"path": "/path/to/document.pdf"}]
+        result = run_pipeline("分析这个文档", files=files)
     """
     pipeline = get_pipeline()
-    return pipeline.run(text, context, event_callback)
+    return pipeline.run(text, files=files, context=context, event_callback=event_callback)
 
 
 def run_pipeline_mvp(

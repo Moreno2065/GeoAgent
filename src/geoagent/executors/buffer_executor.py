@@ -5,13 +5,19 @@ BufferExecutor - 缓冲区分析执行器
 - GeoPandas（主力，轻量 + 免费 + 易部署）
 - ArcPy（可选，用于 ArcGIS 桌面环境）
 
+【智能地点检测】：
+- 自动识别"地点+距离"模式（如"天安门周围500米"、"XX 1公里范围"）
+- 无需显式关键词，自动从 OSM 下载真实地图数据
+- 支持地理编码 + OSM 下载的一体化流程
+
 设计原则：全部 → 通过 Executor 调用，不让库互相调用
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
 
@@ -25,6 +31,11 @@ class BufferExecutor(BaseExecutor):
     - engine="arcpy" → ArcPy Buffer_analysis
     - engine="auto" → 优先 GeoPandas
 
+    【智能地点检测】：
+    - 自动识别地点名称（通过地理编码获取坐标）
+    - 自动从 OSM 下载该地点的真实地图数据
+    - 对下载的数据执行缓冲区分析
+
     GeoPandas 优势：轻量、免费、易部署
     ArcPy 优势：功能最全（融合选项/多距离缓冲区等）
     """
@@ -32,14 +43,48 @@ class BufferExecutor(BaseExecutor):
     task_type = "buffer"
     supported_engines = {"geopandas", "arcpy", "auto"}
 
+    # ── 地点+距离模式识别正则 ─────────────────────────────────────────────
+    # 匹配 "XX周围Y米"、"XX Y米范围"、"XX Y公里内" 等模式
+    # 支持中英文格式
+    PLACE_DISTANCE_PATTERNS = [
+        # XX周围Y米 / XX周围Y公里 / around XX Ym / around XX Ykm
+        r"(.+?)周围\s*(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)?",
+        r"around\s+(.+?)\s+(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)?",
+        # 500m around Tiananmen / 500m around XX
+        r"(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)\s+around\s+(.+)",
+        # XX Y米范围 / XX Y公里范围 / XX Ym range
+        r"(.+?)[\s,，]+(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)?\s*范围",
+        r"(.+?)\s+(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)?\s*range",
+        # XX Y米内 / XX Y公里内 / XX Ym within
+        r"(.+?)[\s,，]+(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)?\s*(?:以内?|范围内?|之内?)",
+        r"(.+?)\s+(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)?\s*(?:within|in|inside)",
+        # XX方圆Y米 / XX方圆Y公里
+        r"(.+?)方圆\s*(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)?",
+        # XX附近Y米 / XX Y米附近
+        r"(.+?)附近\s*(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)?",
+        r"(.+?)\s+(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)?\s*nearby",
+        # XX Y米 / XX Y公里（纯距离，地点+距离）
+        r"^(.+?)[\s,，]+(\d+(?:\.\d+)?)\s*(米|m|公里|km|千米)$",
+        # XX Ym / XX Ykm
+        r"^(.+?)\s+(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)$",
+    ]
+
+    # 地点类型关键词（用于判断数据类型）
+    PLACE_TYPE_KEYWORDS = {
+        "water": ["河", "湖", "海", "江", "池", "渠", "water", "river", "lake", "sea"],
+        "network": ["路", "街", "道", "高速", "铁路", "轨道", "road", "street", "highway", "railway"],
+        "building": ["建筑", "楼", "房", "小区", "building", "house"],
+        "poi": ["学校", "医院", "超市", "银行", "商场", "餐厅", "酒店", "park"],
+    }
+
     def run(self, task: Dict[str, Any]) -> ExecutorResult:
         """
         执行缓冲区分析
 
         Args:
             task: 包含以下字段的字典：
-                - input_layer: 输入矢量文件路径
-                - distance: 缓冲距离
+                - input_layer: 输入矢量文件路径 或 "地点+距离" 文本
+                - distance: 缓冲距离（当 input_layer 为文本时会被自动解析）
                 - unit: "meters" | "kilometers" | "degrees"
                 - dissolve: 是否融合（布尔）
                 - cap_style: "round" | "square" | "flat"
@@ -108,10 +153,215 @@ class BufferExecutor(BaseExecutor):
         stem = Path(input_layer).stem
         return self._resolve_path(f"{stem}_buffer.shp")
 
+    def _parse_place_and_distance(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        解析"地点+距离"文本模式。
+
+        自动识别：
+        - "天安门周围500米"
+        - "XX 1公里范围"
+        - "XX 附近500米"
+        - "500m around Tiananmen"
+
+        Args:
+            text: 用户输入的文本
+
+        Returns:
+            {"place": "地点名", "distance": 距离值, "unit": "meters"|"kilometers"}
+            如果无法解析，返回 None
+        """
+        text = text.strip()
+
+        for pattern in self.PLACE_DISTANCE_PATTERNS:
+            match = re.search(pattern, text)
+            if match:
+                groups = match.groups()
+                if len(groups) >= 2:
+                    # 检测是否是 "500m around Tiananmen" 格式
+                    # 这种格式的 groups = (距离, 单位, 地点)
+                    if pattern == r"(\d+(?:\.\d+)?)\s*(m|meters?|km|kilometers?)\s+around\s+(.+)":
+                        distance_str = groups[0]
+                        unit_str = groups[1]
+                        place = groups[2].strip()
+                    else:
+                        # 其他格式: (地点, 距离, 单位)
+                        place = groups[0].strip()
+                        distance_str = groups[1]
+                        unit_str = groups[2] if len(groups) > 2 else "米"
+
+                    # 跳过纯数字输入
+                    if not place or place.isdigit():
+                        continue
+
+                    # 解析距离
+                    try:
+                        distance = float(distance_str)
+                    except ValueError:
+                        continue
+
+                    # 解析单位
+                    if unit_str and any(u in unit_str for u in ["公里", "km", "千米"]):
+                        unit = "kilometers"
+                        distance = distance * 1000  # 转换为米
+                    else:
+                        unit = "meters"
+
+                    # 地点名至少1个字符
+                    if len(place) < 1:
+                        continue
+
+                    return {
+                        "place": place,
+                        "distance": distance,
+                        "unit": unit,
+                    }
+
+        return None
+
+    def _geocode_place(self, place_name: str) -> Optional[Tuple[float, float]]:
+        """
+        将地名解析为坐标（lng, lat）
+
+        优先级：
+        1. 高德 API
+        2. Nominatim（OSM 免费 API）
+
+        Returns:
+            (lng, lat) 或 None
+        """
+        # 方案1：高德 API
+        try:
+            from geoagent.plugins.amap_plugin import geocode as amap_geocode
+
+            result = amap_geocode(place_name)
+            if result and result.get("lon") and result.get("lat"):
+                return (float(result["lon"]), float(result["lat"]))
+        except Exception:
+            pass
+
+        # 方案2：Nominatim
+        try:
+            from geopy.geocoders import Nominatim
+            from geopy.extra.rate_limiter import RateLimiter
+
+            geolocator = Nominatim(user_agent="GeoAgent-BufferExecutor")
+            geocode_fn = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+            location = geocode_fn(place_name, language="zh")
+            if location:
+                return (location.longitude, location.latitude)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        return None
+
+    def _infer_data_type(self, place_name: str) -> str:
+        """
+        根据地点名称推断数据类型（河流/道路/建筑等）
+
+        Args:
+            place_name: 地点名称
+
+        Returns:
+            "water" | "network" | "building" | "all"
+        """
+        name_lower = place_name.lower()
+
+        # 检查关键词
+        for dtype, keywords in self.PLACE_TYPE_KEYWORDS.items():
+            for kw in keywords:
+                if kw in name_lower:
+                    return dtype
+
+        # 无法推断，返回 "all"（下载所有类型）
+        return "all"
+
+    def _download_osm_data(
+        self,
+        place_name: str,
+        coords: Tuple[float, float],
+        distance: float
+    ) -> Optional["gpd.GeoDataFrame"]:
+        """
+        从 OSM 下载指定地点周围的真实地图数据。
+
+        Args:
+            place_name: 地点名称（用于保存文件名）
+            coords: (lng, lat) 坐标
+            distance: 下载半径（米）
+
+        Returns:
+            GeoDataFrame 或 None
+        """
+        try:
+            import geopandas as gpd
+            import osmnx as ox
+
+            lng, lat = coords
+            ox.settings.use_cache = True
+            ox.settings.log_console = False
+
+            # 推断数据类型
+            data_type = self._infer_data_type(place_name)
+
+            geometries = []
+
+            # 根据类型下载数据
+            if data_type in ("network", "all"):
+                try:
+                    G = ox.graph_from_point((lat, lng), dist=distance, network_type="walk")
+                    nodes, edges = ox.graph_to_gdfs(G)
+                    geometries.append(edges)
+                except Exception:
+                    pass
+
+            if data_type in ("building", "all"):
+                try:
+                    tags = {"building": True}
+                    buildings = ox.features_from_point((lat, lng), tags, dist=distance)
+                    if not buildings.empty:
+                        geometries.append(buildings)
+                except Exception:
+                    pass
+
+            if data_type == "water":
+                try:
+                    water_tags = [
+                        {"waterway": "river"},
+                        {"natural": "water"},
+                        {"water": "lake"},
+                    ]
+                    for tags in water_tags:
+                        features = ox.features_from_point((lat, lng), tags, dist=distance)
+                        if not features.empty:
+                            valid = features[features.geometry.type.isin(
+                                ["LineString", "Polygon", "MultiLineString", "MultiPolygon"]
+                            )]
+                            if not valid.empty:
+                                geometries.append(valid)
+                except Exception:
+                    pass
+
+            if not geometries:
+                return None
+
+            # 合并所有几何
+            gdf = gpd.GeoDataFrame(pd.concat(geometries, ignore_index=True))
+            gdf = gdf.to_crs("EPSG:4326")
+
+            return gdf
+
+        except ImportError:
+            return None
+        except Exception:
+            return None
+
     def _run_geopandas(self, task: Dict[str, Any]) -> ExecutorResult:
         """GeoPandas 缓冲区（主力引擎）"""
         try:
             import geopandas as gpd
+            import pandas as pd
             from shapely.ops import unary_union
             from shapely.geometry import CAP_STYLE, JOIN_STYLE, Point
 
@@ -137,75 +387,131 @@ class BufferExecutor(BaseExecutor):
             }
             cap = cap_map.get(cap_style_str, CAP_STYLE.round)
 
-            # ── 核心修复：判断 input_layer 是文件还是地名词 ──────────────────
-            input_layer_val = input_layer
+            # ── 核心逻辑：判断输入类型 ─────────────────────────────────────
+            # 1. 尝试作为文件路径查找
+            found_path = self._find_local_file(input_layer)
 
-            def _find_file(name: str) -> Path | None:
-                """在当前 workspace 和主 workspace 中查找文件，支持 .shp 后缀自动补全"""
-                # 1. 优先在主 workspace 中查找（无条件，.shp 文件主要存于此）
-                base_ws = Path(__file__).resolve().parents[3] / "workspace"
-                candidates = [
-                    base_ws / name,
-                    base_ws / f"{name}.shp",
-                ]
-                for p in candidates:
-                    if p.exists():
-                        return p
+            if found_path:
+                # 找到了本地文件
+                gdf = gpd.read_file(str(found_path))
+                source_label = f"本地文件「{input_layer}」"
+                print(f"[DEBUG] 使用本地文件: {found_path}")
 
-                # 2. 在当前 workspace（可能是对话目录）中查找
-                curr_ws = self._resolve_path(name)
-                curr = Path(curr_ws)
-                if curr.exists():
-                    return curr
-
-                # 3. 当前 workspace + .shp 后缀
-                if not name.lower().endswith(".shp"):
-                    shp_curr = self._resolve_path(f"{name}.shp")
-                    if Path(shp_curr).exists():
-                        return Path(shp_curr)
-
-                return None
-
-            found_path = _find_file(input_layer_val)
-
-            if found_path is None:
-                # 本地找不到文件 → 尝试在线下载数据（河流/道路等要素类型）
-                from geoagent.executors.file_fallback_handler import FileFallbackHandler
-                
-                handler = FileFallbackHandler(workspace=Path("workspace"))
-                # 先尝试推断数据类型（河流/道路/建筑等）
-                data_type = handler.guess_data_type(input_layer_val, "buffer")
-                
-                if data_type != "unknown":
-                    # 尝试从在线数据源下载
-                    online_path = handler.try_online_fallback(input_layer_val, "buffer")
-                    if online_path:
-                        gdf = gpd.read_file(online_path)
-                        source_label = f"在线数据「{input_layer_val}」（{data_type}）"
-                    else:
-                        # 下载失败 → 回退到地名词查询
-                        gdf = self._build_point_from_place(input_layer_val)
-                        source_label = f"地名词「{input_layer_val}」"
-                else:
-                    # 无法推断类型 → 回退到地名词查询
-                    gdf = self._build_point_from_place(input_layer_val)
-                    source_label = f"地名词「{input_layer_val}」"
             else:
-                input_path = str(found_path)
-                print(f"[DEBUG] _run_geopandas: input_layer_val={input_layer_val!r}, found_path={input_path!r}, exists={Path(input_path).exists()}")
-                gdf = gpd.read_file(input_path)
-                source_label = input_layer_val
+                # 2. 尝试解析"地点+距离"模式
+                parsed = self._parse_place_and_distance(input_layer)
 
-            # 确定坐标系：优先使用投影坐标系
-            crs = gdf.crs
+                if parsed:
+                    place_name = parsed["place"]
+                    # 如果 task 中没有指定距离，使用解析出的距离
+                    if distance <= 0:
+                        distance = parsed["distance"]
+                        unit = parsed["unit"]
 
-            # 单位转换
-            if crs and crs.to_epsg() != 3857:
-                # 有 CRS 且非 Web Mercator，尝试转换
-                if crs.to_epsg() == 4326 and unit in ("meters", "kilometers"):
-                    # 地理坐标系下需要先投影
-                    gdf_proj = gdf.to_crs(epsg=3857)
+                    print(f"[DEBUG] 检测到地点+距离模式: place={place_name}, distance={distance}米")
+
+                    # 地理编码获取坐标
+                    coords = self._geocode_place(place_name)
+                    if coords:
+                        print(f"[DEBUG] 地理编码成功: {place_name} -> {coords}")
+
+                        # 推断数据类型
+                        data_type = self._infer_data_type(place_name)
+                        print(f"[DEBUG] 推断数据类型: {data_type}")
+
+                        # 从 OSM 下载真实数据
+                        # 使用更大的半径下载原始数据，再用指定距离做缓冲区
+                        download_radius = max(int(distance * 2), 1000)  # 至少下载1km
+                        osm_gdf = self._download_osm_data(place_name, coords, download_radius)
+
+                        if osm_gdf is not None and len(osm_gdf) > 0:
+                            print(f"[DEBUG] OSM 下载成功: {len(osm_gdf)} 个要素")
+                            gdf = osm_gdf
+                            source_label = f"在线数据「{place_name}」（{data_type}）"
+                        else:
+                            # OSM 下载失败，降级到点缓冲区
+                            print(f"[WARN] OSM 下载失败，降级到点缓冲区")
+                            point = Point(coords[0], coords[1])
+                            gdf = gpd.GeoDataFrame(
+                                {"name": [place_name]},
+                                geometry=[point],
+                                crs="EPSG:4326"
+                            )
+                            source_label = f"地名词「{place_name}」（降级为点）"
+                    else:
+                        # 地理编码失败，降级到点缓冲区
+                        print(f"[WARN] 地理编码失败: {place_name}")
+                        return ExecutorResult.err(
+                            self.task_type,
+                            f"无法定位「{place_name}」的位置。"
+                            f"请确认地点名称正确，或上传包含该要素的矢量文件。",
+                            engine="geopandas"
+                        )
                 else:
+                    # 3. 无法解析为"地点+距离"，尝试直接作为地点名处理
+                    print(f"[DEBUG] 无法解析地点+距离模式，尝试作为地名处理: {input_layer}")
+
+                    coords = self._geocode_place(input_layer)
+                    if coords:
+                        print(f"[DEBUG] 地理编码成功: {input_layer} -> {coords}")
+                        point = Point(coords[0], coords[1])
+                        gdf = gpd.GeoDataFrame(
+                            {"name": [input_layer]},
+                            geometry=[point],
+                            crs="EPSG:4326"
+                        )
+                        source_label = f"地名词「{input_layer}」"
+                    else:
+                        # 地理编码也失败，返回错误
+                        return ExecutorResult.err(
+                            self.task_type,
+                            f"无法识别「{input_layer}」。"
+                            f"请：1) 上传矢量文件到 workspace；2) 使用有效的地点名称（如「天安门」）；3) 或使用「XX周围500米」格式。",
+                            engine="geopandas"
+                        )
+
+            # ── CRS 处理：智能推断 + 安全转换 ───────────────────────────────────
+            crs = gdf.crs
+            original_crs = crs
+            
+            # 如果没有 CRS，尝试基于坐标值智能推断
+            if crs is None:
+                bounds = gdf.total_bounds
+                minx, miny, maxx, maxy = bounds
+                
+                # 判断是否是经纬度坐标（WGS84 范围）
+                is_wgs84 = (
+                    -180 <= minx <= 180 and -180 <= maxx <= 180 and
+                    -90 <= miny <= 90 and -90 <= maxy <= 90
+                )
+                
+                if is_wgs84:
+                    crs = "EPSG:4326"
+                    gdf = gdf.set_crs(crs, allow_override=True)
+                    print(f"[DEBUG] 无 CRS 元数据，基于坐标值推断为 {crs}")
+                else:
+                    # 投影坐标，假设为 Web Mercator 或本地投影
+                    crs = "EPSG:3857"
+                    gdf = gdf.set_crs(crs, allow_override=True)
+                    print(f"[DEBUG] 无 CRS 元数据，基于坐标值推断为 {crs}")
+            
+            print(f"[DEBUG] 输入 CRS: {crs}")
+            
+            # 单位转换：经纬度坐标系需要投影到米制坐标系才能做缓冲区
+            if crs.to_epsg() == 4326 and unit in ("meters", "kilometers"):
+                gdf_proj = gdf.to_crs(epsg=3857)
+                print(f"[DEBUG] 从 EPSG:4326 投影到 EPSG:3857 以支持米制缓冲区")
+            elif crs is not None and crs.to_epsg() not in (3857, None):
+                # 其他投影坐标系，检查是否需要转换
+                try:
+                    crs_epsg = crs.to_epsg()
+                    if crs_epsg and unit in ("meters", "kilometers"):
+                        # 尝试转换到 Web Mercator
+                        gdf_proj = gdf.to_crs(epsg=3857)
+                        print(f"[DEBUG] 从 EPSG:{crs_epsg} 投影到 EPSG:3857")
+                    else:
+                        gdf_proj = gdf
+                except Exception:
                     gdf_proj = gdf
             else:
                 gdf_proj = gdf
@@ -213,25 +519,35 @@ class BufferExecutor(BaseExecutor):
             # 单位处理
             if unit == "kilometers":
                 buffer_dist = distance * 1000.0
-            elif unit == "degrees":
-                buffer_dist = distance  # Shapely 直接用度
             else:
-                buffer_dist = distance  # meters
+                buffer_dist = distance
+
+            print(f"[DEBUG] 输入要素数量: {len(gdf)}")
+            print(f"[DEBUG] 几何类型: {gdf.geometry.geom_type.value_counts().to_dict()}")
+            print(f"[DEBUG] 缓冲区距离: {buffer_dist} {unit}")
+            print(f"[DEBUG] 是否融合: {dissolve}")
 
             # 执行缓冲区
             dissolved_parts = []
             if dissolve:
-                # 融合模式：逐个做 buffer 然后合并
-                for geom in gdf_proj.geometry:
-                    dissolved_parts.append(geom.buffer(buffer_dist, cap_style=cap))
+                # 融合模式：为每个几何创建缓冲区，然后合并
+                for i, geom in enumerate(gdf_proj.geometry):
+                    buffered = geom.buffer(buffer_dist, cap_style=cap)
+                    dissolved_parts.append(buffered)
+                    print(f"[DEBUG] 要素 {i+1} 缓冲区创建完成")
+                
                 if dissolved_parts:
                     merged = unary_union(dissolved_parts)
                     result_gdf = gpd.GeoDataFrame(geometry=[merged], crs=gdf_proj.crs)
+                    print(f"[DEBUG] {len(dissolved_parts)} 个要素已融合为 1 个几何")
                 else:
                     result_gdf = gdf_proj.copy()
+                    print(f"[DEBUG] 无几何可融合，保留原始数据")
             else:
+                # 非融合模式：保留每个要素的独立缓冲区
                 result_gdf = gdf_proj.copy()
                 result_gdf["geometry"] = result_gdf.geometry.buffer(buffer_dist, cap_style=cap)
+                print(f"[DEBUG] 保留 {len(result_gdf)} 个独立缓冲区要素")
 
             # 转换回原始 CRS
             crs = gdf.crs
@@ -258,13 +574,17 @@ class BufferExecutor(BaseExecutor):
                     "dissolve": dissolve,
                     "cap_style": cap_style_str,
                     "feature_count": len(result_gdf),
+                    "input_feature_count": len(gdf),
                     "crs": str(crs) if crs else "unknown",
+                    "original_crs": str(original_crs) if original_crs else "None (was inferred)",
                     "output_path": output_path,
                 },
                 meta={
                     "driver": driver,
                     "engine_used": "GeoPandas + Shapely",
                     "projected_crs": str(result_gdf.crs) if result_gdf.crs else None,
+                    "geometry_types": gdf.geometry.geom_type.value_counts().to_dict(),
+                    "output_geometry_type": result_gdf.geometry.geom_type.iloc[0] if len(result_gdf) > 0 else None,
                 }
             )
 
@@ -274,6 +594,49 @@ class BufferExecutor(BaseExecutor):
                 f"GeoPandas 缓冲区分析失败: {str(e)}",
                 engine="geopandas"
             )
+
+    def _find_local_file(self, name: str) -> Optional[Path]:
+        """
+        查找本地文件。
+
+        搜索顺序：
+        1. 主 workspace（无条件）
+        2. 主 workspace 子目录递归
+        3. 当前对话 workspace
+
+        Args:
+            name: 文件名
+
+        Returns:
+            Path 或 None
+        """
+        base_ws = Path(__file__).resolve().parents[3] / "workspace"
+        name_stem = Path(name).stem.lower()
+
+        # 1. 精确匹配
+        for candidate in [base_ws / name, base_ws / f"{name}.shp"]:
+            if candidate.exists():
+                return candidate
+
+        # 2. 主 workspace 递归搜索
+        if base_ws.exists():
+            for p in base_ws.rglob("*.shp"):
+                if p.stem.lower() == name_stem.lower():
+                    return p
+
+        # 3. 当前 workspace
+        curr_ws = self._resolve_path(name)
+        curr = Path(curr_ws)
+        if curr.exists():
+            return curr
+
+        # 4. 当前 workspace + .shp
+        if not name.lower().endswith(".shp"):
+            shp_curr = self._resolve_path(f"{name}.shp")
+            if Path(shp_curr).exists():
+                return Path(shp_curr)
+
+        return None
 
     def _run_arcpy(self, task: Dict[str, Any]) -> ExecutorResult:
         """ArcPy 缓冲区（可选引擎）"""

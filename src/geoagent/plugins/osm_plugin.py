@@ -153,12 +153,12 @@ class OsmPlugin(BasePlugin):
             return _osm_error("缺少必需参数: location")
 
         try:
-            gdf = ox_module.geocode(location)
+            gdf = ox_module.geocode_to_gdf(location)
             if gdf is None or gdf.empty:
                 return _osm_error(f"无法解析地名 '{location}'")
             row = gdf.iloc[0]
-            lon = float(row.get("x", 0))
-            lat = float(row.get("y", 0))
+            lon = float(row.get("lon", 0))
+            lat = float(row.get("lat", 0))
             place_name = row.get("display_name", location)
             country = str(row.get("country", "")) if row.get("country") else ""
 
@@ -183,10 +183,10 @@ class OsmPlugin(BasePlugin):
             return _osm_error("缺少必需参数: location")
 
         try:
-            gdf_loc = ox_module.geocode(location)
+            gdf_loc = ox_module.geocode_to_gdf(location)
             if gdf_loc is None or gdf_loc.empty:
                 return _osm_error(f"无法解析地名 '{location}'")
-            lat, lon = float(gdf_loc.iloc[0]["y"]), float(gdf_loc.iloc[0]["x"])
+            lat, lon = float(gdf_loc.iloc[0]["lat"]), float(gdf_loc.iloc[0]["lon"])
 
             amenity = str(params.get("amenity", "")).strip()
             tags_str = str(params.get("tags", "")).strip()
@@ -262,7 +262,6 @@ class OsmPlugin(BasePlugin):
             G = ox_module.graph_from_address(
                 address=location,
                 dist=dist,
-                dist_unit="m",
                 network_type=network_type,
                 simplify=True
             )
@@ -297,18 +296,17 @@ class OsmPlugin(BasePlugin):
             return _osm_error("缺少必需参数: origin 和 destination")
 
         try:
-            gdf_o = ox_module.geocode(origin)
-            gdf_d = ox_module.geocode(destination)
+            gdf_o = ox_module.geocode_to_gdf(origin)
+            gdf_d = ox_module.geocode_to_gdf(destination)
             if gdf_o is None or gdf_o.empty or gdf_d is None or gdf_d.empty:
                 return _osm_error("无法解析起点或终点")
 
-            lon_o, lat_o = float(gdf_o.iloc[0]["x"]), float(gdf_o.iloc[0]["y"])
-            lon_d, lat_d = float(gdf_d.iloc[0]["x"]), float(gdf_d.iloc[0]["y"])
+            lon_o, lat_o = float(gdf_o.iloc[0]["lon"]), float(gdf_o.iloc[0]["lat"])
+            lon_d, lat_d = float(gdf_d.iloc[0]["lon"]), float(gdf_d.iloc[0]["lat"])
 
             G = ox_module.graph_from_address(
                 address=origin,
                 dist=dist,
-                dist_unit="m",
                 network_type=network_type,
                 simplify=True
             )
@@ -353,11 +351,11 @@ class OsmPlugin(BasePlugin):
             return _osm_error("缺少必需参数: location")
 
         try:
-            gdf_loc = ox_module.geocode(location)
+            gdf_loc = ox_module.geocode_to_gdf(location)
             if gdf_loc is None or gdf_loc.empty:
                 return _osm_error(f"无法解析地名 '{location}'")
 
-            lon, lat = float(gdf_loc.iloc[0]["x"]), float(gdf_loc.iloc[0]["y"])
+            lon, lat = float(gdf_loc.iloc[0]["lon"]), float(gdf_loc.iloc[0]["lat"])
 
             network_type_map = {"drive": "drive", "walk": "walk", "bike": "bike"}
             net_type = network_type_map.get(mode, "drive")
@@ -365,7 +363,6 @@ class OsmPlugin(BasePlugin):
             G = ox_module.graph_from_address(
                 address=location,
                 dist=max_dist * 2,
-                dist_unit="m",
                 network_type=net_type,
                 simplify=True
             )
@@ -400,13 +397,13 @@ class OsmPlugin(BasePlugin):
             return _osm_error("缺少必需参数: origin 和 destination")
 
         try:
-            gdf_o = ox_module.geocode(origin)
-            gdf_d = ox_module.geocode(destination)
+            gdf_o = ox_module.geocode_to_gdf(origin)
+            gdf_d = ox_module.geocode_to_gdf(destination)
             if gdf_o is None or gdf_o.empty or gdf_d is None or gdf_d.empty:
                 return _osm_error("无法解析起点或终点")
 
-            lon_o, lat_o = float(gdf_o.iloc[0]["x"]), float(gdf_o.iloc[0]["y"])
-            lon_d, lat_d = float(gdf_d.iloc[0]["x"]), float(gdf_d.iloc[0]["y"])
+            lon_o, lat_o = float(gdf_o.iloc[0]["lon"]), float(gdf_o.iloc[0]["lat"])
+            lon_d, lat_d = float(gdf_d.iloc[0]["lon"]), float(gdf_d.iloc[0]["lat"])
 
             network_type_map = {"drive": "drive", "walk": "walk", "bike": "bike"}
             net_type = network_type_map.get(mode, "drive")
@@ -414,7 +411,6 @@ class OsmPlugin(BasePlugin):
             G = ox_module.graph_from_address(
                 address=origin,
                 dist=5000,
-                dist_unit="m",
                 network_type=net_type,
                 simplify=True
             )
@@ -461,34 +457,39 @@ class OsmPlugin(BasePlugin):
 
         try:
             if destination:
-                gdf_o = ox_module.geocode(origin)
-                gdf_d = ox_module.geocode(destination)
+                gdf_o = ox_module.geocode_to_gdf(origin)
+                gdf_d = ox_module.geocode_to_gdf(destination)
                 if gdf_o is None or gdf_d is None:
                     return _osm_error("无法解析起点或终点")
 
                 G = ox_module.graph_from_address(
                     address=origin,
                     dist=5000,
-                    dist_unit="m",
                     network_type=network_type,
                     simplify=True
                 )
 
                 orig_node = ox_module.distance.nearest_nodes(
-                    G, float(gdf_o.iloc[0]["x"]), float(gdf_o.iloc[0]["y"])
+                    G, float(gdf_o.iloc[0]["lon"]), float(gdf_o.iloc[0]["lat"])
                 )
                 dest_node = ox_module.distance.nearest_nodes(
-                    G, float(gdf_d.iloc[0]["x"]), float(gdf_d.iloc[0]["y"])
+                    G, float(gdf_d.iloc[0]["lon"]), float(gdf_d.iloc[0]["lat"])
                 )
 
                 route = nx_module.shortest_path(G, orig_node, dest_node, weight="length")
-                route_gdf = ox_module.route_to_route_gdf(G, route)
+                from shapely.geometry import LineString
+                coords = [(G.nodes[n]['x'], G.nodes[n]['y']) for n in route]
+                route_line = LineString(coords)
+                route_length = sum(
+                    G[u][v][0].get('length', 0)
+                    for u, v in zip(route[:-1], route[1:])
+                )
 
                 return json.dumps({
                     "action": "elevation_profile",
                     "origin": origin,
                     "destination": destination,
-                    "route_length_m": round(route_gdf["length"].sum(), 1),
+                    "route_length_m": round(route_length, 1),
                 }, ensure_ascii=False, indent=2)
             else:
                 return json.dumps({
