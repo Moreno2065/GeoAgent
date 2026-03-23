@@ -91,9 +91,12 @@ class ShadowExecutor(BaseExecutor):
         return elevation, azimuth_val
 
     def _resolve_output(self, default: str, output_file: Optional[str]) -> str:
-        if output_file:
-            return self._resolve_path(output_file)
-        return self._resolve_path(f"{default}")
+        """解析输出路径：统一输出 ZIP 打包的 Shapefile"""
+        # 统一改为zip格式输出
+        if default.endswith('.shp'):
+            default = default[:-4] + '.zip'
+        default_filename = default
+        return self._resolve_output_path(output_file, default_filename)
 
     def _run_geometry(self, task: Dict[str, Any], sun_pos: tuple[float, float]) -> ExecutorResult:
         """基于 3D 几何算法的阴影计算（主力引擎）"""
@@ -171,10 +174,8 @@ class ShadowExecutor(BaseExecutor):
             shadow_gdf = gpd.GeoDataFrame(geometry=shadows, crs=gdf_proj.crs)
             shadow_gdf = shadow_gdf.to_crs(gdf.crs)
 
-            driver = "ESRI Shapefile"
-            if output_path.endswith(".geojson") or output_path.endswith(".json"):
-                driver = "GeoJSON"
-            shadow_gdf.to_file(output_path, driver=driver)
+            # 使用统一的保存方法，自动打包为ZIP
+            actual_path, driver = self.save_geodataframe(shadow_gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -185,11 +186,12 @@ class ShadowExecutor(BaseExecutor):
                     "sun_elevation": round(sun_elevation, 2),
                     "sun_azimuth": round(sun_azimuth, 2),
                     "shadow_count": len(shadows),
-                    "output_file": output_path,
-                    "output_path": output_path,
+                    "output_file": actual_path,
+                    "output_path": actual_path,
                 },
                 meta={
                     "engine_used": "Shapely + NumPy 3D geometry",
+                    "driver": driver,
                     "height_field": height_col,
                     "buildings_count": len(gdf),
                 }

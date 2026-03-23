@@ -1,5 +1,19 @@
 """
-OSMnx 海外地理分析插件
+OSMnx/Overpass 海外地理分析插件
+===============================
+支持两种模式：
+1. OSMnx 模式：用于复杂路网分析、最短路径等
+2. Overpass API 模式：用于 POI 搜索，无需 osmnx 依赖
+
+【指令微调指南】：
+  在测试提示词中明确指定数据源：
+  "请调用 OSM (OpenStreetMap) 接口获取广州体育中心周边的星巴克与地铁站坐标，
+   然后进行步行可达性分析"
+
+特点：
+- 国内地区自动使用高德 API
+- 海外地区使用 OSMnx 或 Overpass API
+- Overpass API 无需 API Key，可查询全球任意区域
 """
 
 import json
@@ -29,6 +43,35 @@ try:
 except ImportError:
     shapely = None
     HAS_SHAPELY = False
+
+# Overpass API 端点
+OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
+
+# POI 类型 → OSM 标签映射表
+POI_TAG_MAPPINGS = {
+    "starbucks": {"amenity": "cafe", "name": "~Starbucks|星巴克"},
+    "subway": {"railway": "station", "station": "subway"},
+    "metro": {"railway": "station", "station": "subway"},
+    "hospital": {"amenity": "hospital"},
+    "school": {"amenity": "school"},
+    "bank": {"amenity": "bank"},
+    "atm": {"amenity": "atm"},
+    "restaurant": {"amenity": "restaurant"},
+    "cafe": {"amenity": "cafe"},
+    "hotel": {"tourism": "hotel"},
+    "park": {"leisure": "park"},
+    "supermarket": {"shop": "supermarket"},
+    "pharmacy": {"amenity": "pharmacy"},
+    "parking": {"amenity": "parking"},
+    "fuel": {"amenity": "fuel"},
+    "library": {"amenity": "library"},
+    "police": {"amenity": "police"},
+    "cinema": {"amenity": "cinema"},
+    "gym": {"leisure": "fitness_centre"},
+}
 
 
 def _osm_error(msg: str, detail: str = "") -> str:
@@ -102,7 +145,7 @@ def _is_overseas(location: str) -> bool:
 
 
 class OsmPlugin(BasePlugin):
-    """OSMnx 海外地理分析插件"""
+    """OSMnx / Overpass 海外地理分析插件"""
 
     def validate_parameters(self, parameters: Dict) -> bool:
         action = parameters.get("action", "")
@@ -110,11 +153,11 @@ class OsmPlugin(BasePlugin):
             "geocode", "poi_search", "network_analysis",
             "shortest_path", "reachable_area",
             "elevation_profile", "routing",
+            # Overpass API 新增
+            "overpass_poi", "osm_poi_search",
         }
 
     def execute(self, parameters: Dict) -> str:
-        if not HAS_OSMNX:
-            return _osm_error("osmnx 库未安装，请运行: pip install osmnx")
         if not HAS_NETWORKX:
             return _osm_error("networkx 库未安装，请运行: pip install networkx")
 
@@ -142,10 +185,15 @@ class OsmPlugin(BasePlugin):
                 return self._do_elevation_profile(parameters)
             elif action == "routing":
                 return self._do_routing(parameters)
+            # ── Overpass API POI 搜索 ─────────────────────────────────
+            elif action == "overpass_poi":
+                return self._do_overpass_poi(parameters)
+            elif action == "osm_poi_search":
+                return self._do_overpass_poi(parameters)
             else:
                 return _osm_error(f"未知 action: {action}")
         except Exception as e:
-            return _osm_error(f"OSMnx 执行失败: {str(e)}")
+            return _osm_error(f"OSM 执行失败: {str(e)}")
 
     def _do_geocode(self, params: Dict) -> str:
         location = str(params.get("location", "")).strip()
@@ -499,3 +547,203 @@ class OsmPlugin(BasePlugin):
                 }, ensure_ascii=False, indent=2)
         except Exception as e:
             return _osm_error(f"高程分析失败: {str(e)}")
+
+    # ── Overpass API POI 搜索 ─────────────────────────────────────────────────
+
+    def _do_overpass_poi(self, params: Dict) -> str:
+        """
+        使用 Overpass API 直接搜索 POI（无需 osmnx）
+
+        【核心优势】：
+            - 无需 API Key，直连 OpenStreetMap 数据库
+            - 支持全球任意区域
+            - 比 osmnx 更轻量
+
+        Args:
+            params: 包含 location, poi_types, radius 等参数
+
+        Returns:
+            JSON 字符串
+        """
+        import requests
+
+        location = str(params.get("location", "")).strip()
+        poi_types_raw = params.get("poi_types") or params.get("poi_type") or []
+        if isinstance(poi_types_raw, str):
+            poi_types = [poi_types_raw]
+        else:
+            poi_types = list(poi_types_raw)
+        radius = int(params.get("radius", 2000))
+        bbox = params.get("bbox")
+
+        if not location and not bbox:
+            return _osm_error("缺少必需参数: location 或 bbox")
+
+        # 如果有 location，先地理编码获取坐标
+        lat, lon = None, None
+        if location:
+            geo_result = self._geocode_location(location)
+            if geo_result:
+                lat, lon = geo_result
+
+        # 计算 bbox
+        if bbox:
+            south, west, north, east = bbox
+        elif lat is not None and lon is not None:
+            import math
+            lat_offset = radius / 111000
+            lon_offset = radius / (111000 * math.cos(math.radians(lat)))
+            south = lat - lat_offset
+            north = lat + lat_offset
+            west = lon - lon_offset
+            east = lon + lon_offset
+        else:
+            return _osm_error("无法获取查询区域的坐标，请提供有效的 location 或 bbox")
+
+        # 构建 Overpass 查询
+        results = {}
+        for poi_type in poi_types:
+            tags = POI_TAG_MAPPINGS.get(poi_type.lower(), {"amenity": poi_type})
+
+            query = self._build_overpass_query(south, west, north, east, tags)
+            pois = self._query_overpass_api(query)
+
+            results[poi_type] = {
+                "count": len(pois),
+                "pois": pois,
+            }
+
+        # 计算中心点
+        center_lat = (south + north) / 2
+        center_lon = (west + east) / 2
+
+        return json.dumps({
+            "action": "overpass_poi",
+            "location": location,
+            "radius": radius,
+            "center": {"lat": center_lat, "lon": center_lon},
+            "bbox": [south, west, north, east],
+            "results": results,
+            "total_count": sum(r["count"] for r in results.values()),
+        }, ensure_ascii=False, indent=2)
+
+    def _geocode_location(self, location: str) -> Optional[tuple]:
+        """地理编码获取坐标"""
+        if not HAS_OSMNX:
+            return None
+
+        try:
+            gdf = ox_module.geocode_to_gdf(location)
+            if gdf is not None and not gdf.empty:
+                return (float(gdf.iloc[0]["lat"]), float(gdf.iloc[0]["lon"]))
+        except Exception:
+            pass
+        return None
+
+    def _build_overpass_query(
+        self,
+        south: float,
+        west: float,
+        north: float,
+        east: float,
+        tags: Dict[str, str]
+    ) -> str:
+        """构建 Overpass QL 查询"""
+        tag_filters = []
+        for key, value in tags.items():
+            if value is True:
+                tag_filters.append(f'["{key}"]')
+            elif value and value.startswith("~"):
+                # 正则匹配
+                regex = value[1:]  # 去掉 ~ 前缀
+                tag_filters.append(f'["{key}"~"{regex}"]')
+            else:
+                tag_filters.append(f'["{key}"="{value}"]')
+
+        tag_str = "".join(tag_filters)
+
+        query = f"""[out:json][timeout:60];
+(
+  node{tag_str}({south},{west},{north},{east});
+  way{tag_str}({south},{west},{north},{east});
+);
+(._;>;);
+out center;
+"""
+        return query
+
+    def _query_overpass_api(self, query: str) -> List[Dict]:
+        """执行 Overpass API 查询"""
+        import requests
+
+        for endpoint in OVERPASS_ENDPOINTS:
+            try:
+                response = requests.get(
+                    endpoint,
+                    params={"data": query},
+                    timeout=60,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    elements = data.get("elements", [])
+                    return self._parse_overpass_elements(elements)
+            except Exception:
+                continue
+        return []
+
+    def _parse_overpass_elements(self, elements: List[Dict]) -> List[Dict]:
+        """解析 Overpass 返回的要素"""
+        pois = []
+        node_coords: Dict[int, tuple] = {}
+
+        # 先收集所有节点坐标
+        for element in elements:
+            if element["type"] == "node":
+                node_coords[element["id"]] = (
+                    element.get("lon"),
+                    element.get("lat")
+                )
+
+        # 解析 ways（建筑物等）
+        for element in elements:
+            if element["type"] == "way":
+                center = element.get("center", {})
+                lat = center.get("lat")
+                lon = center.get("lon")
+
+                # 如果没有 center，尝试使用节点中心
+                if lat is None or lon is None:
+                    coords = [
+                        node_coords.get(nid)
+                        for nid in element.get("nodes", [])
+                        if nid in node_coords
+                    ]
+                    if coords:
+                        lon = sum(c[0] for c in coords) / len(coords)
+                        lat = sum(c[1] for c in coords) / len(coords)
+
+                if lat is not None and lon is not None:
+                    tags = element.get("tags", {})
+                    pois.append({
+                        "name": tags.get("name", tags.get("name:en", "")),
+                        "lat": lat,
+                        "lon": lon,
+                        "type": tags.get("amenity") or tags.get("shop") or tags.get("tourism", ""),
+                    })
+
+        # 解析 nodes（POI 点位）
+        for element in elements:
+            if element["type"] == "node":
+                lat = element.get("lat")
+                lon = element.get("lon")
+                if lat is not None and lon is not None:
+                    tags = element.get("tags", {})
+                    if tags:
+                        pois.append({
+                            "name": tags.get("name", tags.get("name:en", "")),
+                            "lat": lat,
+                            "lon": lon,
+                            "type": tags.get("amenity") or tags.get("shop") or tags.get("tourism", ""),
+                        })
+
+        return pois

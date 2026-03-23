@@ -157,8 +157,8 @@ class PostGISExecutor(BaseExecutor):
             gdf = gpd.read_postgis(sql, conn, geom_col=geom_col)
             output_path = self._resolve_path(output_file)
 
-            driver = "GeoJSON" if output_file.endswith(".geojson") else "ESRI Shapefile"
-            gdf.to_file(output_path, driver=driver)
+            # 使用统一的保存方法，自动打包为ZIP
+            actual_path, driver = self.save_geodataframe(gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -169,10 +169,10 @@ class PostGISExecutor(BaseExecutor):
                     "feature_count": len(gdf),
                     "crs": str(gdf.crs) if gdf.crs else "unknown",
                     "columns": list(gdf.columns),
-                    "output_file": output_path,
-                    "output_path": output_path,
+                    "output_file": actual_path,
+                    "output_path": actual_path,
                 },
-                meta={"geometry_column": geom_col}
+                meta={"geometry_column": geom_col, "driver": driver}
             )
 
         except Exception as e:
@@ -254,8 +254,8 @@ class PostGISExecutor(BaseExecutor):
 
             gdf = gpd.read_postgis(sql, conn, geom_col="geom")
             output_path = self._resolve_path(output_file)
-            driver = "GeoJSON" if output_file.endswith(".geojson") else "ESRI Shapefile"
-            gdf.to_file(output_path, driver=driver)
+            # 使用统一的保存方法，自动打包为ZIP
+            actual_path, driver = self.save_geodataframe(gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -265,10 +265,10 @@ class PostGISExecutor(BaseExecutor):
                     "source_table": source_table,
                     "predicate": predicate,
                     "feature_count": len(gdf),
-                    "output_file": output_path,
-                    "output_path": output_path,
+                    "output_file": actual_path,
+                    "output_path": actual_path,
                 },
-                meta={"engine_used": "PostGIS ST_* functions"}
+                meta={"engine_used": "PostGIS ST_* functions", "driver": driver}
             )
 
         except Exception as e:

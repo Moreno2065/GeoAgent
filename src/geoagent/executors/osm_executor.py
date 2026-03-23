@@ -295,13 +295,77 @@ class OSMExecutor(BaseExecutor):
     ) -> Path:
         """生成交互式 HTML 地图（Folium）"""
         import folium
+        from folium.utilities import JpegMixin
 
         lat, lng = center
-        m = folium.Map(
-            location=[lat, lng],
-            zoom_start=15,
-            tiles="OpenStreetMap",
-        )
+
+        # 使用自定义 TileLayer 类添加 Referer 头
+        # OSM 瓦片服务要求 Referer: https://www.openstreetmap.org
+        osm_tile_js = """
+        L.TileLayer.OsmWithReferer = L.TileLayer.extend({
+            createTile: function(coords, done) {
+                var tile = document.createElement('img');
+                tile.alt = '';
+                tile.setAttribute('role', 'presentation');
+
+                var tileUrl = this.getTileUrl(coords);
+                var xhr = new XMLHttpRequest();
+                xhr.responseType = 'blob';
+
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        var blob = xhr.response;
+                        var url = URL.createObjectURL(blob);
+                        tile.src = url;
+                        done(null, tile);
+                    } else {
+                        done(new Error('Tile load error: ' + xhr.status), tile);
+                    }
+                };
+
+                xhr.onerror = function() {
+                    done(new Error('Network error'), tile);
+                };
+
+                xhr.open('GET', tileUrl, true);
+                xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
+                xhr.send();
+
+                if (!this.options.crossOrigin) {
+                    tile.crossOrigin = 'anonymous';
+                } else if (this.options.crossOrigin === '') {
+                    // pass
+                } else {
+                    tile.crossOrigin = this.options.crossOrigin;
+                }
+
+                return tile;
+            }
+        });
+
+        L.tileLayer.osmWithReferer = function(url, options) {
+            return new L.TileLayer.OsmWithReferer(url, options);
+        };
+        """
+
+        m = folium.Map(location=[lat, lng], zoom_start=15, tiles=None)
+
+        # 注册自定义 TileLayer 类（添加 Referer 头）
+        m.add_child(folium.Element(f"<script>{osm_tile_js}</script>"))
+
+        # 通过 JS 创建 OSM 瓦片层（使用自定义类）
+        osm_layer_js = f"""
+        var osmTileLayer = L.tileLayer.osmWithReferer(
+            'https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+            {{
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+                maxZoom: 19
+            }}
+        ).addTo(map);
+        """
+        m.add_child(folium.Element(f"<script>{osm_layer_js}</script>"))
+
+        # 添加图层控制（可选底图）
 
         # 添加中心点标记
         folium.Marker(

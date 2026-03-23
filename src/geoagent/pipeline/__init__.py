@@ -72,6 +72,13 @@ from geoagent.pipeline.multi_round_executor import (
     get_multi_round_executor,
     create_multi_round_executor,
 )
+from geoagent.pipeline.tool_call_validator import (
+    ToolCallValidator,
+    ValidationResult,
+    validate_tool_calls,
+    validate_and_sanitize_response,
+)
+from geoagent.system_prompts import ANTI_HALLUCINATION_SYSTEM_PROMPT
 # API 路由需要 fastapi，按需导入
 # from geoagent.pipeline.api_routes import (
 #     create_api_router,
@@ -233,6 +240,7 @@ class GeoAgentPipeline:
         llm_client: Optional[Any] = None,
         llm_model: Optional[str] = None,
         llm_base_url: Optional[str] = None,
+        strict_mode: bool = True,
     ):
         """
         初始化 Pipeline
@@ -244,6 +252,7 @@ class GeoAgentPipeline:
             llm_client: 可选的 LLM 客户端（用于生成自然语言回复）
             llm_model: LLM 模型名称
             llm_base_url: LLM API base URL
+            strict_mode: 严格模式，验证 LLM 回复是否包含幻觉（默认开启）
         """
         self.enable_clarification = enable_clarification
         self.use_reasoner = use_reasoner
@@ -257,6 +266,9 @@ class GeoAgentPipeline:
         self._llm_client = llm_client
         self._llm_model = llm_model
         self._llm_base_url = llm_base_url
+        # 防幻觉验证器
+        self._strict_mode = strict_mode
+        self._validator = ToolCallValidator(strict_mode=strict_mode)
 
     def _generate_llm_response(
         self,
@@ -519,10 +531,41 @@ class GeoAgentPipeline:
             ctx.render_result = render_result
             ctx.status = PipelineStatus.COMPLETED
 
+            # ── 【防幻觉】验证输出文件 ──────────────────────────────────
+            verified_output_files = self._verify_output_files(render_result.output_files)
+            
+            # 将验证器中的已验证文件也加入
+            for f in verified_output_files:
+                self._validator.add_verified_file(f)
+
             if event_callback:
                 event_callback("render_complete", {
                     "summary": render_result.summary,
+                    "verified_files": verified_output_files,
                 })
+
+            # ── 【防幻觉】生成用户回复前验证 ─────────────────────────────
+            # 如果启用了严格模式，确保最终输出不包含幻觉
+            if self._strict_mode:
+                # 生成系统确认的文件列表消息
+                system_verified_msg = ""
+                if verified_output_files:
+                    file_list = "\n".join([f"  - {os.path.basename(f)}" for f in verified_output_files])
+                    system_verified_msg = f"\n\n【系统确认的文件】:\n{file_list}"
+                
+                # 检查渲染结果摘要是否包含未经确认的文件引用
+                if render_result.summary:
+                    validation = self._validator.validate(
+                        llm_response=render_result.summary,
+                        output_files=verified_output_files,
+                    )
+                    if not validation.is_valid:
+                        # 有幻觉内容，生成警告消息
+                        error_msg = validation.generate_enforcement_message(validation)
+                        print(f"\n⚠️ 检测到潜在幻觉:\n{error_msg}\n")
+                        # 将摘要替换为安全版本
+                        safe_summary = f"{render_result.summary}{system_verified_msg}"
+                        render_result.summary = safe_summary
 
             return PipelineResult(
                 success=True,
@@ -532,7 +575,7 @@ class GeoAgentPipeline:
                 conclusion=render_result.conclusion.to_dict() if render_result.conclusion else None,
                 explanation=render_result.explanation.to_dict() if render_result.explanation else None,
                 map_file=render_result.map_file,
-                output_files=render_result.output_files,
+                output_files=verified_output_files,
                 metrics=render_result.metrics,
                 context=ctx,
             )
@@ -718,6 +761,44 @@ class GeoAgentPipeline:
 
         return {**existing_params, **new_params}
 
+    def _verify_output_files(self, output_files: List[str]) -> List[str]:
+        """
+        验证输出文件是否真实存在
+
+        Args:
+            output_files: 声称的输出文件列表
+
+        Returns:
+            仅返回存在的文件列表
+        """
+        import os
+        verified = []
+        for f in output_files:
+            if f and os.path.exists(f):
+                verified.append(f)
+        return verified
+
+    def validate_llm_response(
+        self,
+        response: str,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ) -> ValidationResult:
+        """
+        验证 LLM 回复是否包含幻觉
+
+        Args:
+            response: LLM 回复文本
+            tool_calls: 工具调用记录
+
+        Returns:
+            ValidationResult
+        """
+        return self._validator.validate(
+            llm_response=response,
+            tool_calls=tool_calls,
+            output_files=None,  # 会在验证时获取已验证文件
+        )
+
     def _deep_merge(
         self,
         base: Dict[str, Any],
@@ -867,4 +948,10 @@ __all__ = [
     "ParseResult",
     "parse_steps",
     "is_multi_step",
+    # 防幻觉验证
+    "ToolCallValidator",
+    "ValidationResult",
+    "validate_tool_calls",
+    "validate_and_sanitize_response",
+    "ANTI_HALLUCINATION_SYSTEM_PROMPT",
 ]

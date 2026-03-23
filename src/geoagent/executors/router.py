@@ -87,6 +87,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "overpass_executor": lambda: __import__(
                               "geoagent.executors.overpass_executor",
                               fromlist=["OverpassExecutor"]).OverpassExecutor,
+        # OSM POI 搜索（Overpass API 直连，无需 API Key）
+        "osm_poi":       lambda: __import__(
+                              "geoagent.executors.overpass_executor",
+                              fromlist=["OverpassExecutor"]).OverpassExecutor,
         # ArcGIS Online 下载
         "arcgis_download": lambda: __import__(
                               "geoagent.executors.arcgis_executor",
@@ -116,6 +120,74 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "multi_criteria_search": lambda: __import__(
                               "geoagent.executors.multi_criteria_executor",
                               fromlist=["MultiCriteriaSearchExecutor"]).MultiCriteriaSearchExecutor,
+        # ── 🆕 混合搜索器（Step 1+2+3 闭环）──────────────────────────
+        # 混合搜索：实时网络搜索 → 高精度地理编码 → 空间计算图谱
+        "hybrid_retriever": lambda: __import__(
+                              "geoagent.executors.hybrid_retriever_executor",
+                              fromlist=["HybridRetrieverExecutor"]).HybridRetrieverExecutor,
+        "hybrid_search": lambda: __import__(
+                              "geoagent.executors.hybrid_retriever_executor",
+                              fromlist=["HybridRetrieverExecutor"]).HybridRetrieverExecutor,
+        # ── 🆕 遥感分析执行器 ───────────────────────────────────────
+        "remote_sensing": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "ndwi": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "index_calc": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "change_detection": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "image_classify": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "band_composite": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        "cloud_mask": lambda: __import__(
+                              "geoagent.executors.remote_sensing_executor",
+                              fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
+        # ── 🆕 三维分析执行器 ───────────────────────────────────────
+        "lidar_3d": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "volume": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "profile": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "hillshade": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "roughness": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "curvature": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "watershed": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "flow_direction": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "flow_accumulation": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        "cut_fill": lambda: __import__(
+                              "geoagent.executors.lidar_3d_executor",
+                              fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
+        # ── 🆕 STAC搜索执行器 ───────────────────────────────────────
+        "stac_search": lambda: __import__(
+                              "geoagent.executors.stac_search_executor",
+                              fromlist=["STACSearchExecutor"]).STACSearchExecutor,
+        "satellite_search": lambda: __import__(
+                              "geoagent.executors.stac_search_executor",
+                              fromlist=["STACSearchExecutor"]).STACSearchExecutor,
     }
 
     loader = cls_map.get(executor_key)
@@ -162,6 +234,10 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
         # OSM 在线下载
         "fetch_osm":       "fetch_osm",
         "overpass_executor": "overpass_executor",
+        # OSM POI 搜索（Overpass API 直连，无需 API Key）
+        "osm_poi":         "osm_poi",
+        "poi_osm":         "osm_poi",
+        "osm_poi_search":  "osm_poi",
         # ArcGIS Online 下载
         "arcgis_download": "arcgis_download",
         # 受限代码执行
@@ -186,6 +262,34 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "transit_info":  "amap",      # 公交信息
     "ip_location":   "amap",      # IP 定位
     "weather":       "amap",      # 天气查询
+    # ── 🆕 混合搜索器（Step 1+2+3 闭环）────────────────────────────
+    "hybrid_retriever": "hybrid_retriever",   # 混合搜索器
+    "hybrid_search":     "hybrid_search",       # 混合搜索（别名）
+    # ── 🆕 遥感分析场景 ───────────────────────────────────────────
+    "remote_sensing": "remote_sensing",   # 遥感分析
+    "ndwi": "remote_sensing",            # NDWI
+    "evi": "remote_sensing",              # EVI
+    "savi": "remote_sensing",            # SAVI
+    "ndbi": "remote_sensing",            # NDBI
+    "index_calc": "remote_sensing",      # 自定义指数
+    "change_detection": "remote_sensing", # 变化检测
+    "image_classify": "remote_sensing",  # 影像分类
+    "band_composite": "remote_sensing",   # 波段组合
+    "cloud_mask": "remote_sensing",       # 云掩膜
+    # ── 🆕 三维分析场景 ───────────────────────────────────────────
+    "lidar_3d": "lidar_3d",              # 三维分析
+    "volume": "lidar_3d",                # 体积计算
+    "profile": "lidar_3d",               # 剖面分析
+    "hillshade": "lidar_3d",             # 山体阴影
+    "roughness": "lidar_3d",             # 粗糙度
+    "curvature": "lidar_3d",             # 曲率
+    "watershed": "lidar_3d",             # 流域分割
+    "flow_direction": "lidar_3d",         # 流向
+    "flow_accumulation": "lidar_3d",     # 流量累积
+    "cut_fill": "lidar_3d",              # 填挖方
+    # ── 🆕 STAC搜索场景 ───────────────────────────────────────────
+    "stac_search": "stac_search",         # STAC搜索
+    "satellite_search": "stac_search",   # 卫星搜索（别名）
 }
 
 
@@ -227,6 +331,10 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     # OSM 在线下载
     "fetch_osm":        "fetch_osm",
     "overpass_executor": "overpass_executor",
+    # OSM POI 搜索（Overpass API 直连，无需 API Key）
+    "osm_poi":         "osm_poi",
+    "poi_osm":         "osm_poi",
+    "osm_poi_search":  "osm_poi",
     # 受限代码执行
     "code_sandbox":     "code_sandbox",
     # ── 可视化 Pipeline 扩展 ────────────────────────────────────────
@@ -249,6 +357,31 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "transit_info":    "transit_info",
     "ip_location":     "ip_location",
     "weather":         "weather",
+    # ── 🆕 混合搜索器（Step 1+2+3 闭环）────────────────────────────
+    "hybrid_retriever": "hybrid_retriever",   # 混合搜索器
+    "hybrid_search":    "hybrid_search",       # 混合搜索（别名）
+    # ── 🆕 遥感分析场景 ───────────────────────────────────────────
+    "remote_sensing": "remote_sensing",   # 遥感分析
+    "ndwi": "remote_sensing",            # NDWI
+    "index_calc": "remote_sensing",      # 自定义指数
+    "change_detection": "remote_sensing", # 变化检测
+    "image_classify": "remote_sensing",  # 影像分类
+    "band_composite": "remote_sensing",   # 波段组合
+    "cloud_mask": "remote_sensing",       # 云掩膜
+    # ── 🆕 三维分析场景 ───────────────────────────────────────────
+    "lidar_3d": "lidar_3d",              # 三维分析
+    "volume": "lidar_3d",                # 体积计算
+    "profile": "lidar_3d",               # 剖面分析
+    "hillshade": "lidar_3d",             # 山体阴影
+    "roughness": "lidar_3d",             # 粗糙度
+    "curvature": "lidar_3d",             # 曲率
+    "watershed": "lidar_3d",             # 流域分割
+    "flow_direction": "lidar_3d",         # 流向
+    "flow_accumulation": "lidar_3d",     # 流量累积
+    "cut_fill": "lidar_3d",              # 填挖方
+    # ── 🆕 STAC搜索场景 ───────────────────────────────────────────
+    "stac_search": "stac_search",         # STAC搜索
+    "satellite_search": "stac_search",   # 卫星搜索（别名）
 }
 
 

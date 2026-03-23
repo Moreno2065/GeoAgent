@@ -1172,7 +1172,52 @@ class Viz:
         gdf_json.columns = ['value', 'geometry']
         gdf_json = gdf_json.fillna(0)
 
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles=map_style)
+        # 自定义 TileLayer 类（添加 Referer 头）
+        osm_tile_js = """
+        L.TileLayer.OsmWithReferer = L.TileLayer.extend({
+            createTile: function(coords, done) {
+                var tile = document.createElement('img');
+                tile.alt = '';
+                tile.setAttribute('role', 'presentation');
+                var tileUrl = this.getTileUrl(coords);
+                var xhr = new XMLHttpRequest();
+                xhr.responseType = 'blob';
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        tile.src = URL.createObjectURL(xhr.response);
+                        done(null, tile);
+                    } else {
+                        done(new Error('Tile load error: ' + xhr.status), tile);
+                    }
+                };
+                xhr.onerror = function() { done(new Error('Network error'), tile); };
+                xhr.open('GET', tileUrl, true);
+                xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
+                xhr.send();
+                return tile;
+            }
+        });
+        L.tileLayer.osmWithReferer = function(url, options) {
+            return new L.TileLayer.OsmWithReferer(url, options);
+        };
+        """
+
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles=None)
+
+        # 注册自定义 TileLayer 类
+        m.add_child(folium.Element(f"<script>{osm_tile_js}</script>"))
+
+        # 通过 JS 创建 OSM 瓦片层（带 Referer 头）
+        osm_layer_js = """
+        L.tileLayer.osmWithReferer(
+            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+                maxZoom: 19
+            }
+        ).addTo(map);
+        """
+        m.add_child(folium.Element(f"<script>{osm_layer_js}</script>"))
 
         folium.Choropleth(
             geo_data=gdf_json,

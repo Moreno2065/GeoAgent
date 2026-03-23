@@ -276,11 +276,39 @@ class AmapExecutor(BaseExecutor):
     </div>
     <div id="map"></div>
     <script>
-        var map = L.map('map').setView([{center_lat}, {center_lon}], 14);
-        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
-            attribution: '© OpenStreetMap'
+        // 自定义 TileLayer：添加 Referer 头以满足 OSM 瓦片服务策略
+        L.TileLayer.OsmWithReferer = L.TileLayer.extend({{
+            createTile: function(coords, done) {{
+                var tile = document.createElement('img');
+                tile.alt = '';
+                tile.setAttribute('role', 'presentation');
+                var tileUrl = this.getTileUrl(coords);
+                var xhr = new XMLHttpRequest();
+                xhr.responseType = 'blob';
+                xhr.onload = function() {{
+                    if (xhr.status === 200) {{
+                        tile.src = URL.createObjectURL(xhr.response);
+                        done(null, tile);
+                    }} else {{
+                        done(new Error('Tile load error: ' + xhr.status), tile);
+                    }}
+                }};
+                xhr.onerror = function() {{ done(new Error('Network error'), tile); }};
+                xhr.open('GET', tileUrl, true);
+                xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
+                xhr.send();
+                return tile;
+            }}
+        }});
+        L.tileLayer.osmWithReferer = function(url, options) {{
+            return new L.TileLayer.OsmWithReferer(url, options);
+        }};
+
+        var map = L.map('map').setView([{{center_lat}}, {{center_lon}}], 14);
+        L.tileLayer.osmWithReferer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            attribution: '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
         }}).addTo(map);
-        {markers_js}
+        {{markers_js}}
     </script>
 </body>
 </html>'''

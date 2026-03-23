@@ -69,14 +69,10 @@ class HotspotExecutor(BaseExecutor):
             return self._run_pysal(task)
 
     def _resolve_output(self, input_file: str, output_file: Optional[str]) -> str:
-        if output_file:
-            path = Path(self._resolve_path(output_file))
-            # 拦截 shp，强行戴上 zip 帽子
-            if path.suffix.lower() == '.shp':
-                path = path.with_suffix('.zip')
-            return str(path)
-        # 默认生成 zip（替换原来的 .geojson）
-        return self._resolve_path(f"hotspot_{Path(input_file).stem}.zip")
+        """解析输出路径：统一输出 ZIP 打包的 Shapefile"""
+        # 使用通用的输出路径解析，避免模糊匹配
+        default_filename = f"hotspot_{Path(input_file).stem}.zip"
+        return self._resolve_output_path(output_file, default_filename)
 
     def _run_pysal(self, task: Dict[str, Any]) -> ExecutorResult:
         """PySAL 热点分析（主力引擎）"""
@@ -205,31 +201,7 @@ class HotspotExecutor(BaseExecutor):
             if gdf.crs and gdf.crs.to_epsg() != 4326:
                 gdf = gdf.to_crs(4326)
 
-            import shutil
-            output_path_obj = Path(output_path)
-
-            if output_path.endswith(".zip"):
-                # 1. 创建临时夹
-                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
-                temp_dir.mkdir(parents=True, exist_ok=True)
-
-                # 2. 生成全家桶
-                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
-                gdf.to_file(str(shp_path), driver="ESRI Shapefile")
-
-                # 3. 压缩并销毁临时文件
-                zip_base_name = str(output_path_obj.with_suffix(''))
-                shutil.make_archive(zip_base_name, 'zip', temp_dir)
-                shutil.rmtree(temp_dir)
-            else:
-                ext = output_path_obj.suffix.lower()
-                if ext in (".geojson", ".json"):
-                    driver = "GeoJSON"
-                elif ext == ".gpkg":
-                    driver = "GPKG"
-                else:
-                    driver = "ESRI Shapefile"
-                gdf.to_file(output_path, driver=driver, encoding="utf-8")
+            actual_path, _ = self.save_geodataframe(gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -240,9 +212,9 @@ class HotspotExecutor(BaseExecutor):
                     "analysis_type": analysis_type,
                     "neighbor_strategy": neighbor_strategy,
                     "k_neighbors": k_neighbors,
-                    "output_file": output_path,
+                    "output_file": actual_path,
                     "feature_count": len(gdf),
-                    "output_path": output_path,
+                    "output_path": actual_path,
                     "results": results,
                 },
                 meta={

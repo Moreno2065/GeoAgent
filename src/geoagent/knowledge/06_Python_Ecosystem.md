@@ -1,4 +1,4 @@
-﻿# Python GIS/RS 生态与云原生遥感
+# Python GIS/RS 生态与云原生遥感
 
 ## Chunk 07: Python 矢量几何底座 (Shapely, Fiona, GeoPandas)
 
@@ -304,7 +304,48 @@ result_computed = result.compute()
 import folium
 from folium.plugins import HeatMap, MarkerCluster
 
-m = folium.Map(location=[39.9, 116.4], zoom_start=10, tiles='OpenStreetMap')
+# 注册自定义 TileLayer 类（添加 Referer 头以满足 OSM 瓦片服务策略）
+osm_tile_js = """
+L.TileLayer.OsmWithReferer = L.TileLayer.extend({
+    createTile: function(coords, done) {
+        var tile = document.createElement('img');
+        tile.alt = '';
+        tile.setAttribute('role', 'presentation');
+        var tileUrl = this.getTileUrl(coords);
+        var xhr = new XMLHttpRequest();
+        xhr.responseType = 'blob';
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                tile.src = URL.createObjectURL(xhr.response);
+                done(null, tile);
+            } else {
+                done(new Error('Tile load error: ' + xhr.status), tile);
+            }
+        };
+        xhr.onerror = function() { done(new Error('Network error'), tile); };
+        xhr.open('GET', tileUrl, true);
+        xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
+        xhr.send();
+        return tile;
+    }
+});
+L.tileLayer.osmWithReferer = function(url, options) {
+    return new L.TileLayer.OsmWithReferer(url, options);
+};
+"""
+
+m = folium.Map(location=[39.9, 116.4], zoom_start=10, tiles=None)
+m.add_child(folium.Element(f"<script>{osm_tile_js}</script>"))
+osm_layer_js = """
+L.tileLayer.osmWithReferer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+        maxZoom: 19
+    }
+).addTo(map);
+"""
+m.add_child(folium.Element(f"<script>{osm_layer_js}</script>"))
 
 # 热力图
 heat_data = [[row['lat'], row['lon'], row['weight']] for _, row in df.iterrows()]

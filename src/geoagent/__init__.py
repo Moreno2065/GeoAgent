@@ -1,261 +1,151 @@
 """
-GeoAgent - 基于 DeepSeek API 的空间智能 GIS 分析 Agent
-================================================================
-六层架构：Input → Intent → Orchestrate → DSL → Execute → Render
+GeoAgent 七层空间Agent架构
+========================
 
-新增 V2 六层架构（推荐）：
-    User Input → Intent → Orchestrate → DSL → Execute → Render
+## 架构概述
 
-V2 核心设计原则：
-    1. LLM 只做"翻译"：NL → DSL，不做决策
-    2. 所有执行确定性：后端代码路由，无 ReAct 循环
-    3. 有限标准场景：route/buffer/overlay/interpolation/viewshed/statistics/raster
-    4. 参数补全+澄清机制：参数不完整必须追问
-    5. 结果面向业务结论：不是技术结果，是解释卡片
+GeoAgent采用七层架构设计，将空间智能能力系统化整合：
 
-标准用法:
-    from geoagent import GeoAgent, GeoAgentV2, create_agent, create_agent_v2
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    空间Agent 七层架构                        │
+├─────────────────────────────────────────────────────────────┤
+│  第1层：用户交互层     - 自然语言、多模态输入                  │
+│  第2层：意图理解层     - 30+场景分类、实体识别                 │
+│  第3层：知识融合层     - RAG检索、最佳实践                    │
+│  第4层：任务规划层     - 工作流编排、依赖管理                   │
+│  第5层：执行引擎层     - 矢量/栅格/遥感/网络                   │
+│  第6层：验证安全层     - 防幻觉、CRS/OOM检查                  │
+│  第7层：结果呈现层     - 地图、图表、自然语言                   │
+└─────────────────────────────────────────────────────────────┘
+```
 
-    # V2 推荐用法（六层架构）
-    agent = create_agent_v2(api_key="sk-...")
-    result = agent.run("芜湖南站到方特的步行路径")
-    print(result.to_user_text())
+## 核心能力
 
-    # V2 快捷方法
-    result = agent.route("芜湖南站", "方特欢乐世界", mode="walking")
-    result = agent.buffer("schools.shp", 500, unit="meters")
-    result = agent.overlay("landuse.shp", "flood.shp", operation="intersect")
+### 矢量分析 (VectorPro)
+- 缓冲区分析
+- 空间叠置
+- 空间连接
+- 融合/简化
 
-    # V2 Pipeline 直接使用
-    from geoagent.pipeline import run_pipeline
-    result = run_pipeline("芜湖南站到方特的步行路径")
+### 栅格处理 (RasterLab)
+- 裁剪/重投影/重采样
+- 坡度坡向
+- 分区统计
 
-    # V1 用法（向后兼容）
-    agent = create_agent(api_key="sk-...")
-    result = agent.compile("芜湖南站到方特的步行路径")
+### 遥感智能 (SenseAI)
+- NDVI/NDWI/EVI
+- 变化检测
+- STAC搜索
+
+### 三维分析 (LiDAR3D)
+- 视域分析
+- 阴影分析
+- 体积计算
+- 流域分割
+
+### 云端遥感 (CloudRS)
+- COG读取
+- 多景镶嵌
+
+## 黄金规则
+
+1. **CRS铁律**：任何叠置分析前必须检查CRS
+2. **OOM防御**：大TIFF必须使用Window分块读取
+3. **防幻觉**：不捏造文件/数据/坐标
 """
 
-import os
+from __future__ import annotations
 
-# 加载 .env 文件
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv 未安装，手动加载
+# 版本信息
+__version__ = "2.0.0"
+__author__ = "GeoAgent Team"
 
-# 尝试从用户目录加载 .env
-_env_path = os.path.expanduser("~/.env")
-if os.path.exists(_env_path):
-    with open(_env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip())
+# 架构常量
+ARCHITECTURE_VERSION = "2.0"
+ARCHITECTURE_NAME = "Seven-Layer Spatial Agent Architecture"
 
-from geoagent.version import __version__
+# 导出主要模块
+from geoagent.layers.architecture import (
+    Scenario,
+    PipelineStatus,
+    SpatialOperation,
+    Engine,
+    ARCHITECTURE_VERSION,
+    ARCHITECTURE_NAME,
+)
 
-# 核心
-from geoagent.core import GeoAgent, create_agent
-
-# ── V2 六层架构（推荐）──────────────────────────────────────────────
-from geoagent.geoagent_v2 import GeoAgentV2, create_agent_v2
-
-# Pipeline
 from geoagent.pipeline import (
     GeoAgentPipeline,
     PipelineResult,
-    run_pipeline,
-    run_pipeline_mvp,
-    get_pipeline,
+    PipelineContext,
 )
 
-# Layers（核心架构定义）
-from geoagent.layers import (
-    # architecture
-    Scenario,
-    RouteSubType,
-    BufferSubType,
-    OverlaySubType,
-    PipelineStatus,
-    ARCHITECTURE_VERSION,
-    ARCHITECTURE_NAME,
-    # layer 1
-    UserInput,
-    InputParser,
-    parse_user_input,
-    # layer 2
-    IntentClassifier,
-    IntentResult,
-    classify_intent,
-    # layer 3
-    ScenarioOrchestrator,
-    OrchestrationResult,
-    ClarificationQuestion,
-    # layer 4
-    GeoDSL,
-    SchemaValidator,
-    SchemaValidationError,
-    # layer 5
-    TaskRouter,
-    ExecutorResult,
-    execute_task,
-    # pipeline
-    PipelineResult,
-    SixLayerPipeline,
-    get_pipeline,
-)
-
-# layer 6: Result Renderer
-from geoagent.renderer.result_renderer import (
-    ResultRenderer,
-    get_renderer,
-    render_result,
-)
-
-# 编译器模块已移除（六层架构统一替代）
-
-
-# GeoEngine 统一执行系统
-from geoagent.geo_engine import (
-    GeoEngine,
-    create_geo_engine,
-    get_geo_engine,
-    route_task,
-    ENGINE_MAP,
-    TASK_EXECUTOR_KEY,
-    route_to_executor,
-    geo_execute_task,
-    execute_task_via_executor_layer,
-)
-from geoagent.geo_engine.router import (
-    EngineName, TASK_EXAMPLES, validate_task_structure,
-)
-from geoagent.geo_engine.executor import (
-    execute_vector,
-    execute_raster,
-    execute_network,
-    execute_analysis,
-    execute_io,
-)
-
-# Executor Layer（新架构，优先使用）
-from geoagent.executors import (
+from geoagent.executors.base import (
     BaseExecutor,
     ExecutorResult,
-    TaskRouter,
-    execute_task as executor_execute_task,
-    execute_task_by_dict,
-    execute_scenario,
-    get_router,
-    SCENARIO_EXECUTOR_KEY,
-    ScenarioConfig,
-    SCENARIO_CONFIGS,
-    get_scenario_config,
-    get_all_scenarios,
-    get_executor_key,
-    resolve_engine,
 )
 
-# 知识库（可选，优雅降级）
-try:
-    from geoagent.knowledge import (
-        GISKnowledgeBase,
-        get_knowledge_base,
-        search_gis_knowledge,
-    )
-except ImportError:
-    GISKnowledgeBase = None
-    get_knowledge_base = None
-    search_gis_knowledge = None
+from geoagent.gis_tools.geotoolbox import (
+    GeoToolbox,
+    get_toolbox,
+)
 
+from geoagent.spatial_agent_prompts import (
+    SPATIAL_AGENT_SYSTEM_PROMPT,
+    ANTI_HALLUCINATION_PROMPT,
+    CRS_SPECIFICATION_PROMPT,
+    OOM_DEFENSE_PROMPT,
+    REMOTE_SENSING_PROMPT,
+)
+
+# 执行器
+from geoagent.executors.remote_sensing_executor import (
+    RemoteSensingExecutor,
+    RemoteSensingIndex,
+    BandMapping,
+)
+
+from geoagent.executors.lidar_3d_executor import (
+    LiDAR3DExecutor,
+    calculate_sun_position,
+)
+
+from geoagent.executors.stac_search_executor import (
+    STACSearchExecutor,
+)
+
+# 导出所有公开API
 __all__ = [
+    # 版本
     "__version__",
-
-    # ── V2 六层架构（推荐）────────────────────────────────────────────
-    "GeoAgentV2",
-    "create_agent_v2",
-
-    # Pipeline
-    "GeoAgentPipeline",
-    "PipelineResult",
-    "run_pipeline",
-    "run_pipeline_mvp",
-    "get_pipeline",
-
-    # Layers
-    "Scenario",
-    "RouteSubType",
-    "BufferSubType",
-    "OverlaySubType",
-    "PipelineStatus",
+    "__author__",
+    # 架构常量
     "ARCHITECTURE_VERSION",
     "ARCHITECTURE_NAME",
-    "UserInput",
-    "InputParser",
-    "parse_user_input",
-    "IntentClassifier",
-    "IntentResult",
-    "classify_intent",
-    "ScenarioOrchestrator",
-    "OrchestrationResult",
-    "ClarificationQuestion",
-    "GeoDSL",
-    "SchemaValidator",
-    "SchemaValidationError",
-    "TaskRouter",
-    "ExecutorResult",
-    "execute_task",
+    # 核心类
+    "Scenario",
+    "PipelineStatus",
+    "SpatialOperation",
+    "Engine",
+    "GeoAgentPipeline",
     "PipelineResult",
-    "SixLayerPipeline",
-    "get_pipeline",
-    # layer 6
-    "ResultRenderer",
-    "get_renderer",
-    "render_result",
-
-    # 核心
-    "GeoAgent",
-    "create_agent",
-
-    # ── 编译器 ───────────────────────────────────────────────────────────
-    # 编译器模块已移除（六层架构统一替代）
-
-    # GeoEngine
-    "GeoEngine",
-    "create_geo_engine",
-    "get_geo_engine",
-    "route_task",
-    "ENGINE_MAP",
-    "TASK_EXECUTOR_KEY",
-    "route_to_executor",
-    "EngineName",
-    "geo_execute_task",
-    "execute_task_via_executor_layer",
-    "TASK_EXAMPLES",
-    "validate_task_structure",
-    "execute_vector",
-    "execute_raster",
-    "execute_network",
-    "execute_analysis",
-    "execute_io",
-
-    # Executor Layer
+    "PipelineContext",
     "BaseExecutor",
-    "executor_execute_task",
-    "execute_task_by_dict",
-    "execute_scenario",
-    "get_router",
-    "SCENARIO_EXECUTOR_KEY",
-    "SCENARIO_CONFIGS",
-    "get_scenario_config",
-    "get_all_scenarios",
-    "get_executor_key",
-    "resolve_engine",
-
-    # 知识库
-    "GISKnowledgeBase",
-    "get_knowledge_base",
-    "search_gis_knowledge",
+    "ExecutorResult",
+    "GeoToolbox",
+    "get_toolbox",
+    # 提示词
+    "SPATIAL_AGENT_SYSTEM_PROMPT",
+    "ANTI_HALLUCINATION_PROMPT",
+    "CRS_SPECIFICATION_PROMPT",
+    "OOM_DEFENSE_PROMPT",
+    "REMOTE_SENSING_PROMPT",
+    # 执行器
+    "RemoteSensingExecutor",
+    "RemoteSensingIndex",
+    "BandMapping",
+    "LiDAR3DExecutor",
+    "calculate_sun_position",
+    "STACSearchExecutor",
 ]

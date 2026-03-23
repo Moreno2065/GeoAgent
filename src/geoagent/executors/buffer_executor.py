@@ -140,17 +140,37 @@ class BufferExecutor(BaseExecutor):
             )
 
     def _resolve_output(self, input_layer: str, output_file: str | None) -> str:
-        """解析输出路径：为了兼容 ArcMap 且适配 Web 下载，统一输出 ZIP 打包的 Shapefile"""
+        """
+        解析输出路径：为了兼容 ArcMap 且适配 Web 下载，统一输出 ZIP 打包的 Shapefile
+        
+        注意：此方法专门用于生成输出路径，不会进行模糊文件匹配。
+        输出文件路径通过绝对路径计算，不会匹配到输入文件。
+        """
+        from pathlib import Path
+        
+        # 获取workspace的绝对路径
+        workspace = Path(self._workspace_path("")).resolve()
+        
         if output_file:
-            path = Path(self._resolve_path(output_file))
+            # 用户指定了输出路径
+            path = Path(output_file)
+            if path.is_absolute():
+                # 绝对路径直接使用
+                return str(path)
+            else:
+                # 相对路径拼接到workspace
+                path = workspace / output_file
+            
             # 只要是想输出 shp 的，强行转成 zip 压缩包！
             if path.suffix.lower() == '.shp':
                 path = path.with_suffix('.zip')
             return str(path)
         
-        # 自动生成：直接用文件名部分，强行使用 .zip
-        stem = Path(input_layer).stem
-        return self._resolve_path(f"{stem}_buffer.zip")
+        # 自动生成：使用输入文件名 + _buffer + .zip
+        # 避免模糊匹配，直接基于输入层名称生成输出路径
+        input_stem = Path(input_layer).stem
+        output_path = workspace / f"{input_stem}_buffer.zip"
+        return str(output_path)
 
     def _parse_place_and_distance(self, text: str) -> Optional[Dict[str, Any]]:
         """
@@ -395,6 +415,21 @@ class BufferExecutor(BaseExecutor):
                 gdf = gpd.read_file(str(found_path))
                 source_label = f"本地文件「{input_layer}」"
                 print(f"[DEBUG] 使用本地文件: {found_path}")
+                
+                # 尝试从同目录的 .prj 文件读取 CRS
+                if gdf.crs is None:
+                    prj_path = found_path.with_suffix('.prj')
+                    if prj_path.exists():
+                        try:
+                            from pyproj import CRS
+                            with open(prj_path, 'r') as f:
+                                prj_text = f.read()
+                            crs = CRS.from_wkt(prj_text)
+                            if crs:
+                                gdf = gdf.set_crs(crs, allow_override=True)
+                                print(f"[DEBUG] 从 .prj 文件读取 CRS: {crs.name} (EPSG:{crs.to_epsg()})")
+                        except Exception as e:
+                            print(f"[DEBUG] .prj 文件解析失败: {e}")
 
             else:
                 # 2. 尝试解析"地点+距离"模式
@@ -485,6 +520,10 @@ class BufferExecutor(BaseExecutor):
                 )
                 
                 if is_wgs84:
+                    # 进一步检测是否是CGCS2000 (EPSG:4214) 或 WGS84 (EPSG:4326)
+                    # 中国区域常用 CGCS2000 (EPSG:4214) 而非 WGS84
+                    # 但两者坐标非常接近，只能通过元数据或周边文件判断
+                    # 默认使用 WGS84，因为更通用
                     crs = "EPSG:4326"
                     gdf = gdf.set_crs(crs, allow_override=True)
                     print(f"[DEBUG] 无 CRS 元数据，基于坐标值推断为 {crs}")
@@ -493,6 +532,25 @@ class BufferExecutor(BaseExecutor):
                     crs = "EPSG:3857"
                     gdf = gdf.set_crs(crs, allow_override=True)
                     print(f"[DEBUG] 无 CRS 元数据，基于坐标值推断为 {crs}")
+            
+            # 验证 CRS 有效性
+            try:
+                from pyproj import CRS as PyProjCRS, Transformer
+                from pyproj.exceptions import CRSError
+                
+                # 如果是字符串，转换为 CRS 对象
+                if isinstance(crs, str):
+                    try:
+                        crs = PyProjCRS(crs)
+                    except CRSError:
+                        crs = PyProjCRS("EPSG:4326")
+                        gdf = gdf.set_crs(crs, allow_override=True)
+                        print(f"[WARN] CRS 解析失败，默认使用 EPSG:4326")
+                elif crs is None:
+                    crs = PyProjCRS("EPSG:4326")
+                    gdf = gdf.set_crs(crs, allow_override=True)
+            except ImportError:
+                print(f"[DEBUG] pyproj 不可用，跳过 CRS 验证")
             
             print(f"[DEBUG] 输入 CRS: {crs}")
 
@@ -587,34 +645,7 @@ class BufferExecutor(BaseExecutor):
             result_gdf = result_gdf.to_crs(crs) if crs else result_gdf
 
             # ── 核心保存与打包逻辑 ───────────────────────────────────
-            import shutil
-            output_path_obj = Path(output_path)
-
-            if output_path.endswith(".geojson") or output_path.endswith(".json"):
-                driver = "GeoJSON"
-                result_gdf.to_file(output_path, driver=driver)
-            elif output_path.endswith(".gpkg"):
-                driver = "GPKG"
-                result_gdf.to_file(output_path, driver=driver)
-            elif output_path.endswith(".zip"):
-                # 自动打包 Shapefile 全家桶！
-                # 1. 创建一个专属的临时文件夹
-                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                
-                # 2. 将完整 shapefile 输出到这个临时文件夹中
-                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
-                result_gdf.to_file(str(shp_path), driver="ESRI Shapefile")
-                
-                # 3. 把整个临时文件夹压缩成 ZIP 文件
-                zip_base_name = str(output_path_obj.with_suffix(''))
-                shutil.make_archive(zip_base_name, 'zip', temp_dir)
-                
-                # 4. 销毁临时文件夹，保持服务器干净卫生
-                shutil.rmtree(temp_dir)
-            else:
-                driver = "ESRI Shapefile"
-                result_gdf.to_file(output_path, driver=driver)
+            actual_path, driver = self.save_geodataframe(result_gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -622,7 +653,7 @@ class BufferExecutor(BaseExecutor):
                 {
                     "input_layer": task["input_layer"],
                     "input_source": source_label,
-                    "output_file": output_path,
+                    "output_file": actual_path,
                     "distance": distance,
                     "unit": unit,
                     "dissolve": dissolve,
@@ -631,7 +662,7 @@ class BufferExecutor(BaseExecutor):
                     "input_feature_count": len(gdf),
                     "crs": str(crs) if crs else "unknown",
                     "original_crs": str(original_crs) if original_crs else "None (was inferred)",
-                    "output_path": output_path,
+                    "output_path": actual_path,
                 },
                 meta={
                     "driver": driver,
@@ -694,13 +725,34 @@ class BufferExecutor(BaseExecutor):
                     if name_stem in p_stem or p_stem in name_stem:
                         other_matches.append(p)
             
-            # 优先返回 .shp 文件
+            # 优先返回完整且有效的 .shp 文件
             if priority_matches:
-                # 验证 shapefile 完整性
-                valid, msg = self._validate_shapefile(priority_matches[0])
-                if not valid:
-                    print(f"[WARN] Shapefile 验证失败: {msg}")
-                return priority_matches[0]
+                # 按优先级排序：
+                # 1. 验证通过的完整文件
+                # 2. 其他候选文件（可能不完整）
+                valid_files = []
+                invalid_files = []
+                
+                for p in priority_matches:
+                    valid, msg = self._validate_shapefile(p)
+                    if valid:
+                        valid_files.append(p)
+                    else:
+                        invalid_files.append((p, msg))
+                
+                # 如果有完整文件，优先返回第一个
+                if valid_files:
+                    print(f"[DEBUG] 找到 {len(valid_files)} 个完整shapefile，选用: {valid_files[0].name}")
+                    return valid_files[0]
+                
+                # 没有完整文件，打印警告并尝试返回（让读取时处理）
+                if invalid_files:
+                    best_candidate = invalid_files[0][0]
+                    print(f"[WARN] 所有shapefile都不完整，选用最接近的: {best_candidate.name}")
+                    for _, msg in invalid_files:
+                        print(f"       - {msg}")
+                    return best_candidate
+                
             if other_matches:
                 return other_matches[0]
 

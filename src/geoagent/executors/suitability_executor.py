@@ -165,11 +165,11 @@ class SuitabilityExecutor(BaseExecutor):
         return defaults
 
     def _resolve_output(self, task: Dict[str, Any], suffix: str = "suitable") -> str:
+        """解析输出路径：统一输出 ZIP 打包的 Shapefile"""
         output_file = task.get("output_file")
-        if output_file:
-            return self._resolve_path(output_file)
         facility_name = task.get("facility_name", "site")
-        return self._resolve_path(f"{facility_name}_{suffix}.shp")
+        default_filename = f"{facility_name}_{suffix}.zip"  # 改为zip
+        return self._resolve_output_path(output_file, default_filename)
 
     def _resolve_layer_path(self, layer_name: str, layers: List[str]) -> Optional[str]:
         """根据图层名称查找对应的文件路径"""
@@ -348,9 +348,10 @@ class SuitabilityExecutor(BaseExecutor):
 
             # 保存结果
             output_path = self._resolve_output(task, "suitable")
-            driver = self._get_driver(output_path)
-            result_gdf.set_geometry("geometry").to_file(output_path, driver=driver)
-            logger.info(f"结果已保存至: {output_path}")
+            actual_path, driver = self.save_geodataframe(
+                result_gdf.set_geometry("geometry"), output_path
+            )
+            logger.info(f"结果已保存至: {actual_path}")
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -360,7 +361,7 @@ class SuitabilityExecutor(BaseExecutor):
                     "suitable_sites": len(result_gdf),
                     "total_area_m2": float(result_gdf["area_m2"].sum()),
                     "total_area_ha": float(result_gdf["area_ha"].sum()),
-                    "output_file": output_path,
+                    "output_file": actual_path,
                     "impact_radius_m": impact_radius,
                     "affected_residential_count": affected_stats.get("residential_count", 0),
                     "affected_residential_names": affected_stats.get("residential_names", []),

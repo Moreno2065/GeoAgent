@@ -165,7 +165,12 @@ class BaseExecutor(ABC):
             return str(resolved)
 
         # 文件不存在，尝试自动下载
-        return self._try_auto_download(file_path)
+        downloaded = self._try_auto_download(file_path)
+        if downloaded and Path(downloaded).exists():
+            return downloaded
+
+        # 下载失败或不适用，返回原始解析的路径（用于输出文件）
+        return str(resolved)
 
     def _try_auto_download(self, file_name: str) -> str:
         """
@@ -289,6 +294,188 @@ class BaseExecutor(ABC):
             f"无法将地名词「{place_name}」解析为坐标。"
             f"请确保 AMAP_API_KEY 已配置，或检查网络连接。"
         )
+
+    def _get_driver(self, path: str) -> str:
+        """
+        根据文件扩展名获取 GeoPandas 驱动名称。
+
+        Args:
+            path: 文件路径
+
+        Returns:
+            驱动名称字符串
+        """
+        from pathlib import Path
+        ext = Path(path).suffix.lower()
+        return {
+            ".shp": "ESRI Shapefile",
+            ".zip": "ESRI Shapefile",
+            ".geojson": "GeoJSON",
+            ".json": "GeoJSON",
+            ".gpkg": "GPKG",
+            ".fgb": "FlatGeobuf",
+        }.get(ext, "ESRI Shapefile")
+
+    def _resolve_output_path(
+        self,
+        output_file: str | None,
+        default_filename: str,
+        workspace: "Path | None" = None
+    ) -> str:
+        """
+        解析输出文件路径（用于生成新的输出文件，避免模糊匹配到输入文件）。
+
+        特点：
+        - 不会进行模糊文件匹配
+        - 直接基于workspace绝对路径生成输出路径
+        - 自动处理.shp → .zip转换
+
+        Args:
+            output_file: 用户指定的输出路径（可选）
+            default_filename: 默认文件名（应该已经包含.zip后缀）
+            workspace: 工作空间路径（可选，默认使用项目workspace）
+
+        Returns:
+            解析后的输出文件绝对路径
+        """
+        from pathlib import Path
+
+        if workspace is None:
+            workspace = Path(self._workspace_path("")).resolve()
+        else:
+            workspace = Path(workspace).resolve()
+
+        if output_file:
+            path = Path(output_file)
+            if path.is_absolute():
+                full_path = path
+            else:
+                full_path = workspace / output_file
+
+            # shp 强制转为 zip
+            if full_path.suffix.lower() == '.shp':
+                full_path = Path(str(full_path)[:-4] + '.zip')
+            return str(full_path)
+
+        # 自动生成：使用workspace绝对路径 + 默认文件名（应该已经包含.zip后缀）
+        output_path = workspace / default_filename
+        # 如果文件名没有.zip后缀（只有.something或无后缀），强制改为.zip
+        if not str(output_path).lower().endswith('.zip'):
+            output_path = Path(str(output_path) + '.zip')
+        return str(output_path)
+
+    def _read_geodataframe_with_crs(
+        self,
+        file_path: str
+    ) -> "tuple[gpd.GeoDataFrame, Path]":
+        """
+        读取GeoDataFrame，并尝试从.prj文件获取CRS。
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            (GeoDataFrame, 实际读取的文件路径)
+        """
+        import geopandas as gpd
+        from pathlib import Path
+
+        gdf = gpd.read_file(file_path)
+        actual_path = Path(file_path)
+
+        # 如果没有CRS，尝试从.prj文件读取
+        if gdf.crs is None:
+            prj_path = actual_path.with_suffix('.prj')
+            if prj_path.exists():
+                try:
+                    from pyproj import CRS
+                    with open(prj_path, 'r') as f:
+                        prj_text = f.read()
+                    crs = CRS.from_wkt(prj_text)
+                    if crs:
+                        gdf = gdf.set_crs(crs, allow_override=True)
+                except Exception:
+                    pass
+
+        return gdf, actual_path
+
+    def save_geodataframe(
+        self,
+        gdf: "gpd.GeoDataFrame",
+        output_path: str,
+        encoding: str = "utf-8"
+    ) -> tuple[str, str]:
+        """
+        保存 GeoDataFrame 到文件，支持自动打包 ZIP。
+
+        【防幻觉增强】
+        - 只有在文件真正创建成功后才返回路径
+        - 验证输出文件是否存在
+        - 不存在则抛出异常
+
+        智能逻辑：
+        - .zip → 自动将 Shapefile 全家桶打包成 ZIP
+        - .geojson/.json → GeoJSON 格式
+        - .gpkg → GeoPackage 格式
+        - 其他（含 .shp）→ ESRI Shapefile（单个文件会缺失配套文件）
+
+        Args:
+            gdf: GeoDataFrame
+            output_path: 输出文件路径
+            encoding: 编码（默认 utf-8）
+
+        Returns:
+            (实际输出路径, 驱动名称)
+
+        Raises:
+            Exception: 保存失败或文件不存在时抛出异常
+        """
+        import shutil
+        import tempfile
+        import os
+        from pathlib import Path
+
+        output_path_obj = Path(output_path).resolve()
+
+        if str(output_path).endswith(".zip"):
+            # 使用安全的临时文件名（避免中文路径问题）
+            temp_dir = Path(tempfile.mkdtemp(prefix="geoagent_shp_"))
+            
+            try:
+                # 生成 Shapefile 全家桶到临时文件夹（使用ASCII文件名避免编码问题）
+                shp_base_name = f"output"
+                shp_path = temp_dir / f"{shp_base_name}.shp"
+                gdf.to_file(str(shp_path), driver="ESRI Shapefile", encoding=encoding)
+
+                # 确保输出目录存在
+                output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+                # 压缩整个临时文件夹为 ZIP
+                # shutil.make_archive 需要输出路径不包含.zip后缀
+                zip_base_name = str(output_path_obj.with_suffix(''))
+                shutil.make_archive(zip_base_name, 'zip', temp_dir)
+
+                # 【防幻觉】验证文件是否真正创建
+                if not output_path_obj.exists():
+                    raise Exception(f"ZIP 文件创建失败: {output_path_obj}")
+
+                return str(output_path_obj), "ESRI Shapefile (ZIP)"
+            finally:
+                # 清理临时文件夹
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+
+        else:
+            # 非 ZIP 格式，直接保存
+            driver = self._get_driver(output_path)
+            output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            gdf.to_file(str(output_path_obj), driver=driver, encoding=encoding)
+
+            # 【防幻觉】验证文件是否真正创建
+            if not output_path_obj.exists():
+                raise Exception(f"文件创建失败: {output_path_obj}")
+
+            return str(output_path_obj), driver
 
 
 # =============================================================================

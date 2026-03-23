@@ -3,11 +3,16 @@ Layer 6 - Result Renderer
 确定性渲染层
 【防幻觉铁律】
 本层绝对不调用 LLM 进行"二次润色"或"总结"。
+【防幻觉增强】
+- 所有输出文件必须通过文件系统验证
+- 只报告真实存在的文件
+- 不允许渲染层自己捏造任何文件路径
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+import os
 
 
 @dataclass
@@ -77,6 +82,28 @@ class RenderResult:
         """兼容 pipeline 中的 map_file（单数）访问"""
         return self.map_files[0] if self.map_files else None
 
+    def _verify_files(self):
+        """
+        【防幻觉】验证所有文件路径是否真实存在
+
+        只保留真实存在的文件，移除不存在的文件引用。
+        """
+        # 验证 map_files
+        verified_maps = []
+        for f in self.map_files:
+            if f and os.path.exists(f):
+                verified_maps.append(f)
+            # 不存在的文件不添加到结果中
+        self.map_files = verified_maps
+
+        # 验证 output_files
+        verified_outputs = []
+        for f in self.output_files:
+            if f and os.path.exists(f):
+                verified_outputs.append(f)
+            # 不存在的文件不添加到结果中
+        self.output_files = verified_outputs
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
@@ -139,6 +166,20 @@ class ResultRenderer:
         self.explanation: Optional[ExplanationCard] = None
         self._raw_result: Optional[Dict[str, Any]] = None
 
+    def _verify_file(self, file_path: str) -> bool:
+        """
+        【防幻觉】验证文件是否存在
+
+        Args:
+            file_path: 文件路径
+
+        Returns:
+            文件是否存在
+        """
+        if not file_path:
+            return False
+        return os.path.exists(file_path)
+
     def render(self, result: Any) -> RenderResult:
         self._parse_result(result)
         if not getattr(result, "success", True):
@@ -150,12 +191,37 @@ class ResultRenderer:
             self.metrics = result.metrics
         if hasattr(result, "conclusion") and result.conclusion:
             self.conclusion = result.conclusion
-        if hasattr(result, "map_files") and result.map_files:
-            self.map_files = result.map_files
-        if hasattr(result, "output_files") and result.output_files:
-            self.output_files = result.output_files
+
+        # 【防幻觉】验证 map_files
+        raw_map_files = getattr(result, "map_files", None)
+        if raw_map_files:
+            self.map_files = [f for f in raw_map_files if self._verify_file(f)]
+        elif hasattr(result, "map_file") and result.map_file:
+            if self._verify_file(result.map_file):
+                self.map_files = [result.map_file]
+
+        # 【防幻觉】验证 output_files
+        raw_output_files = getattr(result, "output_files", None)
+        if raw_output_files:
+            self.output_files = [f for f in raw_output_files if self._verify_file(f)]
+        
+        # 【防幻觉】检查 data 中的 output_file
+        data = getattr(result, "data", None)
+        if data and isinstance(data, dict):
+            output_file = data.get("output_file")
+            if output_file and self._verify_file(output_file):
+                if output_file not in self.output_files:
+                    self.output_files.append(output_file)
+            # 也检查 map_file
+            map_file = data.get("map_file")
+            if map_file and self._verify_file(map_file):
+                if map_file not in self.map_files:
+                    self.map_files.append(map_file)
+
         self._raw_result = result.to_dict() if hasattr(result, "to_dict") else {"raw": str(result)}
-        return RenderResult(
+        
+        # 【防幻觉】验证最终结果
+        render_result = RenderResult(
             success=True,
             summary=getattr(result, "summary", "") or self._get_default_summary(),
             conclusion=self.conclusion,
@@ -165,6 +231,11 @@ class ResultRenderer:
             metrics=self.metrics,
             raw_result=self._raw_result,
         )
+        
+        # 验证文件路径
+        render_result._verify_files()
+        
+        return render_result
 
     def _render_error(self, result: Any) -> RenderResult:
         error_msg = getattr(result, "error", None)

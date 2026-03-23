@@ -336,12 +336,35 @@ def task2_tiananmen_buffer_with_osm():
             w3857 = water.to_crs(epsg=3857)
             w3857.plot(ax=ax, color="#06B6D4", alpha=0.7, label="水系")
 
-        # 底图
+        # 底图（使用 contextily + Referer 头请求 OSM 瓦片）
         try:
-            ctx.add_basemap(ax, crs=buf.to_crs(epsg=3857).crs,
-                            source=ctx.providers.OpenStreetMap.Mapnik,
-                            alpha=0.4)
-        except:
+            import contextily as ctx  # type: ignore
+            import requests
+
+            # 保存原始 get 方法
+            _original_get = requests.Session.get
+
+            # 创建带 Referer 头的包装器
+            def _patched_get(self, url, **kwargs):
+                # 为 OSM 瓦片 URL 添加 Referer 头
+                headers = kwargs.get('headers', {}) or {}
+                if 'tile.openstreetmap.org' in url or 'a.tile.openstreetmap' in url:
+                    headers['Referer'] = 'https://www.openstreetmap.org/'
+                kwargs['headers'] = headers
+                return _original_get(self, url, **kwargs)
+
+            # 应用 monkey patch
+            requests.Session.get = _patched_get
+
+            try:
+                ctx.add_basemap(ax, crs=buf.to_crs(epsg=3857).crs,
+                                source=ctx.providers.OpenStreetMap.Mapnik,
+                                alpha=0.4)
+            finally:
+                # 恢复原始方法
+                requests.Session.get = _original_get
+
+        except Exception:
             pass
 
         ax.set_axis_off()

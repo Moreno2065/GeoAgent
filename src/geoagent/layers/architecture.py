@@ -113,6 +113,31 @@ class Scenario(str, Enum):
     CHOROPLETH = "choropleth"  # 分级设色（面数据 + 数值字段 → 分类着色）
     DATA_SOURCE = "data_source"  # 数据源加载（从 OSM/API/文件加载数据）
 
+    # ── 🆕 混合搜索器场景（Step 1+2+3 闭环）──────────────────────
+    HYBRID_RETRIEVER = "hybrid_retriever"  # 混合搜索器（实时搜索 → 地理编码 → 空间计算）
+
+    # ── 🆕 遥感分析场景 ───────────────────────────────────────────────
+    REMOTE_SENSING = "remote_sensing"  # 遥感分析（植被指数/变化检测）
+    NDVI = "ndvi"                     # 归一化植被指数
+    NDWI = "ndwi"                     # 归一化水体指数
+    INDEX_CALC = "index_calc"         # 自定义指数计算
+    CHANGE_DETECTION = "change_detection"  # 变化检测
+    IMAGE_CLASSIFY = "image_classify"  # 影像分类
+    BAND_COMPOSITE = "band_composite"  # 波段组合
+    CLOUD_MASK = "cloud_mask"         # 云掩膜
+
+    # ── 🆕 三维分析场景 ───────────────────────────────────────────────
+    LIDAR_3D = "lidar_3d"             # 三维分析
+    VOLUME = "volume"                  # 体积计算
+    PROFILE = "profile"                # 剖面分析
+    HILLSHADE = "hillshade"           # 山体阴影
+    ROUGHNESS = "roughness"           # 粗糙度
+    CURVATURE = "curvature"           # 曲率
+    WATERSHED = "watershed"           # 流域分割
+    FLOW_DIRECTION = "flow_direction"  # 流向
+    FLOW_ACCUMULATION = "flow_accumulation"  # 流量累积
+    CUT_FILL = "cut_fill"             # 填挖方
+
     @classmethod
     def values(cls) -> list[str]:
         return [e.value for e in cls]

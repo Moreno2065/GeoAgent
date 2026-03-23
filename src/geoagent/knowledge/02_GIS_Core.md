@@ -1,4 +1,4 @@
-﻿# 核心数据处理范式
+# 核心数据处理范式
 
 ## 矢量数据处理 (Vector)
 
@@ -231,18 +231,53 @@ clip_raster_to_vector(
 
 ### 基础地图规范
 
-**强制规范**：必须指定 `tiles` 参数，禁止 `tiles=None`。
+**注意**：OSM 瓦片服务要求请求包含 Referer 头，必须使用自定义 TileLayer。
 
 ```python
 import folium
 
-# 正确写法
-m = folium.Map(location=[30.5, 114.3], zoom_start=10, tiles='OpenStreetMap')
+# 注册自定义 TileLayer 类（添加 Referer 头）
+osm_tile_js = """
+L.TileLayer.OsmWithReferer = L.TileLayer.extend({
+    createTile: function(coords, done) {
+        var tile = document.createElement('img');
+        tile.alt = '';
+        tile.setAttribute('role', 'presentation');
+        var tileUrl = this.getTileUrl(coords);
+        var xhr = new XMLHttpRequest();
+        xhr.responseType = 'blob';
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                tile.src = URL.createObjectURL(xhr.response);
+                done(null, tile);
+            } else {
+                done(new Error('Tile load error: ' + xhr.status), tile);
+            }
+        };
+        xhr.onerror = function() { done(new Error('Network error'), tile); };
+        xhr.open('GET', tileUrl, true);
+        xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
+        xhr.send();
+        return tile;
+    }
+});
+L.tileLayer.osmWithReferer = function(url, options) {
+    return new L.TileLayer.OsmWithReferer(url, options);
+};
+"""
 
-# 卫星底图选项
-m = folium.Map(location=[30.5, 114.3], zoom_start=10, 
-               tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-               attr='Esri')
+m = folium.Map(location=[30.5, 114.3], zoom_start=10, tiles=None)
+m.add_child(folium.Element(f"<script>{osm_tile_js}</script>"))
+osm_layer_js = """
+L.tileLayer.osmWithReferer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
+        maxZoom: 19
+    }
+).addTo(map);
+"""
+m.add_child(folium.Element(f"<script>{osm_layer_js}</script>"))
 
 # 保存地图（禁止直接 display）
 m.save('outputs/result_map.html')

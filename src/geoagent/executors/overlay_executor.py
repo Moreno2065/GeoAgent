@@ -97,14 +97,10 @@ class OverlayExecutor(BaseExecutor):
             return ExecutorResult.err(self.task_type, f"不支持的引擎: {engine}", engine=engine)
 
     def _resolve_output(self, operation: str, output_file: str | None) -> str:
-        if output_file:
-            path = Path(self._resolve_path(output_file))
-            # 拦截 shp，强行戴上 zip 帽子
-            if path.suffix.lower() == '.shp':
-                path = path.with_suffix('.zip')
-            return str(path)
-        # 默认生成 zip
-        return self._resolve_path(f"overlay_{operation}.zip")
+        """解析输出路径：统一输出 ZIP 打包的 Shapefile"""
+        # 使用通用的输出路径解析，避免模糊匹配
+        default_filename = f"overlay_{operation}.zip"
+        return self._resolve_output_path(output_file, default_filename)
 
     def _run_geopandas(self, task: Dict[str, Any]) -> ExecutorResult:
         """GeoPandas 叠置分析（主力引擎）"""
@@ -180,26 +176,7 @@ class OverlayExecutor(BaseExecutor):
                 )
 
             # 保存
-            import shutil
-            output_path_obj = Path(output_path)
-
-            if output_path.endswith(".zip"):
-                # 1. 创建临时夹
-                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
-                temp_dir.mkdir(parents=True, exist_ok=True)
-
-                # 2. 生成全家桶
-                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
-                result_gdf.to_file(str(shp_path), driver="ESRI Shapefile")
-
-                # 3. 压缩并销毁临时文件
-                zip_base_name = str(output_path_obj.with_suffix(''))
-                shutil.make_archive(zip_base_name, 'zip', temp_dir)
-                shutil.rmtree(temp_dir)
-                driver = "ESRI Shapefile (ZIP)"
-            else:
-                driver = self._get_driver(output_path)
-                result_gdf.to_file(output_path, driver=driver)
+            actual_path, driver = self.save_geodataframe(result_gdf, output_path)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -208,10 +185,10 @@ class OverlayExecutor(BaseExecutor):
                     "operation": operation,
                     "layer1": task["layer1"],
                     "layer2": task["layer2"],
-                    "output_file": output_path,
+                    "output_file": actual_path,
                     "feature_count": len(result_gdf),
                     "crs": str(gdf1.crs) if gdf1.crs else "unknown",
-                    "output_path": output_path,
+                    "output_path": actual_path,
                 },
                 meta={
                     "driver": driver,
@@ -311,14 +288,3 @@ class OverlayExecutor(BaseExecutor):
                 f"ArcPy 叠置分析失败: {str(e)}",
                 engine="arcpy"
             )
-
-    def _get_driver(self, path: str) -> str:
-        ext = Path(path).suffix.lower()
-        return {
-            ".shp": "ESRI Shapefile",
-            ".zip": "ESRI Shapefile",
-            ".geojson": "GeoJSON",
-            ".json": "GeoJSON",
-            ".gpkg": "GPKG",
-            ".fgb": "FlatGeobuf",
-        }.get(ext, "ESRI Shapefile")
