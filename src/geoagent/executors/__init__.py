@@ -11,20 +11,15 @@ Executor Layer - 统一执行层
   executors/
     __init__.py       # 统一导出 + TaskRouter
     base.py           # BaseExecutor 抽象基类
-    route_executor.py # 路径分析（Amap + NetworkX）
-    buffer_executor.py # 缓冲区分析（ArcPy + GeoPandas）
-    overlay_executor.py # 叠置分析（GeoPandas）
-    idw_executor.py  # IDW插值（SciPy + ArcPy）
-    shadow_executor.py # 阴影分析（3D geometry）
-    ndvi_executor.py # NDVI植被指数（rasterio）
-    hotspot_executor.py # 热点分析（PySAL）
-    viz_executor.py   # 可视化（Folium + PyDeck）
-    postgis_executor.py # PostGIS查询（GeoPandas + psycopg2）
-    general_executor.py # 通用任务（sandboxed Python）
-    gdal_engine.py     # GDAL 工具引擎（raster/vector 操作）
-    gdal_tool_caller.py # LLM 任务 JSON → GDAL 执行
-    gdal_schema.py     # GDAL 工具 Pydantic Schema
-    gdal_executor.py    # GDAL Executor（集成到 Layer 5）
+    router.py         # 任务路由
+    scenario.py       # 场景配置
+    domains/          # 按功能域组织的执行器
+      vector/         # 矢量分析 (route, buffer, overlay, idw, hotspot, suitability)
+      terrain/        # 地形分析 (shadow, lidar_3d, sun_position)
+      web/            # Web 服务 (amap, overpass, osm, stac)
+      remote/         # 遥感分析 (ndvi, remote_sensing)
+      viz/            # 可视化 (visualization)
+      core/           # 核心/通用 (general, gdal, postgis, sandbox, arcgis)
 """
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
@@ -45,44 +40,41 @@ from geoagent.executors.scenario import (
     resolve_engine,
 )
 
-# 各 Executor 类（延迟导入，避免可选依赖未安装时报错）
-from geoagent.executors.route_executor import RouteExecutor
-from geoagent.executors.buffer_executor import BufferExecutor
-from geoagent.executors.overlay_executor import OverlayExecutor
-from geoagent.executors.idw_executor import IDWExecutor
-from geoagent.executors.shadow_executor import ShadowExecutor
-from geoagent.executors.ndvi_executor import NdviExecutor
-from geoagent.executors.hotspot_executor import HotspotExecutor
-from geoagent.executors.viz_executor import VisualizationExecutor
-from geoagent.executors.postgis_executor import PostGISExecutor
-from geoagent.executors.general_executor import GeneralExecutor
-from geoagent.executors.gdal_executor import GDALExecutor
-
-# ── 🆕 新增执行器 ────────────────────────────────────────────────
-try:
-    from geoagent.executors.remote_sensing_executor import (
-        RemoteSensingExecutor,
-        RemoteSensingIndex,
-        BandMapping,
-    )
-except ImportError:
-    RemoteSensingExecutor = None
-    RemoteSensingIndex = None
-    BandMapping = None
-
-try:
-    from geoagent.executors.lidar_3d_executor import (
-        LiDAR3DExecutor,
-        calculate_sun_position,
-    )
-except ImportError:
-    LiDAR3DExecutor = None
-    calculate_sun_position = None
-
-try:
-    from geoagent.executors.stac_search_executor import STACSearchExecutor
-except ImportError:
-    STACSearchExecutor = None
+# 各 Executor 类（从功能域导入）
+from geoagent.executors.domains.vector import (
+    RouteExecutor,
+    BufferExecutor,
+    OverlayExecutor,
+    IDWExecutor,
+    HotspotExecutor,
+    SuitabilityExecutor,
+)
+from geoagent.executors.domains.terrain import (
+    ShadowExecutor,
+    LiDAR3DExecutor,
+    calculate_sun_position,
+)
+from geoagent.executors.domains.web import (
+    AmapExecutor,
+    OverpassExecutor,
+    OSMExecutor,
+    STACSearchExecutor,
+)
+from geoagent.executors.domains.remote import (
+    NdviExecutor,
+    RemoteSensingExecutor,
+    RemoteSensingIndex,
+    BandMapping,
+)
+from geoagent.executors.domains.viz import VisualizationExecutor
+from geoagent.executors.domains.core import (
+    GeneralExecutor,
+    GDALExecutor,
+    PostGISExecutor,
+    CodeSandboxExecutor,
+    ArcGISExecutor,
+    WorkflowEngine,
+)
 
 # GDAL 工具相关
 from geoagent.executors.gdal_engine import (
@@ -105,29 +97,44 @@ from geoagent.executors.gdal_schema import (
     validate_gdal_task,
 )
 
+# 其他执行器（暂未归类）
+from geoagent.executors.multi_criteria_executor import MultiCriteriaSearchExecutor
+from geoagent.executors.hybrid_retriever_executor import HybridRetrieverExecutor
+
 __all__ = [
     # ---- 基础 ----
     "BaseExecutor",
     "ExecutorResult",
-    # ---- 执行器 ----
+    # ---- Vector Domain ----
     "RouteExecutor",
     "BufferExecutor",
     "OverlayExecutor",
     "IDWExecutor",
-    "ShadowExecutor",
-    "NdviExecutor",
     "HotspotExecutor",
-    "VisualizationExecutor",
-    "PostGISExecutor",
-    "GeneralExecutor",
-    "GDALExecutor",
-    # ── 🆕 新增执行器 ─────────────────────────────────────────────
+    "SuitabilityExecutor",
+    # ---- Terrain Domain ----
+    "ShadowExecutor",
+    "LiDAR3DExecutor",
+    "calculate_sun_position",
+    # ---- Web Domain ----
+    "AmapExecutor",
+    "OverpassExecutor",
+    "OSMExecutor",
+    "STACSearchExecutor",
+    # ---- Remote Domain ----
+    "NdviExecutor",
     "RemoteSensingExecutor",
     "RemoteSensingIndex",
     "BandMapping",
-    "LiDAR3DExecutor",
-    "calculate_sun_position",
-    "STACSearchExecutor",
+    # ---- Viz Domain ----
+    "VisualizationExecutor",
+    # ---- Core Domain ----
+    "GeneralExecutor",
+    "GDALExecutor",
+    "PostGISExecutor",
+    "CodeSandboxExecutor",
+    "ArcGISExecutor",
+    "WorkflowEngine",
     # ---- GDAL 工具 ----
     "GDAL_TOOL_WHITELIST",
     "GDAL_TOOL_DEFINITIONS",
@@ -156,4 +163,7 @@ __all__ = [
     "get_all_scenarios",
     "get_executor_key",
     "resolve_engine",
+    # ---- 其他 ----
+    "MultiCriteriaSearchExecutor",
+    "HybridRetrieverExecutor",
 ]
