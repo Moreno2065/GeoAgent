@@ -140,18 +140,17 @@ class BufferExecutor(BaseExecutor):
             )
 
     def _resolve_output(self, input_layer: str, output_file: str | None) -> str:
-        """解析输出路径
-        
-        处理逻辑：
-        1. 如果用户指定了 output_file → 转换为绝对路径（若已是绝对路径则直接返回）
-        2. 自动生成输出路径时，使用纯文件名，避免路径重复问题
-        """
+        """解析输出路径：为了兼容 ArcMap 且适配 Web 下载，统一输出 ZIP 打包的 Shapefile"""
         if output_file:
-            return self._resolve_path(output_file)
+            path = Path(self._resolve_path(output_file))
+            # 只要是想输出 shp 的，强行转成 zip 压缩包！
+            if path.suffix.lower() == '.shp':
+                path = path.with_suffix('.zip')
+            return str(path)
         
-        # 自动生成：直接用文件名部分，避免 workspace/ 前缀重复
+        # 自动生成：直接用文件名部分，强行使用 .zip
         stem = Path(input_layer).stem
-        return self._resolve_path(f"{stem}_buffer.shp")
+        return self._resolve_path(f"{stem}_buffer.zip")
 
     def _parse_place_and_distance(self, text: str) -> Optional[Dict[str, Any]]:
         """
@@ -496,21 +495,31 @@ class BufferExecutor(BaseExecutor):
                     print(f"[DEBUG] 无 CRS 元数据，基于坐标值推断为 {crs}")
             
             print(f"[DEBUG] 输入 CRS: {crs}")
-            
+
+            # CRS 安全处理：统一转换为 pyproj.CRS 对象
+            try:
+                from pyproj import CRS as PyProjCRS
+                if isinstance(crs, str):
+                    crs = PyProjCRS(crs)
+                elif crs is None:
+                    crs = PyProjCRS("EPSG:4326")  # 默认 WGS84
+            except Exception:
+                pass  # 保持原值
+
             # 单位转换：经纬度坐标系需要投影到米制坐标系才能做缓冲区
-            if crs.to_epsg() == 4326 and unit in ("meters", "kilometers"):
+            try:
+                crs_epsg = crs.to_epsg() if hasattr(crs, 'to_epsg') else None
+            except Exception:
+                crs_epsg = None
+
+            if crs_epsg == 4326 and unit in ("meters", "kilometers"):
                 gdf_proj = gdf.to_crs(epsg=3857)
                 print(f"[DEBUG] 从 EPSG:4326 投影到 EPSG:3857 以支持米制缓冲区")
-            elif crs is not None and crs.to_epsg() not in (3857, None):
-                # 其他投影坐标系，检查是否需要转换
+            elif crs_epsg not in (3857, None) and unit in ("meters", "kilometers"):
+                # 其他投影坐标系，转换到 Web Mercator
                 try:
-                    crs_epsg = crs.to_epsg()
-                    if crs_epsg and unit in ("meters", "kilometers"):
-                        # 尝试转换到 Web Mercator
-                        gdf_proj = gdf.to_crs(epsg=3857)
-                        print(f"[DEBUG] 从 EPSG:{crs_epsg} 投影到 EPSG:3857")
-                    else:
-                        gdf_proj = gdf
+                    gdf_proj = gdf.to_crs(epsg=3857)
+                    print(f"[DEBUG] 从 EPSG:{crs_epsg} 投影到 EPSG:3857")
                 except Exception:
                     gdf_proj = gdf
             else:
@@ -523,7 +532,31 @@ class BufferExecutor(BaseExecutor):
                 buffer_dist = distance
 
             print(f"[DEBUG] 输入要素数量: {len(gdf)}")
-            print(f"[DEBUG] 几何类型: {gdf.geometry.geom_type.value_counts().to_dict()}")
+
+            # 空数据检查
+            if gdf.empty:
+                return ExecutorResult.err(
+                    self.task_type,
+                    "输入数据为空，无法创建缓冲区",
+                    engine="geopandas"
+                )
+
+            # Geometry 列有效性检查
+            if gdf.geometry is None or len(gdf.geometry) == 0:
+                return ExecutorResult.err(
+                    self.task_type,
+                    "数据中没有有效的几何要素",
+                    engine="geopandas"
+                )
+
+            # 尝试获取几何类型（使用更稳定的方式）
+            try:
+                geom_types = gdf.geometry.type.value_counts().to_dict()
+                print(f"[DEBUG] 几何类型: {geom_types}")
+            except Exception as e:
+                print(f"[WARN] 无法获取几何类型: {e}")
+                geom_types = {}
+
             print(f"[DEBUG] 缓冲区距离: {buffer_dist} {unit}")
             print(f"[DEBUG] 是否融合: {dissolve}")
 
@@ -553,14 +586,35 @@ class BufferExecutor(BaseExecutor):
             crs = gdf.crs
             result_gdf = result_gdf.to_crs(crs) if crs else result_gdf
 
-            # 保存
-            driver = "ESRI Shapefile"
+            # ── 核心保存与打包逻辑 ───────────────────────────────────
+            import shutil
+            output_path_obj = Path(output_path)
+
             if output_path.endswith(".geojson") or output_path.endswith(".json"):
                 driver = "GeoJSON"
+                result_gdf.to_file(output_path, driver=driver)
             elif output_path.endswith(".gpkg"):
                 driver = "GPKG"
-
-            result_gdf.to_file(output_path, driver=driver)
+                result_gdf.to_file(output_path, driver=driver)
+            elif output_path.endswith(".zip"):
+                # 自动打包 Shapefile 全家桶！
+                # 1. 创建一个专属的临时文件夹
+                temp_dir = output_path_obj.parent / f"temp_shp_{output_path_obj.stem}"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 2. 将完整 shapefile 输出到这个临时文件夹中
+                shp_path = temp_dir / f"{output_path_obj.stem}.shp"
+                result_gdf.to_file(str(shp_path), driver="ESRI Shapefile")
+                
+                # 3. 把整个临时文件夹压缩成 ZIP 文件
+                zip_base_name = str(output_path_obj.with_suffix(''))
+                shutil.make_archive(zip_base_name, 'zip', temp_dir)
+                
+                # 4. 销毁临时文件夹，保持服务器干净卫生
+                shutil.rmtree(temp_dir)
+            else:
+                driver = "ESRI Shapefile"
+                result_gdf.to_file(output_path, driver=driver)
 
             return ExecutorResult.ok(
                 self.task_type,
@@ -583,8 +637,8 @@ class BufferExecutor(BaseExecutor):
                     "driver": driver,
                     "engine_used": "GeoPandas + Shapely",
                     "projected_crs": str(result_gdf.crs) if result_gdf.crs else None,
-                    "geometry_types": gdf.geometry.geom_type.value_counts().to_dict(),
-                    "output_geometry_type": result_gdf.geometry.geom_type.iloc[0] if len(result_gdf) > 0 else None,
+                    "geometry_types": geom_types,
+                    "output_geometry_type": result_gdf.geometry.type.iloc[0] if len(result_gdf) > 0 else None,
                 }
             )
 
@@ -618,11 +672,37 @@ class BufferExecutor(BaseExecutor):
             if candidate.exists():
                 return candidate
 
-        # 2. 主 workspace 递归搜索
+        # 2. 主 workspace 递归搜索（支持子目录，包括 conversation_files）
+        # 优先匹配 .shp 等主文件类型
+        PRIORITY_EXTENSIONS = [".shp", ".geojson", ".json", ".gpkg", ".gjson"]
+        
         if base_ws.exists():
-            for p in base_ws.rglob("*.shp"):
-                if p.stem.lower() == name_stem.lower():
-                    return p
+            # 收集所有匹配的文件
+            priority_matches = []
+            other_matches = []
+            
+            for p in base_ws.rglob("*.shp"):  # 只搜索 .shp 避免 .dbf/.shx
+                p_stem = p.stem.lower()
+                if name_stem in p_stem or p_stem in name_stem:
+                    priority_matches.append(p)
+            
+            for p in base_ws.rglob("*"):
+                if not p.is_file():
+                    continue
+                if p.suffix.lower() in [".geojson", ".json", ".gpkg"]:
+                    p_stem = p.stem.lower()
+                    if name_stem in p_stem or p_stem in name_stem:
+                        other_matches.append(p)
+            
+            # 优先返回 .shp 文件
+            if priority_matches:
+                # 验证 shapefile 完整性
+                valid, msg = self._validate_shapefile(priority_matches[0])
+                if not valid:
+                    print(f"[WARN] Shapefile 验证失败: {msg}")
+                return priority_matches[0]
+            if other_matches:
+                return other_matches[0]
 
         # 3. 当前 workspace
         curr_ws = self._resolve_path(name)
@@ -637,6 +717,33 @@ class BufferExecutor(BaseExecutor):
                 return Path(shp_curr)
 
         return None
+
+    def _validate_shapefile(self, shp_path: Path) -> tuple[bool, str]:
+        """
+        检查 shapefile 配套文件是否完整。
+
+        Args:
+            shp_path: .shp 文件路径
+
+        Returns:
+            (是否有效, 错误信息)
+        """
+        if not shp_path.exists():
+            return False, f"文件不存在: {shp_path}"
+
+        required_exts = [".shx", ".dbf"]
+        missing = [ext for ext in required_exts if not shp_path.with_suffix(ext).exists()]
+
+        if missing:
+            return False, f"Shapefile 缺少配套文件: {', '.join(missing)}"
+
+        # 检查文件大小（.shx 和 .dbf 不应为空）
+        for ext in required_exts:
+            fpath = shp_path.with_suffix(ext)
+            if fpath.exists() and fpath.stat().st_size == 0:
+                return False, f"Shapefile 配套文件为空: {fpath.name}"
+
+        return True, "OK"
 
     def _run_arcpy(self, task: Dict[str, Any]) -> ExecutorResult:
         """ArcPy 缓冲区（可选引擎）"""

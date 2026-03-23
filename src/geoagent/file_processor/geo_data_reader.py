@@ -136,7 +136,7 @@ class GeoDataReader:
         }
 
         # 几何类型统计
-        geom_types = gdf.geom_type.value_counts().to_dict()
+        geom_types = gdf.geometry.type.value_counts().to_dict()
 
         # 要素数量
         feature_count = len(gdf)
@@ -148,7 +148,8 @@ class GeoDataReader:
         # 样本数据
         sample_features = []
         for idx, row in gdf.head(3).iterrows():
-            feature = {"geometry_type": str(row.geom_type)}
+            # iterrows 返回 Series，使用 iloc 访问几何列避免列名冲突
+            feature = {"geometry_type": str(gdf.iloc[idx].geometry.geom_type)}
             for col in columns:
                 if col != "geometry":
                     val = row[col]
@@ -337,6 +338,9 @@ class GeoDataReader:
 
         for idx, row in gdf.head(3).iterrows():
             lines.append(f"\n要素 {idx + 1}:")
+            # 使用 iloc 访问几何列避免列名冲突
+            geom = gdf.iloc[idx].geometry
+            lines.append(f"  几何类型: {geom.geom_type}")
             for col in columns:
                 if col != "geometry":
                     val = row[col]

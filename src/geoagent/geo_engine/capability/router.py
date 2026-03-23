@@ -152,6 +152,8 @@ TASK_CAPABILITY_MAP: Dict[str, str] = {
     "io_reverse_geocode": "io_reverse_geocode",
     "fetch_osm": "io_fetch_osm",
     "io_fetch_osm": "io_fetch_osm",
+    "overpass": "io_overpass",
+    "io_overpass": "io_overpass",
     "fetch_stac": "io_fetch_stac",
     "io_fetch_stac": "io_fetch_stac",
     "stac": "io_fetch_stac",

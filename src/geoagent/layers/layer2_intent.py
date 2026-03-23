@@ -331,9 +331,23 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "摸鱼", "完美地点", "理想位置", "最佳位置", "合适地点",
         # POI 组合条件
         "星巴克附近", "地铁站远一点",
+        # 🆕 新增：多条件距离约束的完整模式
+        "距离.*米.*距离.*米",  # "距离星巴克小于200米且距离地铁站大于500米"
+        "小于.*米.*大于.*米",  # "小于200米...大于500米"
+        "星巴克.*米.*地铁站.*米",  # "星巴克200米内且地铁站500米外"
+        # 🆕 新增：常见 POI + 距离组合
+        "星巴克.*200", "地铁站.*500",  # 典型距离数字组合
+        "摸鱼地点", "摸鱼好地方", "办公.*摸鱼",
+        # 🆕 新增：明确的双条件约束
+        "既.*又.*", "既在.*又在",  # "既要...又要..."
+        # 🆕 排除/否定操作符（空间排斥）
+        "以外", "除外", "排除", "剔除", "不在",
+        "不在.*内", "不在.*范围",
         # 英文
         "less than", "more than", "within meters",
         "perfect spot", "ideal location", "both and",
+        "starbucks.*meters", "subway.*meters",  # Starbucks within 200 meters
+        "not within", "outside", "exclude", "excluding",
     ],
 
     # ── 🟣 代码沙盒（受限代码执行）────────────────────────────────
@@ -388,6 +402,20 @@ INTENT_KEYWORDS: Dict[Scenario, List[str]] = {
         "download area", "download region", "download this area",
         "download the area", "download vector", "download shp", "download geojson",
         "download layer", "export data", "export map", "export shp", "export geojson",
+    ],
+
+    # ── 🟣 Overpass API 直接查询 ─────────────────────────────────────────
+    Scenario.OVERPASS: [
+        # 中文 — Overpass 显式关键词
+        "overpass", "overpass api", "用overpass", "overpass查询",
+        "overpass下载", "overpass抓取", "overpass获取",
+        "osmid", "osm id",
+        # 矩形区域查询
+        "bbox查询", "矩形查询", "范围查询osm", "经纬度范围下载",
+        "31.23", "121.48", "坐标范围",
+        # 英文 — Overpass 显式关键词
+        "overpass query", "query overpass", "overpass download",
+        "bbox query", "rectangle query", "bounding box",
     ],
 }
 
@@ -483,11 +511,31 @@ class IntentClassifier:
         SCENARIOS = [s.value for s in Scenario]
         SCENARIO_NAMES = [s.name for s in Scenario]
 
+        # 🆕 修复：多条件 POI 搜索 → MULTI_CRITERIA_SEARCH，不是 CODE_SANDBOX
+        # CODE_SANDBOX 只用于"生成测试数据"、"随机点"等纯代码计算场景
         prompt = f"""你是专业的 GIS 空间意图识别器。
 请将用户输入分类到以下场景之一：
 {', '.join(SCENARIOS)}
 
-涉及复杂空间运算、多条件距离计算、无本地数据的分析 → CODE_SANDBOX
+## 场景判断规则（必须严格遵守）
+
+### 判断为 MULTI_CRITERIA_SEARCH 的场景：
+- 多条件 POI 搜索（同时满足多个距离条件）
+- 例如："距离星巴克<200米且距离地铁站>500米的地方"
+- 例如："找一个离星巴克近但离地铁站远的地方"
+- 特点：有具体的 POI 类型（星巴克、地铁站）+ 具体的距离阈值
+
+### 判断为 CODE_SANDBOX 的场景：
+- 生成随机测试数据（随机点、随机多边形）
+- 纯数学计算（面积、周长、距离的具体数值计算）
+- 需要执行自定义 Python 代码的场景
+- 特点：没有具体的 POI 搜索，只是代码计算
+
+### 其他场景判断：
+- 单一 POI 搜索（"附近有哪些星巴克"）→ POI_SEARCH
+- 路径规划（"从 A 到 B"）→ ROUTE
+- 缓冲分析（"某图层周边500米"）→ BUFFER
+
 输入："{query}"
 只输出枚举单词，不要解释。"""
 

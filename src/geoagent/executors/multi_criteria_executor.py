@@ -98,11 +98,20 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             # 3. 联网搜索 POI
             poi_results = self._search_pois(center_coords, parsed, search_radius)
 
-            # 4. 计算距离并筛选
+            # 4. 提取排除条件（用于地图渲染）
+            exclude_conditions = [
+                cond for cond in parsed.get("distance_conditions", [])
+                if cond.get("exclude", False)
+            ]
+
+            # 5. 计算距离并筛选
             filtered = self._filter_by_distance(poi_results, center_coords, parsed)
 
-            # 5. 生成结果
-            return self._build_result(filtered, center_coords, parsed, user_input)
+            # 6. 生成结果
+            return self._build_result(
+                filtered, center_coords, parsed, user_input,
+                poi_results=poi_results, exclude_conditions=exclude_conditions
+            )
 
         except Exception as e:
             return ExecutorResult.err(
@@ -199,29 +208,31 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         - "距离星巴克小于200米"
         - "星巴克200米内"
         - "距离地铁站大于500米"
-        - "离地铁远一点（>500米）"
+        - "地铁站400米以外" (排除模式)
+        - "不在地铁站400米内" (排除模式)
         """
         conditions = []
 
-        # 模式1: "距离[POI][操作符][数值][单位]"
-        patterns = [
-            # 距离星巴克小于200米
-            r"距离\s*([^\s，,，。]+?)\s*(?:小于|小于|小于|大于|超过|不到|不超过|以内|以外)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)",
-            # 星巴克小于200米 / 小于200米的星巴克
-            r"([^\s，,，。]+?)\s*(?:小于|大于|不到|不超过|以内|以外)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)",
+        # 模式1: 标准距离条件 (operator BEFORE number)
+        # POI name: 不含空格、数字、标点
+        standard_patterns = [
+            # Operator BEFORE number (小于/大于/不到/不超过)
+            r"距离\s*([^\s\d，,。]{1,20})\s*(?:小于|大于|超过|不到|不超过)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)",
+            r"([^\s\d，,。]{1,20})\s*(?:小于|大于|不到|不超过)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)",
+            # Operator AFTER number (以内/之内) - number comes first
+            r"([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以内|之内)",
+            r"距离\s*([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以内|之内)",
         ]
 
-        for pattern in patterns:
+        for pattern in standard_patterns:
             matches = re.finditer(pattern, query)
             for match in matches:
                 full_match = match.group(0)
                 groups = match.groups()
 
-                # 判断操作符
                 is_less = any(kw in full_match for kw in ["小于", "不到", "不超过", "以内", "之内"])
-                is_greater = any(kw in full_match for kw in ["大于", "超过", "以外"])
+                is_greater = any(kw in full_match for kw in ["大于", "超过"])
 
-                # 解析数值和单位
                 dist_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)", full_match)
                 if not dist_match:
                     continue
@@ -231,23 +242,81 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                 if "公里" in unit_text or "km" in unit_text.lower():
                     dist_val *= 1000
 
-                # 确定 POI 类型
-                if len(groups) == 2:
-                    # 第一个可能是 POI 名称，第二个是距离（或反过来）
-                    if re.match(r"^\d", groups[0]):
-                        poi_name = groups[1]
-                    else:
-                        poi_name = groups[0]
-                else:
-                    poi_name = groups[0] if groups else ""
+                poi_name = groups[0].strip() if groups else ""
 
                 conditions.append({
-                    "poi_type": poi_name.strip(),
+                    "poi_type": poi_name,
                     "threshold": int(dist_val),
                     "operator": "<" if is_less else ">",
+                    "exclude": False,
                 })
 
-        return conditions
+        # 模式2: 排除条件 (排除关键词: 以外/除外/排除/剔除)
+        exclusion_patterns = [
+            # "不在地铁站400米以内" / "不在地铁站400米内"
+            r"不在\s*([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以内|之内|内)",
+            # "不在地铁站400米以外/除外/排除"
+            r"不在\s*([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以外|除外|排除|剔除)",
+            # "距离地铁站400米以外/除外/排除"
+            r"距离\s*([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以外|除外|排除|剔除)",
+            # "地铁站400米以外/除外/排除" (独立使用，排除模式)
+            r"(?<![^\s])([^\s\d，,。]{1,20})\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)\s*(?:以外|除外|排除|剔除)",
+        ]
+
+        for pattern in exclusion_patterns:
+            matches = re.finditer(pattern, query)
+            for match in matches:
+                groups = match.groups()
+                poi_name = groups[0].strip() if groups else ""
+
+                # 避免重复
+                already_matched = False
+                for existing in conditions:
+                    if existing.get("poi_type") == poi_name and existing.get("exclude"):
+                        already_matched = True
+                        break
+                if already_matched:
+                    continue
+
+                dist_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)", match.group(0))
+                if not dist_match:
+                    continue
+
+                dist_val = float(dist_match.group(1))
+                unit_text = dist_match.group(0)
+                if "公里" in unit_text or "km" in unit_text.lower():
+                    dist_val *= 1000
+
+                conditions.append({
+                    "poi_type": poi_name,
+                    "threshold": int(dist_val),
+                    "operator": ">",
+                    "exclude": True,
+                })
+
+        # 去重：合并相同 POI 类型的条件
+        deduped = {}
+        for cond in conditions:
+            poi_type = cond.get("poi_type", "")
+            key = (poi_type, cond.get("exclude", False))
+            if key not in deduped:
+                deduped[key] = cond
+            else:
+                existing = deduped[key]
+                if cond.get("threshold", 0) < existing.get("threshold", 0):
+                    deduped[key] = cond
+
+        # 移除与 exclude 条件冲突的非 exclude 同类型条件
+        final_conditions = []
+        exclude_types = {c["poi_type"] for c in deduped.values() if c.get("exclude")}
+        for cond in deduped.values():
+            poi_type = cond.get("poi_type", "")
+            if poi_type in exclude_types and not cond.get("exclude"):
+                continue
+            final_conditions.append(cond)
+
+        return final_conditions
+
 
     def _resolve_center(self, location: str) -> Optional[Tuple[float, float]]:
         """
@@ -322,6 +391,9 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
 
         Returns:
             按 POI 类型分组的搜索结果
+
+        Raises:
+            Exception: 当任何 POI API 调用失败或返回空数据时直接抛出
         """
         results: Dict[str, List[Dict[str, Any]]] = {}
         lon, lat = center_coords
@@ -329,6 +401,10 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
 
         # 确定要搜索的 POI 类型
         poi_types_to_search = self._get_poi_types(parsed)
+
+        # 🔴 铁律：必须联网搜索！不允许任何回退到假设数据！
+        api_call_failed = False
+        failure_details = []
 
         for poi_type in poi_types_to_search:
             keywords = self._get_poi_keywords(poi_type)
@@ -341,9 +417,17 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             if pois:
                 results[poi_type] = pois
 
-        # 调试日志：如果没有找到任何 POI
+        # 🔴 如果没有找到任何 POI，必须抛出异常！禁止返回空字典让 LLM 猜测！
         if not results:
-            print(f"[MultiCriteriaSearch] 警告：在 {center_coords} 附近 {radius}m 范围内未找到任何 POI，请检查 API Key 权限和搜索关键词")
+            failure_msg = (
+                f"[CRITICAL] 在 {center_coords} 附近 {radius}m 范围内联网搜索 POI 失败！"
+                f"搜索的 POI 类型: {poi_types_to_search}。"
+                f"详情: {failure_details if failure_details else '所有 API 调用均返回空结果'}。"
+                f"\n**强制终止**：无法进行距离计算和筛选！"
+                f"\n**禁止行为**：1) 不要猜测坐标 2) 不要返回假设数据 3) 不要让 LLM 自由发挥！"
+                f"\n**正确做法**：将此错误返回给用户，告知需要检查 API Key 和网络连接。"
+            )
+            raise Exception(failure_msg)
 
         return results
 
@@ -446,14 +530,16 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
 
         Returns:
             POI 列表
+
+        Raises:
+            Exception: API 调用失败或返回空数据时抛出
         """
         try:
             from geoagent.plugins.amap_plugin import search_poi
 
             api_key = os.getenv("AMAP_API_KEY", "").strip()
             if not api_key:
-                print(f"[MultiCriteriaSearch] 警告：AMAP_API_KEY 未配置")
-                return []
+                raise Exception(f"AMAP_API_KEY 未配置，无法搜索 POI 类型 '{poi_type}'")
 
             result = search_poi(
                 keywords=keywords,
@@ -475,12 +561,19 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                     })
                 return pois
             else:
-                print(f"[MultiCriteriaSearch] 搜索 '{keywords}' 返回空结果 (location={location}, radius={radius})")
+                # 🔴 铁律：API 返回空结果时必须抛出异常！禁止让 LLM 自由发挥猜测坐标
+                raise Exception(
+                    f"[CRITICAL] POI API 返回空数据！keywords={keywords}, location={location}, radius={radius}。"
+                    f"这意味着距离筛选无法进行。请检查：1) API Key 是否有效 2) 搜索范围是否合理 3) 关键词是否正确。"
+                    f"**绝对禁止**返回默认坐标或假设值，必须让流程失败并告知用户！"
+                )
 
         except Exception as e:
-            print(f"[MultiCriteriaSearch] 搜索 POI 时出错: {str(e)}")
-
-        return []
+            # 🔴 如果是 POI 返回空异常，原样抛出；其他异常才打印
+            error_msg = str(e)
+            if "POI API 返回空数据" in error_msg or "CRITICAL" in error_msg or "AMAP_API_KEY 未配置" in error_msg:
+                raise
+            raise Exception(f"搜索 POI 类型 '{poi_type}' 时出错: {str(e)}")
 
     def _filter_by_distance(
         self,
@@ -527,6 +620,7 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         # ── 步骤1：分析条件 ──────────────────────────────────────────────
         near_conditions = []   # 距离必须 < threshold
         far_conditions = []    # 距离必须 > threshold
+        exclude_conditions = []  # 排除条件：剔除某类POI指定范围内的点
 
         for cond in conditions:
             poi_type = cond.get("poi_type", "")
@@ -542,10 +636,19 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                 "operator": operator,
             }
 
-            if operator in ("<", "<="):
+            # 检查是否为排除条件
+            if cond.get("exclude", False):
+                exclude_conditions.append(condition_entry)
+            elif operator in ("<", "<="):
                 near_conditions.append(condition_entry)
             else:
                 far_conditions.append(condition_entry)
+
+        # ── 特殊处理：排除条件（空间排斥）──────────────────────────────
+        if exclude_conditions:
+            return self._spatial_exclusion_filter(
+                poi_results, center_coords, exclude_conditions, near_conditions, far_conditions, parsed
+            )
 
         # ── 步骤2：收集所有涉及的 POI ────────────────────────────────────
         all_pois_by_type = {}
@@ -712,6 +815,348 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         valid_candidates.sort(key=score_candidate, reverse=True)
 
         # 去除重复点（保留评分最高的）
+        unique_candidates = []
+        seen_names = set()
+        for c in valid_candidates:
+            name = c.get("name", "")
+            if name not in seen_names:
+                unique_candidates.append(c)
+                seen_names.add(name)
+                if len(unique_candidates) >= 10:
+                    break
+
+        return unique_candidates
+
+    def _spatial_exclusion_filter(
+        self,
+        poi_results: Dict[str, List[Dict[str, Any]]],
+        center_coords: Tuple[float, float],
+        exclude_conditions: List[Dict[str, Any]],
+        near_conditions: List[Dict[str, Any]],
+        far_conditions: List[Dict[str, Any]],
+        parsed: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        空间排除过滤：剔除距离某类POI过近的点
+
+        这是"找出XX以外的星巴克"这类查询的核心实现。
+        使用 GeoPandas 进行精确的空间叠置分析。
+
+        Args:
+            poi_results: 按类型分组的 POI 搜索结果
+            center_coords: 中心点坐标
+            exclude_conditions: 排除条件列表
+            near_conditions: 必须近的条件列表
+            far_conditions: 必须远的条件列表
+            parsed: 搜索条件
+
+        Returns:
+            符合条件的候选点列表（已排除指定范围内的点）
+        """
+        search_radius = parsed.get("search_radius", 3000)
+
+        # 收集所有 POI 类型
+        all_poi_types = set()
+        for cond in near_conditions + far_conditions + exclude_conditions:
+            all_poi_types.add(cond["poi_type"])
+        # 也添加搜索到的所有 POI 类型
+        all_poi_types.update(poi_results.keys())
+
+        # ── 步骤1：构建所有候选 POI 点位 ─────────────────────────────
+        all_pois = []
+        for poi_type, pois in poi_results.items():
+            for poi in pois:
+                if poi.get("lon") and poi.get("lat"):
+                    poi_copy = dict(poi)
+                    poi_copy["calc_distance"] = self._haversine_distance(
+                        center_coords, (poi["lon"], poi["lat"])
+                    )
+                    all_pois.append(poi_copy)
+
+        if not all_pois:
+            return []
+
+        # ── 步骤2：构建排除区域（GeoPandas Buffer）───────────────────
+        try:
+            import geopandas as gpd
+            import pandas as pd
+            from shapely.geometry import Point
+        except ImportError:
+            # GeoPandas 不可用，使用 Haversine 距离回退
+            return self._spatial_exclusion_haversine(
+                poi_results, center_coords, exclude_conditions, near_conditions, far_conditions, parsed
+            )
+
+        # 创建排除区域的 MultiPolygon
+        exclude_buffers = []
+
+        for exc_cond in exclude_conditions:
+            poi_type = exc_cond["poi_type"]
+            threshold = exc_cond["threshold"]
+            pois = poi_results.get(poi_type, [])
+
+            for poi in pois:
+                if poi.get("lon") and poi.get("lat"):
+                    try:
+                        # 将点转换为 GeoDataFrame，投影到米制坐标系
+                        point = gpd.GeoDataFrame(
+                            geometry=[Point(poi["lon"], poi["lat"])],
+                            crs="EPSG:4326"
+                        )
+                        point = point.to_crs("EPSG:3857")
+                        # 创建缓冲区
+                        buffer = point.copy()
+                        buffer.geometry = buffer.geometry.buffer(threshold)
+                        # 转回 WGS84
+                        buffer = buffer.to_crs("EPSG:4326")
+                        exclude_buffers.append(buffer.iloc[0].geometry)
+                    except Exception:
+                        pass
+
+        # 合并所有排除缓冲区为单一多边形
+        combined_exclude_geom = None
+        if exclude_buffers:
+            from shapely.ops import unary_union
+            combined_exclude_geom = unary_union(exclude_buffers)
+
+        # ── 步骤3：过滤候选点 ───────────────────────────────────────
+        valid_candidates = []
+
+        for poi in all_pois:
+            if not poi.get("lon") or not poi.get("lat"):
+                continue
+
+            # 检查是否在排除区域内
+            if combined_exclude_geom:
+                try:
+                    point = Point(poi["lon"], poi["lat"])
+                    if combined_exclude_geom.contains(point) or combined_exclude_geom.touches(point):
+                        # 在排除区域内，跳过
+                        continue
+                except Exception:
+                    # 空间判断失败，使用 Haversine 回退
+                    pass
+
+            # 如果在排除区域外，继续验证其他条件
+            candidate_coords = (poi["lon"], poi["lat"])
+            meets_all = True
+
+            # 验证 near 条件
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                threshold = near_cond["threshold"]
+                pois = poi_results.get(poi_type, [])
+
+                if not pois:
+                    meets_all = False
+                    break
+
+                min_dist = float("inf")
+                for p in pois:
+                    if p.get("lon") and p.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (p["lon"], p["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+
+                poi[f"dist_to_{poi_type}"] = min_dist
+                if min_dist > threshold:
+                    meets_all = False
+                    break
+
+            if not meets_all:
+                continue
+
+            # 验证 far 条件
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                threshold = far_cond["threshold"]
+                pois = poi_results.get(poi_type, [])
+
+                if not pois:
+                    continue
+
+                min_dist = float("inf")
+                for p in pois:
+                    if p.get("lon") and p.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (p["lon"], p["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+
+                poi[f"dist_to_{poi_type}"] = min_dist
+                if min_dist < threshold:
+                    meets_all = False
+                    break
+
+            if meets_all:
+                valid_candidates.append(poi)
+
+        # ── 步骤4：评分排序 ─────────────────────────────────────────
+        def score_candidate(candidate):
+            s = 0.0
+            s -= candidate.get("calc_distance", 0) / 100
+
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s += dist / 50
+
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s -= dist / 100
+
+            # 排除条件惩罚：如果距离排除区域很近，降低评分
+            if combined_exclude_geom:
+                try:
+                    from shapely.geometry import Point
+                    point = Point(candidate["lon"], candidate["lat"])
+                    dist_to_exclude = point.distance(combined_exclude_geom)
+                    s += dist_to_exclude / 200  # 越远离排除区域越好
+                except Exception:
+                    pass
+
+            return s
+
+        valid_candidates.sort(key=score_candidate, reverse=True)
+
+        # 去除重复
+        unique_candidates = []
+        seen_names = set()
+        for c in valid_candidates:
+            name = c.get("name", "")
+            if name not in seen_names:
+                unique_candidates.append(c)
+                seen_names.add(name)
+                if len(unique_candidates) >= 10:
+                    break
+
+        return unique_candidates
+
+    def _spatial_exclusion_haversine(
+        self,
+        poi_results: Dict[str, List[Dict[str, Any]]],
+        center_coords: Tuple[float, float],
+        exclude_conditions: List[Dict[str, Any]],
+        near_conditions: List[Dict[str, Any]],
+        far_conditions: List[Dict[str, Any]],
+        parsed: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Haversine 回退实现：当 GeoPandas 不可用时的空间排除过滤
+
+        使用 Haversine 距离计算代替几何 Buffer。
+        """
+        search_radius = parsed.get("search_radius", 3000)
+
+        # 收集所有排除 POI
+        exclude_pois = []
+        for exc_cond in exclude_conditions:
+            poi_type = exc_cond["poi_type"]
+            threshold = exc_cond["threshold"]
+            pois = poi_results.get(poi_type, [])
+            exclude_pois.append({"type": poi_type, "threshold": threshold, "pois": pois})
+
+        # 收集所有候选 POI
+        all_pois = []
+        for poi_type, pois in poi_results.items():
+            for poi in pois:
+                if poi.get("lon") and poi.get("lat"):
+                    poi_copy = dict(poi)
+                    poi_copy["calc_distance"] = self._haversine_distance(
+                        center_coords, (poi["lon"], poi["lat"])
+                    )
+                    all_pois.append(poi_copy)
+
+        valid_candidates = []
+
+        for poi in all_pois:
+            if not poi.get("lon") or not poi.get("lat"):
+                continue
+
+            candidate_coords = (poi["lon"], poi["lat"])
+
+            # 检查是否在排除区域内
+            is_excluded = False
+            for exc in exclude_pois:
+                for exc_poi in exc["pois"]:
+                    if exc_poi.get("lon") and exc_poi.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (exc_poi["lon"], exc_poi["lat"]))
+                        if dist <= exc["threshold"]:
+                            is_excluded = True
+                            break
+                if is_excluded:
+                    break
+
+            if is_excluded:
+                continue
+
+            # 验证其他条件
+            meets_all = True
+
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                threshold = near_cond["threshold"]
+                pois = poi_results.get(poi_type, [])
+
+                if not pois:
+                    meets_all = False
+                    break
+
+                min_dist = float("inf")
+                for p in pois:
+                    if p.get("lon") and p.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (p["lon"], p["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+
+                poi[f"dist_to_{poi_type}"] = min_dist
+                if min_dist > threshold:
+                    meets_all = False
+                    break
+
+            if not meets_all:
+                continue
+
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                threshold = far_cond["threshold"]
+                pois = poi_results.get(poi_type, [])
+
+                if not pois:
+                    continue
+
+                min_dist = float("inf")
+                for p in pois:
+                    if p.get("lon") and p.get("lat"):
+                        dist = self._haversine_distance(candidate_coords, (p["lon"], p["lat"]))
+                        if dist < min_dist:
+                            min_dist = dist
+
+                poi[f"dist_to_{poi_type}"] = min_dist
+                if min_dist < threshold:
+                    meets_all = False
+                    break
+
+            if meets_all:
+                valid_candidates.append(poi)
+
+        # 评分排序
+        def score_candidate(candidate):
+            s = 0.0
+            s -= candidate.get("calc_distance", 0) / 100
+            for far_cond in far_conditions:
+                poi_type = far_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s += dist / 50
+            for near_cond in near_conditions:
+                poi_type = near_cond["poi_type"]
+                dist = candidate.get(f"dist_to_{poi_type}", 0)
+                s -= dist / 100
+            return s
+
+        valid_candidates.sort(key=score_candidate, reverse=True)
+
+        # 去重
         unique_candidates = []
         seen_names = set()
         for c in valid_candidates:
@@ -957,7 +1402,9 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         filtered: List[Dict[str, Any]],
         center_coords: Tuple[float, float],
         parsed: Dict[str, Any],
-        user_input: str
+        user_input: str,
+        poi_results: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        exclude_conditions: Optional[List[Dict[str, Any]]] = None
     ) -> ExecutorResult:
         """
         构建执行结果
@@ -967,6 +1414,8 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             center_coords: 中心点坐标
             parsed: 搜索条件
             user_input: 原始用户输入
+            poi_results: 所有搜索到的 POI（用于地图渲染）
+            exclude_conditions: 排除条件（用于地图渲染）
 
         Returns:
             ExecutorResult
@@ -989,7 +1438,10 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
             )
 
         # 生成地图（保存到 outputs）
-        map_path = self._generate_map(filtered, center_coords, parsed)
+        map_path = self._generate_map(
+            filtered, center_coords, parsed,
+            poi_results=poi_results, exclude_conditions=exclude_conditions
+        )
 
         # 构建详细结果
         candidates_data = []
@@ -1078,20 +1530,43 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
         self,
         candidates: List[Dict[str, Any]],
         center_coords: Tuple[float, float],
-        parsed: Dict[str, Any]
+        parsed: Dict[str, Any],
+        poi_results: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        exclude_conditions: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Path]:
-        """生成交互式地图"""
+        """
+        生成交互式地图
+
+        Args:
+            candidates: 筛选后的候选点
+            center_coords: 中心点坐标
+            parsed: 搜索条件
+            poi_results: 所有搜索到的 POI（用于显示排除标记）
+            exclude_conditions: 排除条件（用于显示缓冲区）
+
+        Returns:
+            地图文件路径
+        """
         try:
             import folium
+            from folium import plugins
 
             lat, lon = center_coords[1], center_coords[0]
             m = folium.Map(location=[lat, lon], zoom_start=14, tiles="OpenStreetMap")
+
+            # 添加遥感底图选项
+            folium.TileLayer(
+                tiles="https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+                attr="高德影像",
+                name="高德影像",
+                subdomains=["1", "2", "3", "4"]
+            ).add_to(m)
 
             # 中心点标记
             folium.Marker(
                 [lat, lon],
                 popup=f"中心点<br>{parsed.get('center', '')}",
-                icon=folium.Icon(color="red", icon="home")
+                icon=folium.Icon(color="red", icon="home", prefix="fa")
             ).add_to(m)
 
             # 搜索范围圆
@@ -1104,25 +1579,171 @@ class MultiCriteriaSearchExecutor(BaseExecutor):
                 popup=f"搜索范围：{parsed.get('radius', 3000)}米"
             ).add_to(m)
 
-            # 候选点标记
-            for i, poi in enumerate(candidates[:10], 1):
-                if poi.get("lat") and poi.get("lon"):
-                    folium.Marker(
-                        [poi["lat"], poi["lon"]],
-                        popup=f"{i}. {poi.get('name', '未知')}<br>{poi.get('address', '')}<br>距中心：{poi.get('calc_distance', 0):.0f}米",
-                        icon=folium.Icon(color="green", icon="star")
-                    ).add_to(m)
+            # ── 绘制排除缓冲区（如果存在）────────────────────────────
+            if exclude_conditions and poi_results:
+                self._draw_exclusion_zones(m, poi_results, exclude_conditions)
+
+            # ── 绘制所有 POI（区分是否被排除）─────────────────────────
+            if poi_results:
+                self._draw_poi_markers(m, candidates, poi_results)
+            else:
+                # 旧版逻辑：仅绘制候选点
+                for i, poi in enumerate(candidates[:10], 1):
+                    if poi.get("lat") and poi.get("lon"):
+                        folium.Marker(
+                            [poi["lat"], poi["lon"]],
+                            popup=f"{i}. {poi.get('name', '未知')}<br>{poi.get('address', '')}<br>距中心：{poi.get('calc_distance', 0):.0f}米",
+                            icon=folium.Icon(color="green", icon="star", prefix="fa")
+                        ).add_to(m)
+
+            # 添加图例
+            self._add_map_legend(m)
+
+            # 添加图层控制
+            folium.LayerControl().add_to(m)
 
             # 保存地图
-            output_dir = Path("workspace/outputs")
+            # 使用 workspace_dir 确保路径正确
+            from geoagent.gis_tools.fixed_tools import get_workspace_dir
+            ws_dir = Path(get_workspace_dir())
+            output_dir = ws_dir / "outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
             map_path = output_dir / "multi_criteria_search_result.html"
             m.save(map_path)
 
+            # 验证文件确实被保存了
+            if not map_path.exists():
+                print(f"⚠️ [多条件搜索] 地图文件保存后验证失败: {map_path}")
+                return None
+                
+            print(f"💾 [多条件搜索] 地图已保存至: {map_path}")
             return map_path
 
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ [多条件搜索] 生成地图失败: {e}")
+            import traceback
+            print(f"详细错误: {traceback.format_exc()}")
             return None
+
+    def _draw_exclusion_zones(
+        self,
+        m: folium.Map,
+        poi_results: Dict[str, List[Dict[str, Any]]],
+        exclude_conditions: List[Dict[str, Any]]
+    ) -> None:
+        """绘制排除区域（Buffer 圆圈）"""
+        for exc_cond in exclude_conditions:
+            poi_type = exc_cond.get("poi_type", "")
+            threshold = exc_cond.get("threshold", 400)
+            pois = poi_results.get(poi_type, [])
+
+            for poi in pois:
+                if poi.get("lat") and poi.get("lon"):
+                    # 绘制地铁站标记（红色）
+                    folium.CircleMarker(
+                        location=[poi["lat"], poi["lon"]],
+                        radius=6,
+                        color="red",
+                        fill=True,
+                        fill_color="#ff4444",
+                        fill_opacity=0.8,
+                        popup=f"{poi.get('name', poi_type)}<br>（排除源）"
+                    ).add_to(m)
+
+                    # 绘制缓冲区圆圈
+                    folium.Circle(
+                        location=[poi["lat"], poi["lon"]],
+                        radius=threshold,
+                        color="#ff4444",
+                        fill=True,
+                        fill_color="#ff6666",
+                        fill_opacity=0.15,
+                        weight=2,
+                        dash_array="5, 5",
+                        popup=f"{poi.get('name', poi_type)} {threshold}米排除区"
+                    ).add_to(m)
+
+    def _draw_poi_markers(
+        self,
+        m: folium.Map,
+        candidates: List[Dict[str, Any]],
+        poi_results: Dict[str, List[Dict[str, Any]]]
+    ) -> None:
+        """绘制 POI 标记，区分已选中和已排除"""
+        # 创建已选中候选点的集合
+        candidate_coords = set()
+        for poi in candidates:
+            if poi.get("lon") and poi.get("lat"):
+                coord_key = f"{poi['lon']:.6f},{poi['lat']:.6f}"
+                candidate_coords.add(coord_key)
+
+        # 遍历所有 POI 类型
+        for poi_type, pois in poi_results.items():
+            for poi in pois:
+                if not poi.get("lat") or not poi.get("lon"):
+                    continue
+
+                coord_key = f"{poi['lon']:.6f},{poi['lat']:.6f}"
+                is_selected = coord_key in candidate_coords
+
+                # 选择颜色和图标
+                if poi_type in ["星巴克", "咖啡", "咖啡厅"]:
+                    if is_selected:
+                        # 选中的星巴克 - 绿色勾选
+                        icon = folium.Icon(color="green", icon="check", prefix="fa")
+                    else:
+                        # 被排除的星巴克 - 灰色
+                        icon = folium.Icon(color="gray", icon="times", prefix="fa")
+                else:
+                    # 其他 POI - 蓝色
+                    icon = folium.Icon(color="blue", icon="info", prefix="fa")
+
+                # 创建弹出信息
+                popup_html = f"""
+                <b>{poi.get('name', '未知')}</b><br>
+                类型：{poi_type}<br>
+                """
+                if poi.get("address"):
+                    popup_html += f"地址：{poi['address']}<br>"
+                if poi.get("distance"):
+                    popup_html += f"距中心：{poi['distance']}米<br>"
+
+                if is_selected:
+                    popup_html += "<span style='color:green'>✓ 已选中</span>"
+                else:
+                    popup_html += "<span style='color:gray'>✗ 已排除</span>"
+
+                folium.Marker(
+                    location=[poi["lat"], poi["lon"]],
+                    popup=folium.Popup(popup_html, max_width=300),
+                    icon=icon
+                ).add_to(m)
+
+    def _add_map_legend(self, m: folium.Map) -> None:
+        """添加地图图例"""
+        legend_html = '''
+        <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; 
+                    background-color: white; padding: 15px; border-radius: 5px;
+                    box-shadow: 0 0 15px rgba(0,0,0,0.2); font-size: 12px;">
+            <div style="font-weight: bold; margin-bottom: 10px;">图例</div>
+            <div style="margin: 5px 0;">
+                <span style="color: red;">●</span> 排除源（地铁站）
+            </div>
+            <div style="margin: 5px 0;">
+                <span style="color: red; opacity: 0.3;">◯</span> 排除缓冲区
+            </div>
+            <div style="margin: 5px 0;">
+                <span style="color: green;">✓</span> 已选中的星巴克
+            </div>
+            <div style="margin: 5px 0;">
+                <span style="color: gray;">✗</span> 已排除的星巴克
+            </div>
+            <div style="margin: 5px 0;">
+                <span style="color: blue;">●</span> 其他POI
+            </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
 
 
 # 兼容函数式调用

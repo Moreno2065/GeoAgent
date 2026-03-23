@@ -344,7 +344,7 @@ class EmbeddingRouter:
             Scenario.VISUALIZATION: "可视化 地图渲染 热力图 分类图 visualization heatmap choropleth",
             Scenario.CODE_SANDBOX: "代码执行 Python 脚本 自定义计算 code python script custom",
             Scenario.FETCH_OSM: "OSM下载 地图下载 数据下载 osm download map download",
-            Scenario.MULTI_CRITERIA_SEARCH: "多条件搜索 POI筛选 综合选址 multi-criteria poi search",
+            Scenario.MULTI_CRITERIA_SEARCH: "多条件搜索 POI筛选 综合选址 距离计算 距离星巴克小于200米 距离地铁站大于500米 摸鱼地点 ideal location perfect spot both conditions",
             Scenario.GEOCODE: "地理编码 地址转坐标 geocode address to coordinates",
             Scenario.REGEOCODE: "逆地理编码 坐标转地址 regeocode coordinates to address",
             Scenario.DISTRICT: "行政区域查询 省市县 district administrative boundaries",

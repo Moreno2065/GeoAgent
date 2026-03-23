@@ -194,7 +194,7 @@ class TestAgentCore:
         agent = GeoAgent(api_key="sk-test_key")
 
         assert agent.api_key == "sk-test_key"
-        assert agent.model == "deepseek-chat"
+        assert agent.model == "deepseek-reasoner"
 
     @patch('openai.OpenAI')
     def test_add_user_message(self, mock_openai, mock_env):

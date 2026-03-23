@@ -730,17 +730,18 @@ def render_3d_map(
             return json.dumps({"success": False, "error": "数据为空"}, ensure_ascii=False)
 
         # ── 提取坐标（处理 MultiPolygon/Polygon/Point）───────────────
-        if gdf.geometry.geom_type.iloc[0] in ("MultiPolygon", "Polygon"):
+        geom_type_first = gdf.geometry.type.iloc[0]
+        if geom_type_first in ("MultiPolygon", "Polygon"):
             centroids = gdf.geometry.centroid
             gdf["_lon"] = centroids.x
             gdf["_lat"] = centroids.y
-        elif gdf.geometry.geom_type.iloc[0] in ("MultiPoint", "Point"):
+        elif geom_type_first in ("MultiPoint", "Point"):
             gdf["_lon"] = gdf.geometry.x
             gdf["_lat"] = gdf.geometry.y
         else:
             return json.dumps({
                 "success": False,
-                "error": f"不支持的几何类型: {gdf.geometry.geom_type.iloc[0]}，仅支持 Point/Polygon/MultiPolygon"
+                "error": f"不支持的几何类型: {geom_type_first}，仅支持 Point/Polygon/MultiPolygon"
             }, ensure_ascii=False)
 
         # ── 构建 DataFrame ─────────────────────────────────────────
@@ -1513,7 +1514,7 @@ def multi_criteria_site_selection(
                     tags={"building": True}
                 )
                 if len(buildings) > 0:
-                    buildings = buildings[buildings.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
+                    buildings = buildings[buildings.geometry.type.isin(["Polygon", "MultiPolygon"])]
                     buildings_proj = buildings.to_crs("EPSG:32650")
                     building_areas = buildings_proj.geometry.area
                     # 500m 格网内建筑总面积
@@ -1670,12 +1671,14 @@ def render_accessibility_map(
             facility_proj = facility_gdf
 
         # 提取坐标
-        if demand_proj.geometry.geom_type.iloc[0] in ("Polygon", "MultiPolygon"):
+        demand_geom_type = demand_proj.geometry.type.iloc[0]
+        if demand_geom_type in ("Polygon", "MultiPolygon"):
             demand_pts = demand_proj.geometry.centroid
         else:
             demand_pts = demand_proj.geometry
 
-        if facility_proj.geometry.geom_type.iloc[0] in ("Polygon", "MultiPolygon"):
+        facility_geom_type = facility_proj.geometry.type.iloc[0]
+        if facility_geom_type in ("Polygon", "MultiPolygon"):
             facility_pts = facility_proj.geometry.centroid
         else:
             facility_pts = facility_proj.geometry

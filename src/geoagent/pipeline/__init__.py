@@ -40,9 +40,43 @@ from geoagent.layers.layer3_orchestrate import (
     _get_enum_value as _get_orch_scenario_value,
 )
 from geoagent.layers.layer4_dsl import GeoDSL, DSLBuilder, SchemaValidationError
-from geoagent.layers.layer6_render import RenderResult, ResultRenderer, render_result
+from geoagent.layers.layer6_render import RenderResult, ResultRenderer
 from geoagent.executors.router import execute_task as _execute_task
 from geoagent.executors.base import ExecutorResult
+
+# 多轮推理
+from geoagent.pipeline.multi_round import (
+    ConversationContext,
+    ConversationStatus,
+    MultiRoundManager,
+    StepResult,
+    StepSpec,
+    StepStatus,
+    Message,
+    MessageRole,
+    get_multi_round_manager,
+    create_conversation,
+    get_conversation,
+)
+from geoagent.pipeline.step_planner import (
+    StepParser,
+    ParsedStep,
+    ParseResult,
+    parse_steps,
+    is_multi_step,
+)
+from geoagent.pipeline.multi_round_executor import (
+    MultiRoundExecutor,
+    RoundExecutionResult,
+    FullConversationResult,
+    get_multi_round_executor,
+    create_multi_round_executor,
+)
+# API 路由需要 fastapi，按需导入
+# from geoagent.pipeline.api_routes import (
+#     create_api_router,
+#     setup_multi_round_api,
+# )
 
 
 # =============================================================================
@@ -377,6 +411,7 @@ class GeoAgentPipeline:
                 text,
                 context=context,
                 intent_result=intent_result,
+                file_contents=user_input.file_contents,
             )
             ctx.orchestration_result = orchestration_result
             ctx.status = PipelineStatus.ORCHESTRATED
@@ -553,6 +588,156 @@ class GeoAgentPipeline:
         result = self.run(text, files=files, context=context)
         yield {"event": "complete", **result.to_dict()}
 
+    # ── 多轮推理支持 ─────────────────────────────────────────────────────────
+
+    def run_with_context(
+        self,
+        text: str,
+        conversation_context: Optional[Dict[str, Any]] = None,
+        files: Optional[List[Dict[str, Any]]] = None,
+        event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> PipelineResult:
+        """
+        使用上下文运行 Pipeline（支持多轮推理）
+
+        Args:
+            text: 用户输入的自然语言
+            conversation_context: 对话上下文，包含：
+                - extracted_params: 已提取的参数
+                - output_map: 步骤输出映射
+                - step_count: 当前步骤数
+                - conversation_id: 对话ID
+                - 其他自定义字段
+            files: 上传的文件列表
+            event_callback: 事件回调
+
+        Returns:
+            PipelineResult
+
+        使用方式：
+            pipeline = GeoAgentPipeline()
+            context = {
+                "extracted_params": {"distance": 500, "unit": "meters"},
+                "output_map": {"step_1": ["/path/to/buffer_result.geojson"]},
+                "step_count": 2,
+            }
+            result = pipeline.run_with_context(
+                "叠加河流数据",
+                conversation_context=context,
+            )
+        """
+        # 合并上下文参数
+        merged_context = self._merge_conversation_context(text, conversation_context)
+
+        # 调用标准 run 方法
+        return self.run(
+            text=text,
+            files=files,
+            context=merged_context,
+            event_callback=event_callback,
+        )
+
+    def _merge_conversation_context(
+        self,
+        text: str,
+        conversation_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        合并对话上下文到 Pipeline context
+
+        Args:
+            text: 用户输入
+            conversation_context: 对话上下文
+
+        Returns:
+            合并后的 context
+        """
+        if not conversation_context:
+            return {}
+
+        merged = {}
+
+        # 1. 提取已保存的参数
+        if "extracted_params" in conversation_context:
+            merged.update(conversation_context["extracted_params"])
+
+        # 2. 添加步骤输出映射
+        if "output_map" in conversation_context:
+            merged["_output_map"] = conversation_context["output_map"]
+
+        # 3. 添加步骤计数
+        if "step_count" in conversation_context:
+            merged["_step_count"] = conversation_context["step_count"]
+
+        # 4. 添加对话ID
+        if "conversation_id" in conversation_context:
+            merged["_conversation_id"] = conversation_context["conversation_id"]
+
+        # 5. 添加上一步的输出文件路径（便捷访问）
+        output_map = conversation_context.get("output_map", {})
+        if output_map:
+            # 获取最新一步的输出
+            latest_key = f"step_{len([k for k in output_map.keys() if k.startswith('step_')])}"
+            if latest_key in output_map:
+                merged["_prev_output"] = output_map[latest_key]
+            # 也支持直接用 "step_1", "step_2" 等访问
+            for key, value in output_map.items():
+                if key.startswith("step_"):
+                    merged[f"_{key}_output"] = value
+
+        return merged
+
+    def merge_context_params(
+        self,
+        existing_params: Dict[str, Any],
+        new_params: Dict[str, Any],
+        strategy: str = "merge",
+    ) -> Dict[str, Any]:
+        """
+        合并参数
+
+        Args:
+            existing_params: 已有的参数
+            new_params: 新参数
+            strategy: 合并策略
+                - "override": 完全覆盖
+                - "merge": 浅合并，new 优先级更高
+                - "deep_merge": 深度合并
+
+        Returns:
+            合并后的参数
+        """
+        if strategy == "override":
+            return new_params.copy()
+
+        if strategy == "merge":
+            return {**existing_params, **new_params}
+
+        if strategy == "deep_merge":
+            return self._deep_merge(existing_params, new_params)
+
+        return {**existing_params, **new_params}
+
+    def _deep_merge(
+        self,
+        base: Dict[str, Any],
+        updates: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """深度合并两个字典"""
+        result = base.copy()
+
+        for key, value in updates.items():
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = value
+
+        return result
+
 
 # =============================================================================
 # 便捷函数
@@ -665,4 +850,21 @@ __all__ = [
     "get_pipeline",
     "run_pipeline",
     "run_pipeline_mvp",
+    # 多轮推理
+    "MultiRoundManager",
+    "ConversationContext",
+    "StepResult",
+    "StepSpec",
+    "ConversationStatus",
+    "StepStatus",
+    "MultiRoundExecutor",
+    "RoundExecutionResult",
+    "FullConversationResult",
+    "get_multi_round_manager",
+    "create_conversation",
+    "get_conversation",
+    "StepParser",
+    "ParseResult",
+    "parse_steps",
+    "is_multi_step",
 ]

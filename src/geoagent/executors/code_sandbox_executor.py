@@ -199,61 +199,71 @@ CODE_GENERATION_PROMPT = """\
 
 ## 核心规则（必须遵守）
 
-1. **只使用白名单库**：geopandas (gpd), shapely (sp), numpy (np), pandas (pd), networkx (nx), scipy
-2. **禁止导入**：os, sys, subprocess, requests, urllib, http, pickle, subprocess, socket
+1. **只使用白名单库**：geopandas (gpd), shapely (sp), numpy (np), pandas (pd), networkx (nx), scipy, folium
+2. **禁止导入**：os, sys, subprocess, requests, urllib, http, pickle, socket
 3. **禁止危险函数**：exec(), eval(), open(), __import__(), breakpoint()
-4. **最终结果存入变量 `result`**
-5. **无文件 IO**（用 geopandas 的 read_file / to_file 读写地理数据）
-6. **无网络请求**
-7. **无循环嵌套过深**（最多 3 层）
-
-## 可用的 GIS 库
-
+4. **统一工作区路径**：所有输入输出文件，必须通过以下方式获取绝对路径：
+   ```python
+   from geoagent.gis_tools.fixed_tools import get_workspace_dir
+   ws_dir = get_workspace_dir() / "outputs"
+   ws_dir.mkdir(exist_ok=True)
+📦 Shapefile 上传规范：
+Shapefile 由多个文件组成（.shp/.shx/.dbf/.prj 等），必须打包为 .zip 格式上传。
+使用 shapefile 或 pycrfsuite 等库创建 ZIP：
 ```python
-import geopandas as gpd
-import shapely.geometry as sp
-import numpy as np
-import pandas as pd
-import networkx as nx
-from shapely.geometry import Point, LineString, Polygon, MultiPolygon
-from shapely.ops import unary_union, transform
-from shapely.validation import make_valid
-import pyproj
+import zipfile
+import shapefile  # pyshp 库
+# ... 写入 shp 文件 ...
+with zipfile.ZipFile(ws_dir / "result.zip", 'w', zipfile.ZIP_DEFLATED) as zf:
+    for ext in ['shp', 'shx', 'dbf', 'prj']:
+        zf.write(ws_dir / f"result.{ext}", f"result.{ext}")
+data_path = str(ws_dir / "result.zip")
 ```
 
-## 可用的数据上下文（作为 `data` 字典传入）
+优先使用单文件格式（GeoJSON/GeoPackage），除非用户明确要求 Shapefile。
 
-{context_data}
+地图渲染协议：
+如果用户要求在地图上显示，必须使用 folium 生成 HTML。并保存为：map_path = str(ws_dir / "map.html")，然后调用 m.save(map_path)。
 
-## 任务描述
+数据上报规范 (致命要求)：
+你必须定义一个名为 result 的字典！
 
-{description}
+如果生成了数据文件，必须包含 "output_file": 文件绝对路径
 
-## 输出格式
+如果生成了 HTML 地图，必须包含 "map_file": map_path绝对路径
 
-请仅输出 Python 代码，用 ```python 和 ``` 包裹。
-不要输出任何解释或注释。
+输出格式
+请仅输出 Python 代码，用 python 和  包裹。不要输出解释。
 
-代码示例：
+示例代码：
 
-```python
+Python
 import geopandas as gpd
-import numpy as np
-from shapely.geometry import Point
+import folium
+from geoagent.gis_tools.fixed_tools import get_workspace_dir
 
-# 使用 data 字典中的数据
-points = data.get("points", [])
-weights = data.get("weights", [1.0] * len(points))
+ws_dir = get_workspace_dir() / "outputs"
+ws_dir.mkdir(exist_ok=True)
 
-# 计算加权中心
-total_weight = sum(weights)
-cx = sum(p[0] * w for p, w in zip(points, weights)) / total_weight
-cy = sum(p[1] * w for p, w in zip(points, weights)) / total_weight
+# 假设这里经过了坐标计算得到 gdf
+# ... 你的业务逻辑 ...
 
-# 结果存入 result
-result = {{"center": (cx, cy), "total_weight": total_weight}}
-print(f"加权中心: {{cx:.4f}}, {{cy:.4f}}")
-```
+# 1. 强制保存为 GeoJSON（告别 SHP 碎片）
+data_path = str(ws_dir / "points.geojson")
+gdf.to_file(data_path, driver="GeoJSON")
+
+# 2. 画图并保存
+m = folium.Map(location=[39.9, 116.4], zoom_start=10)
+map_path = str(ws_dir / "osm_map.html")
+m.save(map_path)
+
+# 3. 规范上报 result
+result = {
+    "status": "success",
+    "output_file": data_path,
+    "map_file": map_path
+}
+"""
 """
 
 

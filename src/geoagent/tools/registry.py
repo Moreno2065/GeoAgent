@@ -31,7 +31,7 @@ TOOL_CLUSTERS: Dict[str, List[str]] = {
         "terrain_analysis", "watershed", "flow_accumulation",
     ],
     "data_fetch": [
-        "fetch_osm", "search_online_data", "access_layer_info",
+        "fetch_osm", "overpass", "search_online_data", "access_layer_info",
         "download_features", "query_features", "get_layer_statistics",
         "search_stac", "search_stac_imagery", "read_cog_remote",
     ],
@@ -201,6 +201,76 @@ def _fetch_osm_impl(
         "data_type": data_type,
         "network_type": network_type,
     })
+    return result.to_json()
+
+
+def _overpass_impl(
+    bbox: str = "",
+    center_point: str = "",
+    radius: int = 1000,
+    data_type: str = "building",
+    tags: str = "",
+) -> str:
+    """
+    overpass 工具：直接调用 Overpass API 获取 OpenStreetMap 数据。
+
+    支持的查询模式：
+    - bbox 查询：指定矩形范围，如 "31.23,121.48,31.24,121.50"
+    - center_point 查询：中心点 + 半径
+
+    Args:
+        bbox: 矩形范围 "south,west,north,east"
+        center_point: 中心点 "lng,lat"
+        radius: 半径（米）
+        data_type: 数据类型 (building/road/water/poi/all)
+        tags: 自定义 OSM 标签 JSON 字符串，如 '{"building":"commercial"}'
+
+    Returns:
+        JSON 字符串（ExecutorResult.to_json() 格式）
+    """
+    from geoagent.executors.overpass_executor import OverpassExecutor
+
+    executor = OverpassExecutor()
+
+    # 解析参数
+    params: dict = {
+        "data_type": data_type,
+    }
+
+    if bbox:
+        # bbox 格式: "south,west,north,east"
+        parts = bbox.split(",")
+        if len(parts) == 4:
+            params["query_type"] = "bbox"
+            params["bbox"] = [float(p.strip()) for p in parts]
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"bbox 格式错误，应为 'south,west,north,east'，实际为 '{bbox}'"
+            }, ensure_ascii=False)
+
+    elif center_point:
+        params["query_type"] = "circle"
+        params["center_point"] = center_point
+        params["radius"] = radius
+    else:
+        return json.dumps({
+            "success": False,
+            "error": "请指定 bbox 或 center_point 参数"
+        }, ensure_ascii=False)
+
+    # 解析自定义标签
+    if tags:
+        import json as json_lib
+        try:
+            params["tags"] = json_lib.loads(tags)
+        except json_lib.JSONDecodeError:
+            return json.dumps({
+                "success": False,
+                "error": f"tags 参数不是有效的 JSON: {tags}"
+            }, ensure_ascii=False)
+
+    result = executor.run(params)
     return result.to_json()
 
 
@@ -576,6 +646,9 @@ def execute_tool(tool_name: str, arguments: dict) -> str:
 
         elif tool_name == "fetch_osm":
             raw_result = _fetch_osm_impl(**arguments)
+
+        elif tool_name == "overpass":
+            raw_result = _overpass_impl(**arguments)
 
         elif tool_name == "deepseek_search":
             raw_result = _deepseek_search_impl(

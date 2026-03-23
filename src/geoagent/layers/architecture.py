@@ -84,7 +84,8 @@ class Scenario(str, Enum):
     CODE_SANDBOX = "code_sandbox"  # 受限代码执行（非标准任务的自定义 Python 代码）
 
     # ── 🟣 OSM 地图下载场景 ────────────────────────────────────────
-    FETCH_OSM = "fetch_osm"  # 从 OpenStreetMap 下载路网/建筑物数据
+    FETCH_OSM = "fetch_osm"  # 从 OpenStreetMap 下载路网/建筑物数据（使用 OSMnx）
+    OVERPASS = "overpass"  # 直接调用 Overpass API 下载 OSM 数据
 
     # ── 🟣 多条件综合搜索场景 ─────────────────────────────────────────
     MULTI_CRITERIA_SEARCH = "multi_criteria_search"  # 多条件 POI 搜索（如"找距离星巴克<200m且地铁站>500m的地方"）
@@ -313,7 +314,8 @@ MVP_SCENARIO_EXECUTOR_MAP = {
     Scenario.IP_LOCATION: "amap_executor",
     Scenario.WEATHER: "amap_executor",
     Scenario.CODE_SANDBOX: "code_sandbox_executor",  # 受限代码执行（补丁层）
-    Scenario.FETCH_OSM: "osm_executor",  # OSM 地图下载
+    Scenario.FETCH_OSM: "osm_executor",  # OSM 地图下载（OSMnx）
+    Scenario.OVERPASS: "overpass_executor",  # Overpass API 直接查询
 }
 
 # 引擎名称

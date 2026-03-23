@@ -111,23 +111,57 @@ class FileFallbackHandler:
                     logger.debug(f"扩展名补全匹配: {candidate}")
                     return candidate
 
-        # 策略3：模糊匹配（文件名片段包含）
-        for existing in workspace.iterdir():
+        # GIS 主文件类型（用户可以直接使用的文件类型）
+        MAIN_GIS_EXTENSIONS = [".shp", ".geojson", ".json", ".gpkg", ".gjson", ".tif", ".tiff", ".cog"]
+        # GIS 辅助文件（不单独显示）
+        AUXILIARY_EXTENSIONS = [".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".xml"]
+
+        # 策略3：模糊匹配（文件名片段包含）- 递归搜索子目录，优先返回主文件类型
+        candidates = []
+        for existing in workspace.rglob("*"):
             if not existing.is_file():
+                continue
+            ext = existing.suffix.lower()
+            # 跳过辅助文件
+            if ext in AUXILIARY_EXTENSIONS:
                 continue
             existing_stem = existing.stem.lower()
             # 完全包含关系
             if name_stem in existing_stem or existing_stem in name_stem:
-                logger.debug(f"模糊匹配: {existing}")
-                return existing
+                candidates.append(existing)
+        
+        if candidates:
+            # 优先返回主文件类型，按优先级排序
+            for ext in MAIN_GIS_EXTENSIONS:
+                for candidate in candidates:
+                    if candidate.suffix.lower() == ext:
+                        logger.debug(f"模糊匹配（递归，优先级）: {candidate}")
+                        return candidate
+            # 没有主文件类型，返回第一个匹配
+            logger.debug(f"模糊匹配（递归）: {candidates[0]}")
+            return candidates[0]
 
-        # 策略4：大小写不敏感匹配（适用于 Linux/macOS）
-        for existing in workspace.iterdir():
+        # 策略4：大小写不敏感匹配（适用于 Linux/macOS）- 递归搜索子目录
+        candidates = []
+        for existing in workspace.rglob("*"):
             if not existing.is_file():
                 continue
+            ext = existing.suffix.lower()
+            # 跳过辅助文件
+            if ext in AUXILIARY_EXTENSIONS:
+                continue
             if existing.stem.lower() == name_stem:
-                logger.debug(f"大小写不敏感匹配: {existing}")
-                return existing
+                candidates.append(existing)
+        
+        if candidates:
+            # 优先返回主文件类型
+            for ext in MAIN_GIS_EXTENSIONS:
+                for candidate in candidates:
+                    if candidate.suffix.lower() == ext:
+                        logger.debug(f"大小写不敏感匹配（递归，优先级）: {candidate}")
+                        return candidate
+            logger.debug(f"大小写不敏感匹配（递归）: {candidates[0]}")
+            return candidates[0]
 
         return None
 
@@ -337,23 +371,46 @@ class FileFallbackHandler:
             safe_name = self._sanitize_filename(place_name)
             output_path = workspace / f"{safe_name}_osm.geojson"
 
-            # 保存 GeoJSON
-            import geopandas as gpd
-
+            # 保存 GeoJSON - 优先从 geojson_path 复制，否则尝试从 data 直接构建
             geojson_path = osm_data.get("geojson_path")
+            
             if geojson_path and Path(geojson_path).exists():
-                # 从临时位置移动到 workspace
+                # 从临时位置复制到 workspace
                 import shutil
                 shutil.copy(geojson_path, output_path)
+            elif "features" in osm_data or "type" in osm_data:
+                # 直接从内存中的 GeoJSON 数据保存
+                import json
+                import geopandas as gpd
+                from shapely.geometry import shape, Point, LineString, Polygon
+                
+                # 如果是 GeoJSON 格式（dict with 'features' or 'type')
+                geojson_data = osm_data if "features" in osm_data else osm_data.get("data", osm_data)
+                
+                # 保存前验证路径存在
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(geojson_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"从内存数据保存 OSM 结果: {output_path}")
+            elif "gdf" in osm_data:
+                # 如果是 GeoDataFrame
+                gdf = osm_data["gdf"]
+                gdf.to_file(output_path, driver="GeoJSON", encoding="utf-8")
             else:
-                # 直接从 data 构建
-                logger.warning("OSM 数据中没有 geojson_path，尝试从内存保存")
+                logger.warning(f"OSM 数据格式无法识别，geojson_path={geojson_path}, keys={osm_data.keys()}")
                 return None
 
+            # 验证文件确实被保存了
+            if not output_path.exists():
+                logger.error(f"文件保存后验证失败: {output_path}")
+                return None
+                
+            logger.info(f"OSM 结果已保存至: {output_path}")
             return str(output_path)
 
         except Exception as e:
             logger.error(f"保存 OSM 结果失败: {e}")
+            import traceback
+            logger.debug(f"详细错误: {traceback.format_exc()}")
             return None
 
     # -------------------------------------------------------------------------

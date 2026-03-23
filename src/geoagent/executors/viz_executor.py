@@ -398,7 +398,7 @@ class VisualizationExecutor(BaseExecutor):
                 if gdf.crs and gdf.crs.to_epsg() != 4326:
                     gdf = gdf.to_crs(4326)
 
-                geom_type = gdf.geometry.geom_type.iloc[0]
+                geom_type = gdf.geometry.type.iloc[0]
                 if geom_type in ("Polygon", "MultiPolygon"):
                     gdf["_lon"] = gdf.geometry.centroid.x
                     gdf["_lat"] = gdf.geometry.centroid.y

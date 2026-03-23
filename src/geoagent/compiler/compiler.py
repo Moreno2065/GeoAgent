@@ -131,7 +131,7 @@ class GISCompiler:
 
         Args:
             api_key: API 密钥
-            model: 模型名称 (deepseek-chat / deepseek-reasoner)
+            model: 模型名称 (deepseek-chat / deepseek-v3)
             base_url: API 基础 URL
             max_retries: 最大重试次数
             temperature: 生成温度（越低越确定性）

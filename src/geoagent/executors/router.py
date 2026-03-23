@@ -84,6 +84,9 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "fetch_osm":     lambda: __import__(
                               "geoagent.executors.osm_executor",
                               fromlist=["OSMExecutor"]).OSMExecutor,
+        "overpass_executor": lambda: __import__(
+                              "geoagent.executors.overpass_executor",
+                              fromlist=["OverpassExecutor"]).OverpassExecutor,
         # ArcGIS Online 下载
         "arcgis_download": lambda: __import__(
                               "geoagent.executors.arcgis_executor",
@@ -158,6 +161,7 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "vector_intersect": "gdal",
         # OSM 在线下载
         "fetch_osm":       "fetch_osm",
+        "overpass_executor": "overpass_executor",
         # ArcGIS Online 下载
         "arcgis_download": "arcgis_download",
         # 受限代码执行
@@ -222,6 +226,7 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "vector_intersect": "gdal",
     # OSM 在线下载
     "fetch_osm":        "fetch_osm",
+    "overpass_executor": "overpass_executor",
     # 受限代码执行
     "code_sandbox":     "code_sandbox",
     # ── 可视化 Pipeline 扩展 ────────────────────────────────────────

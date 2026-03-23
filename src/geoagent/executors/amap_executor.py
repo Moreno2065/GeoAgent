@@ -29,7 +29,9 @@ AmapExecutor - 高德地图 Web 服务执行器
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
 
@@ -118,11 +120,237 @@ class AmapExecutor(BaseExecutor):
             )
         return None
 
-    def _ok(self, scenario: str, data: Any, meta: Optional[Dict] = None) -> ExecutorResult:
-        return ExecutorResult.ok(self.task_type, "amap", data, meta=meta or {})
+    def _ok(self, scenario: str, data: Any, meta: Optional[Dict] = None,
+            output_files: Optional[List[str]] = None,
+            map_files: Optional[List[str]] = None) -> ExecutorResult:
+        """构建成功的 ExecutorResult，支持附加文件输出"""
+        result = ExecutorResult.ok(self.task_type, "amap", data, meta=meta or {})
+        if output_files:
+            result.data = result.data or {}
+            result.data["output_files"] = output_files
+        if map_files:
+            result.data = result.data or {}
+            result.data["map_files"] = map_files
+        return result
 
     def _err(self, scenario: str, msg: str) -> ExecutorResult:
         return ExecutorResult.err(self.task_type, msg, engine="amap")
+
+    def _get_workspace_dir(self) -> Path:
+        """获取工作目录（兼容对话目录）"""
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        ws = get_workspace_dir()
+        return Path(ws)
+
+    def _save_poi_files(self, pois: List[Dict], keywords: str, city: str) -> Dict[str, str]:
+        """
+        保存 POI 数据到文件（CSV + GeoJSON + 可选地图 HTML）
+
+        Args:
+            pois: POI 列表
+            keywords: 搜索关键词
+            city: 城市名
+
+        Returns:
+            {"csv": path, "geojson": path, "map_html": path} 或只有 csv/geojson
+        """
+        if not pois:
+            return {}
+
+        saved_files = {}
+        ws_dir = self._get_workspace_dir()
+
+        # 清理关键词用于文件名
+        safe_keywords = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in keywords)
+        if not safe_keywords:
+            safe_keywords = "POI"
+        # 清理城市名
+        safe_city = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in city) if city else ""
+
+        # ── 保存 CSV ────────────────────────────────────────────────────
+        try:
+            import pandas as pd
+
+            df = pd.DataFrame(pois)
+            # 选择有意义的列
+            cols = ["name", "address", "lon", "lat", "location", "type", "tel",
+                    "营业时间", "人均价格", "business_type", "tag"]
+            available_cols = [c for c in cols if c in df.columns]
+            df_export = df[available_cols] if available_cols else df
+
+            csv_name = f"{safe_city}_{safe_keywords}.csv" if safe_city else f"{safe_keywords}.csv"
+            csv_path = ws_dir / csv_name
+            df_export.to_csv(csv_path, index=False, encoding='utf-8-sig')
+            saved_files["csv"] = str(csv_path)
+            print(f"💾 [高德] POI 数据已保存至 CSV: {csv_path}")
+        except Exception as e:
+            print(f"⚠️ [高德] 保存 CSV 失败: {e}")
+            # 不中断，继续尝试保存其他文件
+
+        # ── 保存 GeoJSON（仅保留有坐标的 POI）──────────────────────────
+        try:
+            valid_pois = [p for p in pois if p.get("lon") is not None and p.get("lat") is not None]
+            if valid_pois:
+                geojson_features = []
+                for poi in valid_pois:
+                    feature = {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [poi["lon"], poi["lat"]]
+                        },
+                        "properties": {
+                            k: v for k, v in poi.items()
+                            if k not in ("lon", "lat", "location")
+                        }
+                    }
+                    geojson_features.append(feature)
+
+                geojson_data = {
+                    "type": "FeatureCollection",
+                    "features": geojson_features
+                }
+
+                import json
+                geojson_name = f"{safe_city}_{safe_keywords}.geojson" if safe_city else f"{safe_keywords}.geojson"
+                geojson_path = ws_dir / geojson_name
+                with open(geojson_path, 'w', encoding='utf-8') as f:
+                    json.dump(geojson_data, f, ensure_ascii=False, indent=2)
+                saved_files["geojson"] = str(geojson_path)
+                print(f"💾 [高德] POI 数据已保存至 GeoJSON: {geojson_path}")
+        except Exception as e:
+            print(f"⚠️ [高德] 保存 GeoJSON 失败: {e}")
+            # 如果 GeoJSON 保存失败，至少记录警告，不中断流程
+
+        # ── 生成交互式地图 HTML（可选）────────────────────────────────
+        try:
+            valid_pois = [p for p in pois if p.get("lon") is not None and p.get("lat") is not None]
+            if valid_pois:
+                html_name = f"{safe_city}_{safe_keywords}_map.html" if safe_city else f"{safe_keywords}_map.html"
+                html_path = ws_dir / html_name
+
+                # 计算中心点
+                lons = [p["lon"] for p in valid_pois]
+                lats = [p["lat"] for p in valid_pois]
+                center_lon = sum(lons) / len(lons)
+                center_lat = sum(lats) / len(lats)
+
+                # 生成 HTML
+                markers_js = "\n".join([
+                    f'        L.marker([{p["lat"]}, {p["lon"]}]).addTo(map)'
+                    f'.bindPopup("<b>{p.get("name", "")}</b><br>{p.get("address", "未知地址")}");'
+                    for p in valid_pois[:100]  # 限制最多 100 个标记
+                ])
+
+                html_content = f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{keywords} - POI 分布图</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {{ margin: 0; padding: 0; }}
+        #map {{ height: 100vh; width: 100%; }}
+        .info {{
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            max-width: 300px;
+        }}
+        .info h3 {{ margin: 0 0 10px 0; color: #333; }}
+        .info p {{ margin: 5px 0; color: #666; }}
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h3>📍 {keywords}</h3>
+        <p>共找到 <b>{len(valid_pois)}</b> 个 POI</p>
+        <p>城市：{city or "全国"}</p>
+    </div>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map').setView([{center_lat}, {center_lon}], 14);
+        L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            attribution: '© OpenStreetMap'
+        }}).addTo(map);
+        {markers_js}
+    </script>
+</body>
+</html>'''
+
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                saved_files["map_html"] = str(html_path)
+                print(f"💾 [高德] POI 地图已保存至: {html_path}")
+        except Exception as e:
+            print(f"⚠️ [高德] 生成地图 HTML 失败: {e}")
+            # 地图生成失败不应中断流程，继续返回 CSV 和 GeoJSON
+
+        return saved_files
+
+    def _save_single_point(
+        self,
+        lon: float,
+        lat: float,
+        name: str,
+        address: str = "",
+        source: str = "geocode"
+    ) -> Optional[str]:
+        """
+        将单个坐标点保存为 GeoJSON 文件（便于后续地图生成）
+
+        Args:
+            lon: 经度
+            lat: 纬度
+            name: 地点名称
+            address: 地址
+            source: 数据来源标识
+
+        Returns:
+            保存后的文件路径，或 None
+        """
+        try:
+            import json
+            ws_dir = self._get_workspace_dir()
+
+            # 清理名称用于文件名
+            safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in name)[:30]
+            if not safe_name:
+                safe_name = "point"
+
+            geojson_data = {
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [lon, lat]
+                    },
+                    "properties": {
+                        "name": name,
+                        "address": address,
+                        "source": source,
+                    }
+                }]
+            }
+
+            output_path = ws_dir / f"{safe_name}_{source}.geojson"
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(geojson_data, f, ensure_ascii=False, indent=2)
+
+            print(f"💾 [高德] 坐标点已保存至: {output_path}")
+            return str(output_path)
+
+        except Exception as e:
+            print(f"⚠️ [高德] 保存坐标点失败: {e}")
+            return None
 
     # ── 基础服务 ───────────────────────────────────────────────────────
 
@@ -148,7 +376,22 @@ class AmapExecutor(BaseExecutor):
         if result is None:
             return self._err("geocode", f"地理编码失败：无法解析地址「{address}」")
 
-        return self._ok("geocode", result, meta={"address": address, "city": city})
+        # 自动保存坐标点为 GeoJSON（便于后续生成地图）
+        output_file = None
+        if result.get("lon") and result.get("lat"):
+            output_file = self._save_single_point(
+                lon=result["lon"],
+                lat=result["lat"],
+                name=result.get("name", address),
+                address=result.get("formatted_address", ""),
+                source="geocode"
+            )
+
+        return self._ok("geocode", result, meta={
+            "address": address,
+            "city": city,
+            "output_file": output_file,
+        })
 
     def _run_regeocode(self, task: Dict[str, Any]) -> ExecutorResult:
         """逆地理编码：经纬度 → 地址"""
@@ -176,7 +419,23 @@ class AmapExecutor(BaseExecutor):
         if result is None:
             return self._err("regeocode", f"逆地理编码失败：无法解析坐标「{location}」")
 
-        return self._ok("regeocode", result, meta={"location": location})
+        # 自动保存坐标点为 GeoJSON（便于后续生成地图）
+        output_file = None
+        lon = result.get("lon") or result.get("longitude")
+        lat = result.get("lat") or result.get("latitude")
+        if lon and lat:
+            output_file = self._save_single_point(
+                lon=float(lon),
+                lat=float(lat),
+                name=result.get("name", result.get("formatted_address", "")),
+                address=result.get("address", result.get("formatted_address", "")),
+                source="regeocode"
+            )
+
+        return self._ok("regeocode", result, meta={
+            "location": location,
+            "output_file": output_file,
+        })
 
     def _run_district(self, task: Dict[str, Any]) -> ExecutorResult:
         """行政区域查询"""
@@ -365,6 +624,23 @@ class AmapExecutor(BaseExecutor):
         # 提取前5个名字作为展示
         top_names = [p.get("name", "") for p in pois[:5] if p.get("name")]
 
+        # ── Step 4：保存文件（修复 BUG：LLM 说要输出但没实际输出）────
+        output_files = []
+        map_files = []
+        save_errors = []
+
+        if pois:
+            saved = self._save_poi_files(pois, keywords or "POI", city)
+            if saved.get("csv"):
+                output_files.append(saved["csv"])
+            if saved.get("geojson"):
+                output_files.append(saved["geojson"])
+            if saved.get("map_html"):
+                map_files.append(saved["map_html"])
+            # 如果什么都没保存成功，说明保存出了问题
+            if not saved:
+                save_errors.append("文件保存全部失败")
+
         enriched_result = {
             "success": True,
             "count": count,
@@ -375,6 +651,8 @@ class AmapExecutor(BaseExecutor):
             "location": location,
             "top_results": top_names,
             "all_pois": pois,
+            "output_files": output_files,
+            "map_files": map_files,
         }
 
         # 打印摘要日志
@@ -387,12 +665,18 @@ class AmapExecutor(BaseExecutor):
         else:
             print(f"🛰️ [高德雷达] 搜索「{keywords}」共找到 {count} 个结果。")
 
+        # 打印文件保存信息
+        if output_files or map_files:
+            print(f"💾 [高德] 已保存 {len(output_files)} 个数据文件和 {len(map_files)} 个地图文件")
+        else:
+            print(f"⚠️ [高德] 警告：未能保存任何文件！POI 数据将在结果中返回供后续处理。")
+
         return self._ok("poi_search", enriched_result, meta={
             "keywords": keywords,
             "city": city,
             "center_point": center_point,
             "radius": radius,
-        })
+        }, output_files=output_files, map_files=map_files)
 
     def _run_traffic_status(self, task: Dict[str, Any]) -> ExecutorResult:
         """交通态势"""

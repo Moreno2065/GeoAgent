@@ -151,7 +151,7 @@ def io_read_vector(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, 
                 "feature_count": len(gdf),
                 "columns": list(gdf.columns),
                 "crs": str(gdf.crs) if gdf.crs else None,
-                "geometry_type": gdf.geometry.geom_type.iloc[0] if len(gdf) > 0 else None,
+                "geometry_type": gdf.geometry.type.iloc[0] if len(gdf) > 0 else None,
             },
         )
 
@@ -621,7 +621,7 @@ def io_fetch_osm(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, An
                 "place": place,
                 "tags": tags,
                 "feature_count": len(gdf_proj),
-                "geometry_types": list(gdf_proj.geometry.geom_type.unique()),
+                "geometry_types": list(gdf_proj.geometry.type.unique()),
             },
         )
 
@@ -632,7 +632,73 @@ def io_fetch_osm(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, An
 
 
 # =============================================================================
-# 8. io_fetch_stac - 搜索 STAC 影像
+# 8. io_overpass - 直接调用 Overpass API
+# =============================================================================
+
+def io_overpass(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    直接调用 Overpass API 获取 OSM 数据
+
+    Args:
+        inputs: {"bbox": [31.23, 121.48, 31.24, 121.50]} 或 {"center_point": "121.50,31.24"}
+        params: {"data_type": "building", "tags": {"building": True}, "radius": 1000}
+
+    Returns:
+        标准结果
+    """
+    try:
+        from geoagent.executors.overpass_executor import OverpassExecutor
+
+        executor = OverpassExecutor()
+
+        # 从 inputs 获取查询参数
+        query_params = {}
+
+        if "bbox" in inputs:
+            query_params["query_type"] = "bbox"
+            query_params["bbox"] = inputs["bbox"]
+        elif "center_point" in inputs:
+            query_params["query_type"] = "circle"
+            query_params["center_point"] = inputs["center_point"]
+            query_params["radius"] = inputs.get("radius", params.get("radius", 1000))
+
+        # 从 params 获取数据类型和标签
+        data_type = params.get("data_type", "building")
+        tags = params.get("tags")
+        output_file = params.get("output_file")
+
+        if tags:
+            query_params["tags"] = tags
+        query_params["data_type"] = data_type
+
+        if output_file:
+            query_params["output_file"] = output_file
+
+        result = executor.run(query_params)
+
+        if result.success:
+            return _std_result(
+                success=True,
+                data=result.data,
+                summary=f"Overpass 查询成功，{result.data.get('feature_count', 0)} 个要素",
+                output_path=result.data.get("geojson_path"),
+                metadata={
+                    "operation": "io_overpass",
+                    "query_params": query_params,
+                    "feature_count": result.data.get("feature_count", 0),
+                },
+            )
+        else:
+            return _std_result(False, error=result.error or "Overpass 查询失败")
+
+    except ImportError:
+        return _std_result(False, error="缺少依赖库，请安装 requests")
+    except Exception as e:
+        return _std_result(False, error=f"Overpass 查询失败: {e}")
+
+
+# =============================================================================
+# 9. io_fetch_stac - 搜索 STAC 影像
 # =============================================================================
 
 def io_fetch_stac(inputs: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:

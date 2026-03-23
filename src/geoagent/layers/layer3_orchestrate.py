@@ -676,6 +676,44 @@ CLARIFICATION_TEMPLATES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "step": 3,
         },
     },
+    # ── 🟣 Overpass API 直接查询 ─────────────────────────────────────────
+    "overpass": {
+        "bbox": {
+            "question": "请提供查询区域坐标范围（south,west,north,east）",
+            "options": None,
+            "required": False,
+            "examples": ["31.23,121.48,31.24,121.50"],
+            "step": 1,
+        },
+        "center_point": {
+            "question": "请提供中心点坐标（lng,lat）",
+            "options": None,
+            "required": False,
+            "examples": ["121.50,31.24"],
+            "step": 1,
+        },
+        "radius": {
+            "question": "请提供查询半径（米）",
+            "options": ["500", "1000", "2000", "5000"],
+            "required": False,
+            "default": 1000,
+            "step": 2,
+        },
+        "data_type": {
+            "question": "请选择数据类型",
+            "options": ["建筑物", "道路", "水体", "POI", "所有"],
+            "required": False,
+            "default": "building",
+            "step": 3,
+        },
+        "tags": {
+            "question": "请提供自定义 OSM 标签（JSON 格式）",
+            "options": None,
+            "required": False,
+            "examples": ['{"building":"commercial"}', '{"highway":"primary"}'],
+            "step": 4,
+        },
+    },
 }
 
 
@@ -1724,6 +1762,44 @@ class ParameterExtractor:
                 # 默认步行网络（更适合显示地图）
                 params["network_type"] = "walk"
 
+        # ── overpass 场景 ───────────────────────────────────────
+        elif _scenario_str == "overpass":
+            # Overpass API 查询场景：支持 bbox 和 center_point 两种模式
+
+            # 优先从 coordinates 获取坐标
+            if params.get("coordinates"):
+                coords = params.get("coordinates")
+                # 支持 "lng,lat" 或 "lat,lon" 格式
+                if isinstance(coords, str) and "," in coords:
+                    parts = coords.split(",")
+                    if len(parts) == 2:
+                        try:
+                            lng = float(parts[0].strip())
+                            lat = float(parts[1].strip())
+                            # 判断是 (lng, lat) 还是 (lat, lon)
+                            if 121 <= lng <= 122 and 31 <= lat <= 32:
+                                # 看起来是经度在前
+                                params["center_point"] = coords
+                            else:
+                                # 纬度在前，转换
+                                params["center_point"] = f"{lat},{lng}"
+                        except ValueError:
+                            pass
+                elif isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                    params["center_point"] = f"{coords[0]},{coords[1]}"
+
+            # 数据类型
+            if "建筑" in query or "building" in query.lower():
+                params["data_type"] = "building"
+            elif "道路" in query or "路" in query or "road" in query.lower():
+                params["data_type"] = "road"
+            elif "水" in query or "河" in query or "water" in query.lower():
+                params["data_type"] = "water"
+            elif "poi" in query.lower():
+                params["data_type"] = "poi"
+            else:
+                params["data_type"] = "building"
+
         return params
 
     def _extract_poi_params(self, query: str) -> Dict[str, Any]:
@@ -2442,7 +2518,7 @@ class ScenarioOrchestrator:
                         "viewshed", "shadow_analysis", "ndvi", "raster",
                         "suitability", "poi_search", "geocode",
                         "regeocode", "visualization", "code_sandbox",
-                        "fetch_osm",  # OSM 地图下载
+                        "fetch_osm", "overpass",  # OSM 地图下载
                         "multi_criteria_search",  # 多条件综合搜索
                         # Amap 高德 Web 服务
                         "input_tips", "district", "static_map",
@@ -2459,7 +2535,7 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
-            "fetch_osm",  # OSM 地图下载
+            "fetch_osm", "overpass",  # OSM 地图下载
             "multi_criteria_search",  # 多条件综合搜索
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
@@ -2496,7 +2572,7 @@ class ScenarioOrchestrator:
             "shadow_analysis", "statistics", "hotspot", "suitability",
             "accessibility", "raster", "ndvi", "visualization",
             "poi_search", "geocode", "regeocode", "district", "code_sandbox",
-            "fetch_osm",  # OSM 地图下载
+            "fetch_osm", "overpass",  # OSM 地图下载
             "multi_criteria_search",  # 多条件综合搜索
             # Amap 高德 Web 服务
             "input_tips", "static_map", "coord_convert", "grasp_road",
@@ -2511,6 +2587,7 @@ class ScenarioOrchestrator:
         context: Optional[Dict[str, Any]] = None,
         intent_result: Optional[Any] = None,
         event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        file_contents: Optional["ContentContainer"] = None,
     ) -> OrchestrationResult:
         """
         编排用户输入
@@ -2546,8 +2623,8 @@ class ScenarioOrchestrator:
             # 注意：_is_calc_intent 托底逻辑已在 can_enter_pipeline 中处理，
             #       这里只处理 LLM 无法判断的情况
             from geoagent.layers.llm_router import get_llm_router
-            router = get_llm_router()
-            return router.route(text, event_callback)
+            router = get_llm_router(file_contents=file_contents)
+            return router.route(text, event_callback, file_contents)
         # ==========================================
 
         if event_callback:
@@ -2627,10 +2704,11 @@ def orchestrate(
     context: Optional[Dict[str, Any]] = None,
     intent_result: Optional[Any] = None,
     event_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    file_contents: Optional["ContentContainer"] = None,
 ) -> OrchestrationResult:
     """便捷函数：编排用户输入"""
     orchestrator = get_orchestrator()
-    return orchestrator.orchestrate(text, context, intent_result, event_callback)
+    return orchestrator.orchestrate(text, context, intent_result, event_callback, file_contents)
 
 
 __all__ = [

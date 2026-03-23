@@ -271,7 +271,7 @@ class IDWExecutor(BaseExecutor):
             crs = None
         else:
             gdf = gpd.read_file(path)
-            if gdf.geometry.geom_type.iloc[0] not in ("Point", "MultiPoint"):
+            if gdf.geometry.type.iloc[0] not in ("Point", "MultiPoint"):
                 raise ValueError("输入数据必须为点要素")
             x = gdf.geometry.x.values
             y = gdf.geometry.y.values

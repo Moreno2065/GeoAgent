@@ -41,7 +41,7 @@ from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files, 
 # =============================================================================
 # 常量配置
 # =============================================================================
-DEFAULT_LLM_MODEL = "deepseek-chat"
+DEFAULT_LLM_MODEL = "deepseek-reasoner"
 _KEY_DIR = Path.home() / ".geoagent"
 _KEY_DIR.mkdir(exist_ok=True)
 _WORKSPACE_DIR = _ROOT / "workspace"
@@ -52,7 +52,7 @@ _OUTPUTS_DIR.mkdir(exist_ok=True)
 # LLM 模型选项
 LLM_PROVIDER_OPTIONS = {
     "deepseek": {
-        "model": "deepseek-chat",
+        "model": "deepseek-reasoner",
         "label": "DeepSeek",
     },
 }
@@ -305,7 +305,7 @@ def _render_charts_tab():
 
 def _get_conv_files(cid: str, include_all_types: bool = True) -> list[Path]:
     """
-    获取指定对话目录下的所有文件
+    获取指定对话目录下的所有文件（递归扫描子目录）
 
     Args:
         cid: 对话ID
@@ -335,10 +335,12 @@ def _get_conv_files(cid: str, include_all_types: bool = True) -> list[Path]:
             ".tif", ".tiff", ".img", ".asc", ".rst", ".nc",
         }
 
-    return sorted(
-        f for f in base.iterdir()
-        if f.is_file() and f.suffix.lower() in all_exts
-    )
+    # 递归扫描所有子目录
+    result = []
+    for f in base.rglob("*"):
+        if f.is_file() and f.suffix.lower() in all_exts:
+            result.append(f)
+    return sorted(result)
 
 
 def _get_conv_workspace_dir(cid: str) -> Path:
@@ -743,19 +745,27 @@ def _render_sidebar():
         st.divider()
 
         # ── 对话内文件管理 ──────────────────────────────────────────────
-        st.subheader("📁 当前对话文件")
+        # 获取或创建当前对话 ID
         cid = st.session_state.get("active_conv_id")
+        
+        # Agent 在线时，确保有对话 ID 可用
+        if agent_online and not cid:
+            # 自动创建对话
+            _new_conversation()
+            cid = st.session_state.get("active_conv_id")
 
-        if not cid:
-            st.caption("请新建对话后上传文件")
-        else:
+        if cid:
+            # 设置工作目录
+            set_conversation_workspace(cid)
             conv_files = _get_conv_files(cid)
 
-            # 显示当前对话的文件列表
-            if conv_files:
-                st.caption(f"共 {len(conv_files)} 个文件")
-
-                for f in conv_files:
+            # 显示文件列表（只显示主文件类型，避免 .shx/.dbf/.cpg 等辅助文件造成重复 key）
+            MAIN_FILE_TYPES = {".shp", ".geojson", ".json", ".gpkg", ".gjson", ".tif", ".tiff", ".cog", ".pdf", ".csv", ".xlsx"}
+            main_files = [f for f in conv_files if f.suffix.lower() in MAIN_FILE_TYPES]
+            
+            if main_files:
+                st.caption(f"📁 {len(main_files)} 个文件")
+                for idx, f in enumerate(main_files):
                     col1, col2 = st.columns([4, 1])
                     size = f.stat().st_size
                     size_str = f"{size/1024:.1f} KB" if size < 1048576 else f"{size/1048576:.1f} MB"
@@ -771,22 +781,22 @@ def _render_sidebar():
                     with col1:
                         st.caption(f"{icon} {f.name} ({size_str})")
                     with col2:
-                        if st.button("🗑️", key=f"del_file_{f.name}", help=f"删除 {f.name}"):
+                        # 使用索引确保 key 唯一
+                        if st.button("🗑️", key=f"del_file_{cid}_{idx}_{f.name}", help=f"删除 {f.name}"):
                             if _delete_conv_file(cid, f.name):
                                 st.success(f"已删除 {f.name}")
                                 st.rerun()
             else:
                 st.caption("暂无文件")
 
-            # 对话内文件上传
-            st.caption("上传文件到当前对话")
+            # 文件上传（Agent 在线即可使用）
             uploaded = st.file_uploader(
                 "📤 上传 GIS 数据",
                 type=["zip", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
                 key=f"conv_file_uploader_{cid}_{st.session_state.get('_file_upload_key', 0)}",
                 help="支持 GeoJSON / GeoPackage / GeoTIFF 单文件上传；Shapefile 需打包为 .ZIP 后上传（含 .shp/.dbf/.shx 等）",
             )
-            # 防止 file_uploader + rerun 死循环：用标志位跳过已处理的文件
+            # 防止 file_uploader + rerun 死循环
             _upload_key = "_last_upload_check"
             _last_sig = st.session_state.get(_upload_key, "")
             _curr_sig = ",".join([f.name for f in (uploaded if isinstance(uploaded, list) else [uploaded])]) if uploaded else ""
@@ -795,15 +805,34 @@ def _render_sidebar():
                 conv_dir = _get_conv_workspace_dir(cid)
                 files = uploaded if isinstance(uploaded, list) else [uploaded]
                 for f in files:
-                    file_path = conv_dir / f.name
-                    file_path.write_bytes(f.getbuffer())
-                    new_uploads += 1
+                    if f.name.lower().endswith('.zip'):
+                        import zipfile
+                        import tempfile
+                        import time
+                        try:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
+                                tmp.write(f.getbuffer())
+                                tmp_path = tmp.name
+                            timestamp = int(time.time() * 1000)
+                            extract_dir = conv_dir / f"_unzipped_{timestamp}"
+                            extract_dir.mkdir(parents=True, exist_ok=True)
+                            with zipfile.ZipFile(tmp_path, 'r') as zf:
+                                zf.extractall(extract_dir)
+                            extracted_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
+                            new_uploads += extracted_count
+                            os.unlink(tmp_path)
+                            st.success(f"✅ 已解压 {extracted_count} 个文件！")
+                        except Exception as e:
+                            st.error(f"❌ ZIP 解压失败: {e}")
+                    else:
+                        file_path = conv_dir / f.name
+                        file_path.write_bytes(f.getbuffer())
+                        new_uploads += 1
                 st.session_state[_upload_key] = _curr_sig
                 if new_uploads > 0:
-                    st.success(f"✅ {new_uploads} 个文件已上传到当前对话！")
                     st.rerun()
-                else:
-                    st.info(f"ℹ️ {len(files)} 个文件已在当前对话就绪。")
+        else:
+            st.caption("请启动 Agent 后上传文件")
 
         st.divider()
 
@@ -1652,20 +1681,57 @@ def _render_workspace_browser():
         st.info("📂 请先新建对话并上传文件")
         return
 
+    if not cid:
+        st.info("📂 请先新建对话并上传文件")
+        return
+
     conv_files = _get_conv_files(cid)
 
     if not conv_files:
         st.info("📂 当前对话暂无文件，请在侧边栏上传数据文件")
         return
 
-    st.caption(f"共 {len(conv_files)} 个文件")
+    # 按主文件名分组（Shapefile 的 .shp/.dbf/.shx/.prj 等归为一组）
+    from collections import defaultdict
+    import re
 
+    # 辅助文件后缀
+    AUX_SUFFIXES = {".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".xml", ".shp.xml"}
+    # 主文件后缀
+    MAIN_SUFFIXES = {".shp", ".geojson", ".json", ".gpkg", ".gjson", ".tif", ".tiff", ".cog", ".pdf", ".csv", ".xlsx"}
+
+    # 按文件名主干分组
+    file_groups = defaultdict(list)
     for f in conv_files:
-        size = f.stat().st_size
+        # 检查是否是辅助文件
+        ext = f.suffix.lower()
+        if ext in AUX_SUFFIXES:
+            # 归到对应的主文件组
+            stem = f.stem
+            # 找同名的主文件
+            main_file = f.parent / f"{stem}.shp"
+            if main_file.exists():
+                file_groups[main_file].append(f)
+            else:
+                # 没有主文件，单独处理
+                file_groups[f].append(f)
+        elif ext in MAIN_SUFFIXES:
+            file_groups[f].append(f)
+        else:
+            # 其他文件单独处理
+            file_groups[f].append(f)
+
+    # 显示文件列表
+    main_display_files = list(file_groups.keys())
+    st.caption(f"共 {len(main_display_files)} 个文件（含 Shapefile 辅助文件）")
+
+    for idx, main_file in enumerate(main_display_files):
+        group = file_groups[main_file]
+        size = sum(f.stat().st_size for f in group)
         size_str = (
             f"{size/1024:.1f} KB" if size < 1048576 else f"{size/1048576:.1f} MB"
         )
-        ext = f.suffix.upper()
+        ext = main_file.suffix.upper()
         icon = (
             "🗺️"
             if ext in [".SHP", ".GEOJSON", ".JSON", ".GPKG"]
@@ -1674,18 +1740,29 @@ def _render_workspace_browser():
             else "🌐" if ext == ".HTML"
             else "📄"
         )
-        age = datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%m-%d %H:%M")
+        age = datetime.datetime.fromtimestamp(main_file.stat().st_mtime).strftime("%m-%d %H:%M")
 
-        with st.expander(f"{icon} `{f.name}` ({size_str}) · {age}"):
-            # 文件预览
+        # 显示辅助文件数量
+        aux_count = len(group) - 1
+        aux_info = f" (+{aux_count} 个辅助文件)" if aux_count > 0 else ""
+
+        with st.expander(f"{icon} `{main_file.name}` ({size_str}){aux_info} · {age}"):
+            # 显示辅助文件列表
+            if aux_count > 0:
+                st.caption("📎 包含文件:")
+                for aux_f in group:
+                    if aux_f != main_file:
+                        st.caption(f"   • `{aux_f.name}`")
+
+            # 文件预览（只用主文件预览）
             if ext in [".GEOJSON", ".JSON", ".CSV"]:
                 try:
                     import pandas as pd
                     if ext == ".CSV":
-                        df = pd.read_csv(f)
+                        df = pd.read_csv(main_file)
                     else:
                         import geopandas as gpd
-                        gdf = gpd.read_file(f)
+                        gdf = gpd.read_file(main_file)
                         df = gdf.copy()
                         if df.geometry.name == 'geometry':
                             geo_strs = df.geometry.values.astype(str)
@@ -1695,12 +1772,17 @@ def _render_workspace_browser():
                 except Exception as e:
                     st.warning(f"预览失败: {e}")
 
-            # 删除按钮
+            # 删除按钮 - 删除整组文件
             col1, col2 = st.columns([1, 4])
             with col1:
-                if st.button("🗑️ 删除", key=f"ws_del_{f.name}"):
-                    if _delete_conv_file(cid, f.name):
-                        st.success(f"已删除 {f.name}")
+                all_names = ", ".join(f.name for f in group)
+                if st.button("🗑️ 删除全部", key=f"ws_del_all_{cid}_{idx}_{main_file.name}"):
+                    deleted_any = False
+                    for f in group:
+                        if _delete_conv_file(cid, f.name):
+                            deleted_any = True
+                    if deleted_any:
+                        st.success(f"已删除 {main_file.name} 及 {aux_count} 个辅助文件")
                         st.rerun()
 
 

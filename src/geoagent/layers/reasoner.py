@@ -18,7 +18,7 @@ Reasoner - 被锁死的 NL→DSL 编译器
   Layer 3 直接从 extracted_params 构建 DSL，完全不用 LLM。
 
 支持模型：
-  - DeepSeek: deepseek-reasoner (默认), deepseek-chat, deepseek-v3
+  - DeepSeek: deepseek-chat (默认), deepseek-v3
 """
 
 from __future__ import annotations
@@ -39,13 +39,9 @@ from geoagent.layers.architecture import Scenario
 
 REASONER_MODELS = {
     # DeepSeek
-    "deepseek-reasoner": {
-        "base_url": "https://api.deepseek.com",
-        "description": "DeepSeek Reasoner - 推理模型，推荐用于复杂任务",
-    },
     "deepseek-chat": {
         "base_url": "https://api.deepseek.com",
-        "description": "DeepSeek Chat - 通用对话",
+        "description": "DeepSeek Chat - 通用对话，推荐用于 NL → DSL",
     },
     "deepseek-v3": {
         "base_url": "https://api.deepseek.com",
@@ -604,7 +600,7 @@ class GeoAgentReasoner:
     - 透明：LLM 只做翻译，执行层完全确定性
 
     使用方式：
-        reasoner = GeoAgentReasoner(api_key="sk-...", model="deepseek-reasoner")
+        reasoner = GeoAgentReasoner(api_key="sk-...", model="deepseek-chat")
         dsl_dict = reasoner.translate("芜湖南站到方特欢乐世界的步行路径")
     """
 
@@ -614,7 +610,7 @@ class GeoAgentReasoner:
     def __init__(
         self,
         api_key: str,
-        model: str = "deepseek-reasoner",
+        model: str = "deepseek-chat",
         base_url: Optional[str] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         temperature: float = 0.0,
@@ -835,7 +831,7 @@ _reasoner: Optional[GeoAgentReasoner] = None
 
 def get_reasoner(
     api_key: Optional[str] = None,
-    model: str = "deepseek-reasoner",
+    model: str = "deepseek-chat",
     base_url: Optional[str] = None,
     temperature: float = 0.0,
 ) -> GeoAgentReasoner:
@@ -844,7 +840,7 @@ def get_reasoner(
 
     支持 DeepSeek 模型：
 
-        # DeepSeek Reasoner（默认）
+        # DeepSeek Chat（默认）
         reasoner = get_reasoner(api_key="sk-...")
 
     建议每次请求创建新实例或使用依赖注入。
@@ -895,14 +891,14 @@ def translate_with_reasoner(
     user_input: str,
     scenario: Optional[Scenario] = None,
     api_key: Optional[str] = None,
-    model: str = "deepseek-reasoner",
+    model: str = "deepseek-chat",
 ) -> Dict[str, Any]:
     """
     便捷函数：单次翻译
 
     支持 DeepSeek 模型：
 
-        dsl = translate_with_reasoner("芜湖南站到方特", model="deepseek-reasoner")
+        dsl = translate_with_reasoner("芜湖南站到方特", model="deepseek-chat")
 
     Args:
         user_input: 自然语言

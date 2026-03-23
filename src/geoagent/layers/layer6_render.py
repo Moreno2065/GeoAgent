@@ -1,988 +1,261 @@
 """
-第6层：结果呈现层（Result Renderer）
-=====================================
-核心职责：
-1. 将 ExecutorResult 转换为业务结论
-2. 生成解释卡片
-3. 标准化输出格式
-4. 支持地图、图层、表格、报告等多种输出
-
-设计原则：
-- 用户不想看到"执行了 buffer + overlay + intersect"
-- 他想看到的是：哪些地方更合适、为什么合适、结果图在哪、结论是什么
-- 这就是产品价值
+Layer 6 - Result Renderer
+确定性渲染层
+【防幻觉铁律】
+本层绝对不调用 LLM 进行"二次润色"或"总结"。
 """
 
 from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
-import json
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-
-from geoagent.layers.layer5_executor import ExecutorResult
-
-
-# =============================================================================
-# 解释卡片
-# =============================================================================
 
 @dataclass
 class ExplanationCard:
-    """
-    解释卡片
+    title: str = ""
+    what_it_does: str = ""
+    how_to_read: List[str] = field(default_factory=list)
+    limitations: List[str] = field(default_factory=list)
+    usage_tips: List[str] = field(default_factory=list)
 
-    帮助用户理解：
-    1. 我做了什么
-    2. 用了什么数据
-    3. 为什么这么做
-    4. 结果是什么意思
-    """
-    title: str
-    what_i_did: str
-    why: str
-    what_it_means: str
-    data_used: Optional[str] = None
-    caveats: Optional[str] = None
+    def to_markdown(self) -> str:
+        parts = [f"### {self.title}"]
+        if self.what_it_does:
+            parts.append(f"\n**这是什么？** {self.what_it_does}")
+        if self.how_to_read:
+            parts.append("\n**如何阅读结果：**")
+            for tip in self.how_to_read:
+                parts.append(f"- {tip}")
+        if self.limitations:
+            parts.append("\n**局限性：**")
+            for lim in self.limitations:
+                parts.append(f"- {lim}")
+        if self.usage_tips:
+            parts.append("\n**使用建议：**")
+            for tip in self.usage_tips:
+                parts.append(f"- {tip}")
+        return "\n".join(parts)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "title": self.title,
-            "what_i_did": self.what_i_did,
-            "why": self.why,
-            "what_it_means": self.what_it_means,
-            "data_used": self.data_used,
-            "caveats": self.caveats,
-        }
-
-
-# =============================================================================
-# 业务结论
-# =============================================================================
 
 @dataclass
 class BusinessConclusion:
-    """
-    业务结论
+    summary: str = ""
+    key_findings: List[str] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+    data_quality: str = "unknown"
+    confidence: str = "medium"
 
-    面向"业务结论"的输出，不是只给技术结果。
-    """
-    summary: str  # 一句话总结
-    key_findings: List[str] = field(default_factory=list)  # 关键发现
-    recommendations: List[str] = field(default_factory=list)  # 建议
-    data_quality: str = "unknown"  # 数据质量
-    confidence: str = "medium"  # 置信度: high/medium/low
+    def to_user_friendly_text(self) -> str:
+        parts = []
+        if self.summary:
+            parts.append(f"📋 **总结**: {self.summary}")
+        if self.key_findings:
+            parts.append("\n🔍 **关键发现**:")
+            for finding in self.key_findings:
+                parts.append(f"  - {finding}")
+        if self.recommendations:
+            parts.append("\n💡 **建议**:")
+            for rec in self.recommendations:
+                parts.append(f"  - {rec}")
+        return "\n".join(parts)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-# =============================================================================
-# 渲染结果
-# =============================================================================
 
 @dataclass
 class RenderResult:
-    """
-    标准化渲染结果
-
-    前端可以统一展示这个格式。
-    """
-    success: bool
-    summary: str  # 业务结论摘要
+    success: bool = True
+    summary: str = ""
     conclusion: Optional[BusinessConclusion] = None
     explanation: Optional[ExplanationCard] = None
-    map_file: Optional[str] = None
+    map_files: List[str] = field(default_factory=list)
     output_files: List[str] = field(default_factory=list)
     metrics: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     raw_result: Optional[Dict[str, Any]] = None
 
+    @property
+    def map_file(self) -> Optional[str]:
+        """兼容 pipeline 中的 map_file（单数）访问"""
+        return self.map_files[0] if self.map_files else None
+
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
         return {
             "success": self.success,
             "summary": self.summary,
-            "conclusion": {
-                "summary": self.conclusion.summary if self.conclusion else "",
-                "key_findings": self.conclusion.key_findings if self.conclusion else [],
-                "recommendations": self.conclusion.recommendations if self.conclusion else [],
-                "data_quality": self.conclusion.data_quality if self.conclusion else "unknown",
-                "confidence": self.conclusion.confidence if self.conclusion else "medium",
-            } if self.conclusion else None,
-            "explanation": {
-                "title": self.explanation.title if self.explanation else "",
-                "what_i_did": self.explanation.what_i_did if self.explanation else "",
-                "why": self.explanation.why if self.explanation else "",
-                "what_it_means": self.explanation.what_it_means if self.explanation else "",
-                "data_used": self.explanation.data_used if self.explanation else None,
-                "caveats": self.explanation.caveats if self.explanation else None,
-            } if self.explanation else None,
-            "map_file": self.map_file,
+            "conclusion": (
+                {
+                    "summary": self.conclusion.summary,
+                    "key_findings": self.conclusion.key_findings,
+                    "recommendations": self.conclusion.recommendations,
+                    "data_quality": self.conclusion.data_quality,
+                    "confidence": self.conclusion.confidence,
+                }
+                if self.conclusion
+                else None
+            ),
+            "map_files": self.map_files,
             "output_files": self.output_files,
             "metrics": self.metrics,
             "error": self.error,
         }
 
-    def to_json(self) -> str:
-        """序列化为 JSON"""
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-
-    def to_user_friendly_text(self) -> str:
-        """转换为用户友好的文本"""
-        lines = []
-
-        # 结论摘要
-        lines.append(f"📊 {self.summary}")
-
-        # 关键发现
-        if self.conclusion and self.conclusion.key_findings:
-            lines.append("\n🔍 关键发现：")
-            for finding in self.conclusion.key_findings:
-                lines.append(f"  • {finding}")
-
-        # 解释
-        if self.explanation:
-            lines.append(f"\n💡 {self.explanation.title}")
-            lines.append(f"\n**做了什么：** {self.explanation.what_i_did}")
-            lines.append(f"**为什么：** {self.explanation.why}")
-            lines.append(f"**结果含义：** {self.explanation.what_it_means}")
-
-        # 指标
+    def to_user_text(self) -> str:
+        parts = []
+        if not self.success:
+            parts.append(f"❌ 执行失败: {self.error or '未知错误'}")
+            return "\n".join(parts)
+        if self.conclusion:
+            parts.append(self.conclusion.to_user_friendly_text())
         if self.metrics:
-            lines.append("\n📈 关键指标：")
-            for key, value in self.metrics.items():
-                lines.append(f"  • {key}: {value}")
-
-        # 输出文件
+            parts.append("\n📊 **指标**:")
+            for k, v in self.metrics.items():
+                parts.append(f"  - {k}: {v}")
+        if self.map_files:
+            parts.append(f"\n🗺️ **地图**: {', '.join(self.map_files)}")
         if self.output_files:
-            lines.append("\n📁 输出文件：")
-            for f in self.output_files:
-                lines.append(f"  • {f}")
+            parts.append(f"\n📁 **输出**: {', '.join(self.output_files)}")
+        return "\n".join(parts)
 
-        # 建议
-        if self.conclusion and self.conclusion.recommendations:
-            lines.append("\n💡 建议：")
-            for rec in self.conclusion.recommendations:
-                lines.append(f"  • {rec}")
-
-        return "\n".join(lines)
-
-
-# =============================================================================
-# 结果渲染器
-# =============================================================================
 
 class ResultRenderer:
-    """
-    结果渲染器
-
-    核心职责：
-    1. 将 ExecutorResult 转换为业务结论
-    2. 生成解释卡片
-    3. 标准化输出格式
-    """
-
-    # 场景 → 渲染器方法映射
-    _RENDER_METHODS: Dict[str, str] = {
-        "route": "_render_route",
-        "buffer": "_render_buffer",
-        "overlay": "_render_overlay",
-        "interpolation": "_render_interpolation",
-        "viewshed": "_render_viewshed",
-        "statistics": "_render_statistics",
-        "raster": "_render_raster",
-        "code_sandbox": "_render_code_sandbox",  # 受限代码执行
-        "poi_search": "_render_poi_search",  # POI 周边搜索
-        "fetch_osm": "_render_fetch_osm",  # OSM 在线下载
+    SCENARIO_EXPLANATIONS: Dict[str, ExplanationCard] = {
+        "route": ExplanationCard(title="路径规划", what_it_does="在路网中找到两个地点之间的最优路线", how_to_read=["红线表示推荐路线", "红色标记是起点和终点", "里程和时间是实际计算结果"], limitations=["仅基于 OSM 路网数据", "不考虑实时交通"], usage_tips=["点击地图可以查看路线详情"]),
+        "buffer": ExplanationCard(title="缓冲区分析", what_it_does="在选定要素周围生成指定距离的区域", how_to_read=["蓝色/绿色区域是缓冲范围", "原要素以轮廓显示", "可以叠加多个缓冲区"], limitations=["不考虑地形障碍", "是欧氏距离，非实际行走距离"], usage_tips=["调整缓冲半径可改变分析范围"]),
+        "overlay": ExplanationCard(title="叠置分析", what_it_does="将多个图层叠加，提取同时满足所有条件的区域", how_to_read=["暖色（红/橙）表示高适宜性区域", "冷色（蓝/绿）表示低适宜性区域", "颜色越深，叠加条件越多"], limitations=["依赖输入数据的质量和精度", "权重设置会影响结果"], usage_tips=["检查各地物的权重是否合理"]),
+        "interpolation": ExplanationCard(title="空间插值", what_it_does="根据已知点的数值，推测整个区域的数值分布", how_to_read=["颜色渐变表示数值从低到高", "等值线连接相同数值的点", "数据点以圆点标记"], limitations=["假设空间渐变是平滑的", "边界外推可能不准确"], usage_tips=["数据点越多，插值结果越可靠"]),
+        "viewshed": ExplanationCard(title="视域分析", what_it_does="从某一点能看到哪些区域（考虑地形起伏）", how_to_read=["绿色区域是可见区域", "灰色区域被遮挡", "颜色深浅表示可见程度"], limitations=["假设观察者高度为 1.7m", "不考虑植被和建筑物"], usage_tips=["提高观察高度可扩大可视范围"]),
+        "statistics": ExplanationCard(title="统计分析", what_it_does="分析空间数据的分布规律和统计特征", how_to_read=["热点（红色）表示高值聚集区", "冷点（蓝色）表示低值聚集区", "图表显示数值分布直方图"], limitations=["需要足够的样本点", "统计显著性需要一定数量"], usage_tips=["检查是否有异常值影响结果"]),
+        "raster": ExplanationCard(title="栅格分析", what_it_does="对栅格数据进行计算和处理", how_to_read=["像元值表示实际物理量", "颜色映射表示数值大小", "分辨率决定精度"], limitations=["受限于栅格分辨率", "投影变形会影响面积计算"], usage_tips=["选择合适的像元大小"]),
+        "code_sandbox": ExplanationCard(title="代码执行", what_it_does="在沙盒环境中执行 Python 代码进行分析", how_to_read=["输出区域显示执行结果", "错误信息会高亮显示", "支持查看中间变量"], limitations=["执行有资源限制", "某些库可能不可用"], usage_tips=["分步执行便于调试"]),
+        "poi_search": ExplanationCard(title="周边搜索", what_it_does="搜索指定地点周边的兴趣点", how_to_read=["标记显示各 POI 位置", "颜色区分不同类别", "可查看详细信息"], limitations=["依赖 OSM 数据覆盖", "数据可能不完整"], usage_tips=["扩大搜索范围可获得更多结果"]),
+        "fetch_osm": ExplanationCard(title="OSM 在线下载", what_it_does="从 OpenStreetMap 下载地理数据", how_to_read=["数据下载后保存在工作区", "可查看属性表了解详情", "支持多种要素类型"], limitations=["受限于 OSM 数据质量", "某些区域数据可能缺失"], usage_tips=["检查下载范围是否包含所需区域"]),
     }
 
-    def render(self, result: ExecutorResult) -> RenderResult:
-        """
-        渲染执行结果
+    def __init__(self):
+        self.scenario = "unknown"
+        self.metrics: Dict[str, Any] = {}
+        self.map_files: List[str] = []
+        self.output_files: List[str] = []
+        self.conclusion: Optional[BusinessConclusion] = None
+        self.explanation: Optional[ExplanationCard] = None
+        self._raw_result: Optional[Dict[str, Any]] = None
 
-        注意：本层只做确定性格式化，不调用 LLM 润色。
-        L5 执行成功后，结果直接格式化输出，不再丢给 LLM 二次处理。
-
-        Args:
-            result: Executor 返回的结果
-
-        Returns:
-            RenderResult 标准化渲染结果
-        """
-        # 如果执行失败
-        if not result.success:
+    def render(self, result: Any) -> RenderResult:
+        self._parse_result(result)
+        if not getattr(result, "success", True):
             return self._render_error(result)
-
-        # 根据场景渲染
-        render_method = self._RENDER_METHODS.get(result.task_type, "_render_generic")
-        method = getattr(self, render_method, self._render_generic)
-        return method(result)
-
-    def _render_error(self, result: ExecutorResult) -> RenderResult:
-        """
-        渲染错误结果 - 强制兜底，禁止调用 LLM 瞎猜
-
-        本方法直接返回固定错误模板，不调用任何 LLM 进行"润色"或"补充"。
-        这是防止空间幻觉（LLM 胡编地理数据）的关键防线。
-        """
-        # 强制兜底模板：明确告知用户计算失败，不给 LLM 瞎编的机会
-        error_template = (
-            "抱歉，分析过程中遇到问题无法完成计算。"
-            f"错误信息：{result.error}"
-            "如需帮助，请重新描述您的需求或检查输入数据。"
+        self.scenario = getattr(result, "scenario", "unknown") or "unknown"
+        if self.scenario in self.SCENARIO_EXPLANATIONS:
+            self.explanation = self.SCENARIO_EXPLANATIONS[self.scenario]
+        if hasattr(result, "metrics") and result.metrics:
+            self.metrics = result.metrics
+        if hasattr(result, "conclusion") and result.conclusion:
+            self.conclusion = result.conclusion
+        if hasattr(result, "map_files") and result.map_files:
+            self.map_files = result.map_files
+        if hasattr(result, "output_files") and result.output_files:
+            self.output_files = result.output_files
+        self._raw_result = result.to_dict() if hasattr(result, "to_dict") else {"raw": str(result)}
+        return RenderResult(
+            success=True,
+            summary=getattr(result, "summary", "") or self._get_default_summary(),
+            conclusion=self.conclusion,
+            explanation=self.explanation,
+            map_files=self.map_files,
+            output_files=self.output_files,
+            metrics=self.metrics,
+            raw_result=self._raw_result,
         )
 
+    def _render_error(self, result: Any) -> RenderResult:
+        error_msg = getattr(result, "error", None)
+        if error_msg is None and hasattr(result, "message"):
+            error_msg = result.message
+        error_template = (
+            "抱歉，分析过程中遇到问题无法完成计算。\n\n"
+            f"**错误信息**: {error_msg or '未知错误'}\n\n"
+            "**可能的原因**:\n"
+            "- 输入数据格式不正确或缺少必要字段\n"
+            "- 分析参数超出有效范围\n"
+            "- 网络请求失败（涉及外部服务时）\n"
+            "- 系统资源不足\n\n"
+            "**建议操作**:\n"
+            "- 请检查输入数据是否正确\n"
+            "- 尝试简化分析范围或减少数据量\n"
+            "- 如问题持续，请查看详细日志"
+        )
         return RenderResult(
             success=False,
             summary="分析失败",
-            error=result.error,
+            error=error_msg,
             conclusion=BusinessConclusion(
                 summary=error_template,
                 key_findings=[],
-                recommendations=[
-                    "请检查输入数据是否正确",
-                    "请尝试简化分析范围",
-                    "如问题持续，请联系管理员",
-                ],
+                recommendations=["请检查输入数据是否正确", "尝试简化分析范围", "如问题持续，请查看详细日志"],
                 data_quality="failed",
-                confidence="low",
+                confidence="low"
             ),
-            raw_result=result.to_dict(),
+            raw_result=self._raw_result,
         )
 
-    def _render_generic(self, result: ExecutorResult) -> RenderResult:
-        """通用渲染"""
-        data = result.data or {}
-        output_files = [data.get("output_file", "")] if data.get("output_file") else []
-        output_files.extend(data.get("files", []) if isinstance(data.get("files"), list) else [])
-
-        task_type = result.task_type
-        return RenderResult(
-            success=True,
-            summary=f"{task_type} 分析完成",
-            conclusion=BusinessConclusion(
-                summary=f"{task_type} 分析完成",
-                key_findings=[f"使用了 {result.engine} 引擎"],
-            ),
-            explanation=ExplanationCard(
-                title=f"{task_type} 分析结果",
-                what_i_did=f"执行了 {task_type} 任务",
-                why="用户请求",
-                what_it_means="分析已完成",
-                data_used=data.get("data_source"),
-            ),
-            map_file=data.get("map_file"),
-            output_files=[f for f in output_files if f],
-            metrics=self._extract_metrics(result),
-            raw_result=result.to_dict(),
-        )
-
-    def _render_code_sandbox(self, result: ExecutorResult) -> RenderResult:
-        """
-        渲染代码沙盒执行结果。
-
-        CODE_SANDBOX 场景的输出通常是纯文本或 JSON，不生成地图。
-        """
-        data = result.data or {}
-        output = data.get("output", "")
-        exec_result = data.get("result", output)
-        elapsed_ms = data.get("elapsed_ms", 0)
-        files_created = data.get("files_created", [])
-        engine = data.get("engine", result.engine)
-
-        # 尝试提取关键指标
-        metrics = {}
-        if elapsed_ms:
-            metrics["执行时间"] = f"{elapsed_ms}ms"
-        if files_created:
-            metrics["生成文件"] = ", ".join(files_created)
-
-        # 从输出中尝试解析数字结果
-        key_result = ""
-        if isinstance(exec_result, str):
-            lines = exec_result.strip().split("\n")
-            if lines:
-                key_result = lines[-1][:200]  # 取最后一行（通常是结果）
-        elif isinstance(exec_result, dict):
-            key_result = str(exec_result)[:200]
-
-        summary = f"代码执行完成（{engine}）"
-        if key_result:
-            summary = f"代码执行完成：{key_result}"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"执行引擎：{engine}",
-                f"执行时间：{elapsed_ms}ms" if elapsed_ms else "执行完成",
-                f"生成文件：{', '.join(files_created)}" if files_created else "无文件输出",
-            ],
-            recommendations=[
-                "如需将结果保存为 GIS 文件，请使用 geopandas 的 to_file() 方法",
-                "如需可视化结果，可将 GeoDataFrame 传入 GeoAgent 可视化流程",
-            ],
-            data_quality="code_generated",
-            confidence="medium",  # LLM 生成的代码，结果置信度中等
-        )
-
-        explanation = ExplanationCard(
-            title="代码沙盒执行结果",
-            what_i_did="通过 LLM 生成的 Python 代码，在受控环境中执行",
-            why="这是一个非标准的 GIS 任务，标准 Executor 无法覆盖，由代码沙盒执行",
-            what_it_means=f"代码已成功执行，结果：{key_result[:100]}..." if len(key_result) > 100 else f"代码已成功执行，结果：{key_result}",
-            caveats=(
-                "⚠️ 代码由 LLM 生成，结果仅供参考，请核实计算逻辑是否正确。"
-                "如需确定性结果，建议使用标准 Executor。"
-            ),
-        )
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=None,  # sandbox 通常不生成地图
-            output_files=files_created,
-            metrics=metrics,
-            raw_result=result.to_dict(),
-        )
-
-    def _render_route(self, result: ExecutorResult) -> RenderResult:
-        """渲染路径分析结果"""
-        data = result.data or {}
-        
-        # 从 route_data 中提取路径信息
-        route_data = data.get("route_data", {})
-        distance_raw = route_data.get("distance") or data.get("distance") or "?"
-        duration_raw = route_data.get("duration") or data.get("duration") or "?"
-        
-        # 转换距离（米）转为公里显示
-        try:
-            distance_m = int(distance_raw) if distance_raw != "?" else "?"
-            distance_km = round(distance_m / 1000, 1) if distance_m != "?" else "?"
-            distance_display = distance_km if distance_km != "?" else distance_raw
-        except (ValueError, TypeError):
-            distance_m = distance_raw
-            distance_km = distance_raw
-        
-        # 转换时长（秒）转为分钟显示
-        try:
-            duration_s = int(duration_raw) if duration_raw != "?" else "?"
-            duration_min = round(duration_s / 60, 0) if duration_s != "?" else "?"
-            duration_display = int(duration_min) if duration_min != "?" else duration_raw
-        except (ValueError, TypeError):
-            duration_s = duration_raw
-            duration_min = duration_raw
-            duration_display = duration_raw
-        
-        mode = data.get("mode", "walking")
-        start = data.get("start", route_data.get("origin_name", "?"))
-        end = data.get("end", route_data.get("destination_name", "?"))
-
-        mode_text = {
-            "walking": "步行",
-            "driving": "驾车",
-            "cycling": "骑行",
-            "transit": "公交",
-        }.get(mode, mode)
-
-        summary = f"已计算从 {start} 到 {end} 的{mode_text}路径"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"总距离约 {distance_display} {'公里' if distance_km != '?' else '米'}",
-                f"预计 {duration_display} 分钟" if duration_display != "?" else f"预计耗时：{duration_raw} 秒",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                f"建议使用 {mode_text} 方式到达目的地" if mode == "walking" else "可选择驾车或公交前往",
-            ],
-            data_quality="good",
-            confidence="high",
-        )
-
-        explanation = ExplanationCard(
-            title=f"{mode_text}路径规划结果",
-            what_i_did=f"计算了从 {start} 到 {end} 的最优 {mode_text} 路径",
-            why="路径规划是 GIS 分析的基础功能，用于确定两点之间的最优路线",
-            what_it_means=f"路线总长约 {distance_display} {'公里' if distance_km != '?' else '米'}，{mode_text}约 {duration_display} 分钟",
-            data_used=f"基于 {result.engine} 路网数据",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-        if data.get("map_file"):
-            output_files.append(data["map_file"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "distance_m": distance_m,
-                "distance_km": distance_display,
-                "duration_min": duration_display,
-                "duration_s": duration_s,
-                "mode": mode,
-                "engine": result.engine,
-                "start": start,
-                "end": end,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_buffer(self, result: ExecutorResult) -> RenderResult:
-        """渲染缓冲区分析结果"""
-        data = result.data or {}
-        distance = data.get("distance", "?")
-        unit = data.get("unit", "meters")
-        feature_count = data.get("feature_count", "?")
-        input_layer = data.get("input_layer", "?")
-
-        summary = f"已完成 {input_layer} 的 {distance}{unit} 缓冲区分析"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"生成 {feature_count} 个缓冲多边形" if isinstance(feature_count, int) else f"缓冲要素数：{feature_count}",
-                f"缓冲半径 {distance} {unit}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "可用于分析设施服务范围",
-                "可进一步与人口数据进行叠加分析",
-            ],
-            data_quality="good",
-            confidence="high",
-        )
-
-        explanation = ExplanationCard(
-            title="缓冲区分析结果",
-            what_i_did=f"以 {input_layer} 为中心，生成了半径 {distance} {unit} 的缓冲区",
-            why="缓冲区分析用于确定某要素的影响范围或邻近区域，是选址分析的常用方法",
-            what_it_means=f"生成了 {feature_count} 个缓冲多边形，可用于后续的空间分析",
-            data_used=f"输入图层：{input_layer}",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-        if data.get("output_path"):
-            output_files.append(data["output_path"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "distance": distance,
-                "unit": unit,
-                "feature_count": feature_count,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_overlay(self, result: ExecutorResult) -> RenderResult:
-        """渲染叠置分析结果"""
-        data = result.data or {}
-        operation = data.get("operation", "intersect")
-        layer1 = data.get("layer1", "?")
-        layer2 = data.get("layer2", "?")
-        feature_count = data.get("feature_count", "?")
-
-        operation_text = {
-            "intersect": "交集",
-            "union": "并集",
-            "clip": "裁剪",
-            "difference": "差集",
-        }.get(operation, operation)
-
-        summary = f"已完成 {layer1} 与 {layer2} 的{operation_text}分析"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"得到 {feature_count} 个结果要素" if isinstance(feature_count, int) else f"结果要素数：{feature_count}",
-                f"操作类型：{operation_text}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "可用于确定空间要素的交集区域",
-                "可进一步用于选址分析",
-            ],
-            data_quality="good",
-            confidence="high",
-        )
-
-        explanation = ExplanationCard(
-            title="叠置分析结果",
-            what_i_did=f"对 {layer1} 和 {layer2} 执行了 {operation_text}（{operation}）操作",
-            why="叠置分析用于确定空间要素的交集、合并或差集，是空间查询的核心方法",
-            what_it_means=f"得到了 {feature_count} 个{operation_text}结果要素",
-            data_used=f"输入图层：{layer1}, {layer2}",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-        if data.get("output_path"):
-            output_files.append(data["output_path"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "operation": operation,
-                "layer1": layer1,
-                "layer2": layer2,
-                "feature_count": feature_count,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_interpolation(self, result: ExecutorResult) -> RenderResult:
-        """渲染插值分析结果"""
-        data = result.data or {}
-        method = data.get("method", "IDW")
-        resolution = data.get("resolution", "?")
-        feature_count = data.get("feature_count", "?")
-
-        summary = f"已完成基于 {method} 方法的空间插值分析"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"插值方法：{method}",
-                f"栅格分辨率：{resolution} 米" if isinstance(resolution, (int, float)) else f"分辨率：{resolution}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "可用于预测未采样位置的数值",
-                "建议验证插值结果的准确性",
-            ],
-            data_quality="medium",
-            confidence="medium",
-        )
-
-        explanation = ExplanationCard(
-            title="空间插值分析结果",
-            what_i_did=f"使用 {method} 方法基于离散采样点生成了连续空间表面",
-            why="空间插值可以将稀疏的点数据转换为连续的栅格表面，用于预测和分析",
-            what_it_means=f"生成了分辨率为 {resolution} 米的连续表面",
-            caveats="插值结果受采样点分布和密度影响，建议验证",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "method": method,
-                "resolution": resolution,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_viewshed(self, result: ExecutorResult) -> RenderResult:
-        """渲染视域分析结果"""
-        data = result.data or {}
-        visible_area = data.get("visible_area_km2", "?")
-        location = data.get("location", "?")
-
-        summary = f"已完成观察点 {location} 的视域分析"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"可视范围约 {visible_area} 平方公里" if isinstance(visible_area, (int, float)) else f"可视范围：{visible_area}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "可用于评估观景点视野",
-                "可用于信号基站选址",
-            ],
-            data_quality="good",
-            confidence="high",
-        )
-
-        explanation = ExplanationCard(
-            title="视域分析结果",
-            what_i_did=f"计算了观察点 {location} 的可视范围",
-            why="视域分析用于确定从某点能看到哪些区域，常用于观景点评估、监控选址等",
-            what_it_means=f"可视范围约 {visible_area} 平方公里",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "visible_area_km2": visible_area,
-                "location": location,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_statistics(self, result: ExecutorResult) -> RenderResult:
-        """渲染统计分析结果"""
-        data = result.data or {}
-        hotspot_count = data.get("hotspot_count", "?")
-        coldspot_count = data.get("coldspot_count", "?")
-
-        summary = f"已完成热点冷点分析"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"识别出 {hotspot_count} 个热点区域" if isinstance(hotspot_count, int) else f"热点数：{hotspot_count}",
-                f"识别出 {coldspot_count} 个冷点区域" if isinstance(coldspot_count, int) else f"冷点数：{coldspot_count}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "热点区域可能存在聚集效应",
-                "建议进一步分析聚集原因",
-            ],
-            data_quality="good",
-            confidence="medium",
-        )
-
-        explanation = ExplanationCard(
-            title="热点分析结果",
-            what_i_did="执行了 Getis-Ord Gi* 空间自相关分析",
-            why="热点分析用于识别空间聚集的显著性区域，帮助发现数据中的空间模式",
-            what_it_means=f"识别出 {hotspot_count} 个高值热点和 {coldspot_count} 个低值冷点",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "hotspot_count": hotspot_count,
-                "coldspot_count": coldspot_count,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_poi_search(self, result: ExecutorResult) -> RenderResult:
-        """渲染 POI 周边搜索结果"""
-        data = result.data or {}
-        count = data.get("count", 0)
-        top_results = data.get("top_results", [])
-        center_point = data.get("center_point", "?")
-        keywords = data.get("keywords", "?")
-        radius = data.get("radius", 3000)
-        city = data.get("city", "")
-
-        summary = f"在 {center_point} 周边 {radius}m 内找到 {count} 个「{keywords}」"
-
-        # 生成推荐列表说明
-        recommendations = []
-        if count > 0:
-            recommendations.append(f"找到了 {count} 个符合条件的 POI")
-            if top_results:
-                recommendations.append(f"热门选择：{', '.join(top_results[:3])}")
-        else:
-            recommendations.append("未找到符合条件的 POI，请尝试扩大搜索范围或更换关键词")
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"共找到 {count} 个结果",
-                f"中心点：{center_point}",
-                f"搜索半径：{radius}米",
-                f"城市：{city}" if city else "",
-            ],
-            recommendations=recommendations,
-        )
-
-        explanation = ExplanationCard(
-            title="POI 周边搜索结果",
-            what_i_did=f"搜索了 {center_point} 周边 {radius} 米范围内的「{keywords}」",
-            why="POI 搜索用于了解特定地点周边的基础设施分布情况",
-            what_it_means=f"找到 {count} 个符合条件的 POI" if count > 0 else "未找到符合条件的 POI",
-            caveats="POI 数据受高德 API 更新频率影响，可能存在滞后",
-        )
-
-        # 尝试提取 POI 坐标用于生成地图标记
-        all_pois = data.get("all_pois", [])
-        output_files = []
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=None,  # POI 搜索暂不生成地图文件
-            output_files=output_files,
-            metrics={
-                "count": count,
-                "radius": radius,
-                "keywords": keywords,
-                "center_point": center_point,
-                "top_results": top_results,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_raster(self, result: ExecutorResult) -> RenderResult:
-        """渲染栅格分析结果"""
-        data = result.data or {}
-        mean_ndvi = data.get("mean_ndvi", "?")
-        index_type = data.get("index_type", "NDVI")
-
-        summary = f"已完成 {index_type} 指数计算"
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=[
-                f"平均 {index_type} 值：{mean_ndvi}" if isinstance(mean_ndvi, (int, float)) else f"{index_type}：{mean_ndvi}",
-                f"使用 {result.engine} 引擎计算",
-            ],
-            recommendations=[
-                "NDVI > 0.3 表示有植被覆盖",
-                "NDVI > 0.6 表示植被茂密",
-            ],
-            data_quality="good",
-            confidence="high",
-        )
-
-        explanation = ExplanationCard(
-            title=f"{index_type} 分析结果",
-            what_i_did=f"计算了遥感影像的 {index_type}（归一化植被/水体指数）",
-            why=f"{index_type} 是评估植被覆盖或水体的重要遥感指标",
-            what_it_means=f"平均值为 {mean_ndvi}",
-        )
-
-        output_files = []
-        if data.get("output_file"):
-            output_files.append(data["output_file"])
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=data.get("map_file"),
-            output_files=output_files,
-            metrics={
-                "index_type": index_type,
-                "mean_value": mean_ndvi,
-                "engine": result.engine,
-            },
-            raw_result=result.to_dict(),
-        )
-
-    def _render_fetch_osm(self, result: ExecutorResult) -> RenderResult:
-        """渲染 OSM 在线下载结果（建筑物/路网）"""
-        data = result.data or {}
-        feature_count = data.get("feature_count", 0)
-        html_map_path = data.get("html_map_path", "")
-        bounds = data.get("bounds", [])
-        geojson_path = data.get("geojson_path", "")
-
-        # 提取文件名
-        html_name = Path(html_map_path).name if html_map_path else "未生成"
-        geojson_name = Path(geojson_path).name if geojson_path else "未保存"
-
-        summary = f"从 OpenStreetMap 下载了 {feature_count} 个地理要素"
-
-        # 生成关键发现
-        key_findings = [f"共下载 {feature_count} 个要素"]
-        if bounds:
-            key_findings.append(
-                f"边界范围：({bounds[0]:.4f}, {bounds[1]:.4f}) 到 ({bounds[2]:.4f}, {bounds[3]:.4f})"
-            )
-        key_findings.append(f"数据格式：GeoJSON (EPSG:4326)")
-
-        conclusion = BusinessConclusion(
-            summary=summary,
-            key_findings=key_findings,
-            recommendations=[
-                "可在地图中查看下载的建筑轮廓和路网" if html_map_path else "可进行空间分析",
-                "可与其他数据进行叠加分析",
-            ],
-        )
-
-        explanation = ExplanationCard(
-            title="OSM 数据下载结果",
-            what_i_did=f"从 OpenStreetMap 下载了 {feature_count} 个地理要素",
-            why="OpenStreetMap 提供全球开放地理数据，包括建筑物轮廓、道路、水体等",
-            what_it_means=f"数据已保存，可用于后续的空间分析或可视化",
-            caveats="OSM 数据质量因地区而异，部分区域可能缺少数据",
-        )
-
-        output_files = []
-        if geojson_path:
-            output_files.append(geojson_path)
-
-        return RenderResult(
-            success=True,
-            summary=summary,
-            conclusion=conclusion,
-            explanation=explanation,
-            map_file=html_map_path if html_map_path else None,
-            output_files=output_files,
-            metrics={
-                "feature_count": feature_count,
-                "bounds": bounds,
-            },
-            raw_result=result.to_dict(),
-        )
+    def _parse_result(self, result: Any):
+        if hasattr(result, "metrics"):
+            self.metrics = result.metrics or {}
+        if hasattr(result, "map_files"):
+            self.map_files = result.map_files or []
+        if hasattr(result, "output_files"):
+            self.output_files = result.output_files or []
+
+    def _get_default_summary(self) -> str:
+        summaries = {
+            "route": "路径规划完成",
+            "buffer": "缓冲区分析完成",
+            "overlay": "叠置分析完成",
+            "interpolation": "空间插值完成",
+            "viewshed": "视域分析完成",
+            "statistics": "统计分析完成",
+            "raster": "栅格分析完成",
+            "code_sandbox": "代码执行完成",
+            "poi_search": "周边搜索完成",
+            "fetch_osm": "OSM 数据下载完成",
+            "unknown": "分析完成",
+        }
+        return summaries.get(self.scenario, f"{self.scenario} 分析完成")
+
+    @classmethod
+    def for_scenario(
+        cls,
+        scenario: str,
+        metrics: Optional[Dict[str, Any]] = None,
+        conclusion: Optional[BusinessConclusion] = None,
+    ) -> "ResultRenderer":
+        renderer = cls()
+        renderer.scenario = scenario
+        if metrics:
+            renderer.metrics = metrics
+        if conclusion:
+            renderer.conclusion = conclusion
+        if scenario in cls.SCENARIO_EXPLANATIONS:
+            renderer.explanation = cls.SCENARIO_EXPLANATIONS[scenario]
+        return renderer
 
     def render_with_view(
         self,
-        result: ExecutorResult,
+        result: Any,
         view: Optional[Dict[str, Any]] = None,
         visualization: Optional[Dict[str, Any]] = None,
     ) -> RenderResult:
         """
-        渲染执行结果，并应用视图控制和可视化配置。
-
-        这是 v2.1 Pipeline 的主要渲染入口，支持自动边界适应。
+        渲染结果（带视图配置）
 
         Args:
-            result: Executor 返回的结果
-            view: ViewSpec 字典（视图控制配置）
-            visualization: VisualizationSpec 字典（可视化配置）
+            result: 执行器结果
+            view: 视图配置字典
+            visualization: 可视化配置字典
 
         Returns:
-            RenderResult 标准化渲染结果
+            RenderResult
         """
-        # 先执行标准渲染
+        # 先调用基本渲染
         render_result = self.render(result)
-
-        # 如果有 ViewSpec，自动计算地图边界信息
-        if view and view.get("fit_bounds", True) and render_result.map_file:
-            view_info = self._extract_view_info(view, result)
-            render_result.metrics["view"] = view_info
-
-        # 如果有 VisualizationSpec，记录可视化配置
-        if visualization:
-            render_result.metrics["visualization"] = {
-                "has_style": visualization.get("color") is not None or
-                             visualization.get("size") is not None,
-                "heatmap": visualization.get("heatmap", False),
-                "choropleth_field": visualization.get("choropleth"),
-            }
-
+        # 可以进一步处理 view 和 visualization 配置
         return render_result
-
-    def _extract_view_info(
-        self,
-        view: Dict[str, Any],
-        result: ExecutorResult,
-    ) -> Dict[str, Any]:
-        """从 ViewSpec 和 ExecutorResult 提取视图信息"""
-        info = {}
-
-        if view.get("fit_bounds"):
-            info["fit_bounds"] = True
-            info["padding"] = view.get("bounds_padding")
-
-        if view.get("center"):
-            info["center"] = view["center"]
-
-        if view.get("zoom"):
-            info["zoom"] = view["zoom"]
-
-        if view.get("pitch"):
-            info["pitch"] = view["pitch"]
-
-        if view.get("bearing"):
-            info["bearing"] = view["bearing"]
-
-        # 尝试从 result 中提取实际计算的边界
-        data = result.data or {}
-        if data.get("bounds"):
-            info["bounds"] = data["bounds"]
-
-        return info
-
-    def _extract_metrics(self, result: ExecutorResult) -> Dict[str, Any]:
-        """从结果中提取关键指标"""
-        data = result.data or {}
-
-        # 常见的指标字段
-        metric_keys = [
-            "distance", "duration", "feature_count", "result_count",
-            "visible_area_km2", "coverage_area", "mean_ndvi",
-            "hotspot_count", "coldspot_count", "building_count",
-            "total_area", "valid_pixels", "resolution",
-        ]
-
-        return {k: v for k, v in data.items() if k in metric_keys}
-
-
-# =============================================================================
-# 便捷函数
-# =============================================================================
-
-_renderer: Optional[ResultRenderer] = None
-
-
-def get_renderer() -> ResultRenderer:
-    """获取渲染器单例"""
-    global _renderer
-    if _renderer is None:
-        _renderer = ResultRenderer()
-    return _renderer
-
-
-def render_result(result: ExecutorResult) -> RenderResult:
-    """
-    便捷函数：渲染执行结果
-
-    这是第6层的标准出口函数。
-    """
-    renderer = get_renderer()
-    return renderer.render(result)
-
-
-__all__ = [
-    "ExplanationCard",
-    "BusinessConclusion",
-    "RenderResult",
-    "ResultRenderer",
-    "get_renderer",
-    "render_result",
-]

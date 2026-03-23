@@ -4,7 +4,7 @@ LLM 配置管理模块
 统一管理 DeepSeek 模型支持
 
 支持的模型：
-- DeepSeek: deepseek-chat, deepseek-coder, deepseek-reasoner, deepseek-v3
+- DeepSeek: deepseek-chat, deepseek-coder, deepseek-v3
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class DeepSeekModel(Enum):
     """DeepSeek 模型"""
     CHAT = "deepseek-chat"
     CODER = "deepseek-coder"
-    REASONER = "deepseek-reasoner"
+    REASONER = "deepseek-chat"
     V3 = "deepseek-v3"
 
 
@@ -94,10 +94,10 @@ DEEPSEEK_PRESETS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://api.deepseek.com",
         "description": "DeepSeek V3 - 最新模型，能力更强",
     },
-    "deepseek-reasoner": {
-        "model": "deepseek-reasoner",
+    "deepseek-chat": {
+        "model": "deepseek-chat",
         "base_url": "https://api.deepseek.com",
-        "description": "DeepSeek Reasoner - 推理模型，用于复杂任务",
+        "description": "DeepSeek Chat - 通用对话，推荐用于日常任务",
     },
     "deepseek-coder": {
         "model": "deepseek-coder",

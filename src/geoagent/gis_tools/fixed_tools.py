@@ -140,7 +140,7 @@ def _get_vector_info(file_path: Path) -> str:
         columns = list(gdf.columns)
 
         # 获取几何类型
-        geom_type = gdf.geom_type.value_counts().to_dict() if len(gdf) > 0 else {}
+        geom_type = gdf.geometry.type.value_counts().to_dict() if len(gdf) > 0 else {}
 
         # 获取要素数量
         feature_count = len(gdf)
