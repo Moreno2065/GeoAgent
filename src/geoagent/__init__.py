@@ -99,20 +99,34 @@ from geoagent.system_prompts import (
     REMOTE_SENSING_PROMPT,
 )
 
-# 执行器
-from geoagent.executors.remote_sensing_executor import (
+# 执行器 (从功能域导入)
+from geoagent.executors import (
+    RouteExecutor,
+    BufferExecutor,
+    OverlayExecutor,
+    IDWExecutor,
+    HotspotExecutor,
+    SuitabilityExecutor,
+    ShadowExecutor,
+    LiDAR3DExecutor,
+    calculate_sun_position,
+    AmapExecutor,
+    OverpassExecutor,
+    OSMExecutor,
+    STACSearchExecutor,
+    NdviExecutor,
     RemoteSensingExecutor,
     RemoteSensingIndex,
     BandMapping,
-)
-
-from geoagent.executors.lidar_3d_executor import (
-    LiDAR3DExecutor,
-    calculate_sun_position,
-)
-
-from geoagent.executors.stac_search_executor import (
-    STACSearchExecutor,
+    VisualizationExecutor,
+    GeneralExecutor,
+    GDALExecutor,
+    PostGISExecutor,
+    CodeSandboxExecutor,
+    ArcGISExecutor,
+    WorkflowEngine,
+    MultiCriteriaSearchExecutor,
+    HybridRetrieverExecutor,
 )
 
 # 核心入口类
