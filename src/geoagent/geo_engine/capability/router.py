@@ -1,4 +1,4 @@
-"""
+﻿"""
 Capability Router - 能力路由适配器
 ================================
 将 Task DSL 映射到 Capability Registry 的路由层。

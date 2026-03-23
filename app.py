@@ -33,10 +33,27 @@ for _p in (_ROOT, _SRC):
 
 from geoagent.core import (
     GeoAgent,
+    GeoAgentV2,
     create_agent,
+    create_agent_v2,
 )
-from geoagent.geoagent_v2 import GeoAgentV2, create_agent_v2
 from geoagent.gis_tools.fixed_tools import get_data_info, list_workspace_files, set_conversation_workspace
+
+# =============================================================================
+# 自动加载配置文件 (~/.geoagent/config.env)
+# =============================================================================
+def _load_config_env():
+    """加载配置文件"""
+    config_file = Path.home() / ".geoagent" / "config.env"
+    if config_file.exists():
+        with open(config_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+
+_load_config_env()
 
 # =============================================================================
 # 常量配置
@@ -46,8 +63,16 @@ _KEY_DIR = Path.home() / ".geoagent"
 _KEY_DIR.mkdir(exist_ok=True)
 _WORKSPACE_DIR = _ROOT / "workspace"
 _WORKSPACE_DIR.mkdir(exist_ok=True)
-_OUTPUTS_DIR = _WORKSPACE_DIR / "outputs"
-_OUTPUTS_DIR.mkdir(exist_ok=True)
+# outputs 目录现在动态确定（见下方函数）
+
+
+def _get_outputs_dir() -> Path:
+    """获取主 workspace 的 outputs 目录（用于显示地图）"""
+    # 始终使用主 workspace 的 outputs，确保和 HTML 生成位置一致
+    outputs = _WORKSPACE_DIR / "outputs"
+    outputs.mkdir(parents=True, exist_ok=True)
+    return outputs
+
 
 # LLM 模型选项
 LLM_PROVIDER_OPTIONS = {
@@ -78,8 +103,13 @@ def _get_workspace_file_stats() -> dict:
     if cid:
         set_conversation_workspace(cid)
     files = list_workspace_files()
+    # 提取文件名列表（兼容字典和字符串格式）
+    if files and isinstance(files[0], dict):
+        file_names = [f["relative_path"] for f in files]
+    else:
+        file_names = list(files)
     stats = {}
-    for fname in files:
+    for fname in file_names:
         try:
             info_raw = get_data_info(fname)
             stats[fname] = json.loads(info_raw)
@@ -116,8 +146,14 @@ def _render_data_table_tab():
         st.info("📂 工作区暂无 GIS 数据，请上传 Shapefile / GeoJSON / GeoTIFF 文件")
         return
 
-    st.caption(f"共 {len(files)} 个数据文件")
-    for fname in files:
+    # 提取文件名列表（兼容字典和字符串格式）
+    if files and isinstance(files[0], dict):
+        file_names = [f["relative_path"] for f in files]
+    else:
+        file_names = list(files)
+
+    st.caption(f"共 {len(file_names)} 个数据文件")
+    for fname in file_names:
         try:
             info_raw = get_data_info(fname)
             info = json.loads(info_raw)
@@ -160,67 +196,311 @@ def _render_data_table_tab():
                 )
 
 
+def _render_geojson_panel(height: int = 600):
+    """Render GeoJSON parsing panel - support paste/upload GeoJSON and preview on map"""
+    import geopandas as gpd
+    import pandas as pd
+    
+    with st.expander("GeoJSON Parsing & Preview", expanded=False):
+        gj_tabs = st.tabs(["Paste GeoJSON", "Upload File"])
+        
+        geojson_text = None
+        uploaded_file = None
+        
+        with gj_tabs[0]:
+            st.markdown("**Paste GeoJSON text:**")
+            geojson_text = st.text_area(
+                "GeoJSON Input",
+                placeholder='{"type": "FeatureCollection", "features": [...]}',
+                height=150,
+                key="geojson_text_input",
+            )
+            col_preview, col_clear = st.columns([1, 1])
+            with col_preview:
+                parse_btn = st.button("Parse", use_container_width=True)
+            with col_clear:
+                clear_btn = st.button("Clear", use_container_width=True)
+            
+            if clear_btn:
+                st.session_state["geojson_text_input"] = ""
+                st.session_state["parsed_geojson"] = None
+                st.rerun()
+        
+        with gj_tabs[1]:
+            st.markdown("**Upload GeoJSON file:**")
+            uploaded_file = st.file_uploader(
+                "Select .geojson or .json file",
+                type=["geojson", "json"],
+                key="geojson_file_upload",
+                help="Support GeoJSON FeatureCollection or Feature",
+            )
+            parse_btn = st.button("Parse", use_container_width=True, key="parse_file_btn")
+        
+        parsed_gdf = None
+        parse_error = None
+        geojson_data = None
+        
+        should_parse = parse_btn and (geojson_text or uploaded_file)
+        
+        if should_parse:
+            try:
+                if geojson_text:
+                    geojson_data = json.loads(geojson_text)
+                elif uploaded_file:
+                    content_bytes = uploaded_file.getvalue().decode("utf-8")
+                    geojson_data = json.loads(content_bytes)
+                
+                if geojson_data:
+                    if isinstance(geojson_data, dict) and geojson_data.get("type") == "FeatureCollection":
+                        gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
+                    elif isinstance(geojson_data, dict) and geojson_data.get("type") == "Feature":
+                        gdf = gpd.GeoDataFrame.from_features([geojson_data])
+                    elif isinstance(geojson_data, list):
+                        gdf = gpd.GeoDataFrame.from_features(geojson_data)
+                    else:
+                        raise ValueError("Unsupported GeoJSON format")
+                    
+                    if hasattr(gdf, 'set_geometry'):
+                        if gdf.geometry.name != 'geometry' and 'geometry' in gdf.columns:
+                            gdf = gdf.set_geometry('geometry')
+                    
+                    if gdf.crs is None:
+                        gdf = gdf.set_crs(epsg=4326, allow_override=True)
+                    
+                    parsed_gdf = gdf
+                    st.session_state["parsed_geojson"] = gdf
+                    
+            except json.JSONDecodeError as e:
+                parse_error = f"JSON decode error: {str(e)}"
+            except Exception as e:
+                parse_error = f"GeoJSON parse error: {str(e)}"
+        
+        if parsed_gdf is None and "parsed_geojson" in st.session_state:
+            parsed_gdf = st.session_state["parsed_geojson"]
+        
+        if parse_error:
+            st.error(f"Error: {parse_error}")
+        elif parsed_gdf is not None:
+            st.success("GeoJSON parsed successfully!")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Features", len(parsed_gdf))
+            with col2:
+                geom_types = parsed_gdf.geometry.geom_type.value_counts().to_dict()
+                geom_str = ", ".join([f"{k}({v})" for k, v in geom_types.items()])
+                st.metric("Geometry", geom_str if len(geom_str) < 20 else list(geom_types.keys())[0])
+            with col3:
+                bounds = parsed_gdf.total_bounds
+                st.metric("X Range", f"{bounds[0]:.4f}~{bounds[2]:.4f}")
+            with col4:
+                st.metric("Y Range", f"{bounds[1]:.4f}~{bounds[3]:.4f}")
+            
+            st.markdown("---")
+            
+            with st.expander("Attribute Table Preview", expanded=True):
+                display_df = parsed_gdf.drop(columns=['geometry']).copy() if 'geometry' in parsed_gdf.columns else parsed_gdf.copy()
+                preview_df = display_df.head(20)
+                st.dataframe(preview_df, use_container_width=True, hide_index=False)
+                if len(parsed_gdf) > 20:
+                    st.caption(f"Showing first 20 of {len(parsed_gdf)} records")
+            
+            st.markdown("**Interactive Preview Map:**")
+            
+            import folium
+            
+            bounds = parsed_gdf.total_bounds
+            center_lat = (bounds[1] + bounds[3]) / 2
+            center_lon = (bounds[0] + bounds[2]) / 2
+            
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+            folium.TileLayer('cartodbpositron', name='CartoDB').add_to(m)
+            folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+                           attr='ESRI', name='Satellite').add_to(m)
+            
+            folium.GeoJson(
+                parsed_gdf.to_json(),
+                name="GeoJSON Data",
+                style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 2, 'fillOpacity': 0.4},
+                popup=folium.GeoJsonPopup(
+                    fields=[c for c in parsed_gdf.columns if c != 'geometry'][:5],
+                    max_height=150
+                ),
+                highlight_function=lambda x: {'weight': 4, 'color': '#ff7800', 'fillOpacity': 0.6}
+            ).add_to(m)
+            
+            m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+            folium.LayerControl().add_to(m)
+            st_folium(m, width="100%", height=height, returned_objects=[])
+            
+            st.markdown("**Export Options:**")
+            col_save_json, col_save_html = st.columns(2)
+            with col_save_json:
+                st.download_button(
+                    "Download GeoJSON",
+                    data=parsed_gdf.to_json(),
+                    file_name="parsed_data.geojson",
+                    mime="application/geo+json",
+                    use_container_width=True
+                )
+            with col_save_html:
+                st.download_button(
+                    "Download Map",
+                    data=m._repr_html_(),
+                    file_name="geojson_preview.html",
+                    mime="text/html",
+                    use_container_width=True
+                )
+            
+            if st.button("Clear Parsed Data", use_container_width=True):
+                st.session_state["parsed_geojson"] = None
+                st.rerun()
+        
+        elif not should_parse and not st.session_state.get("parsed_geojson"):
+            st.info("Paste GeoJSON text or upload file, then click Parse")
+
+
 def _render_map_tab(map_html_path: str | None = None, height: int = 760):
-    """渲染"实时地图"Tab"""
-    if map_html_path and Path(map_html_path).exists():
-        # ── v2.1 增强：显示地图元信息（多图层/视图控制）────
+    """Render map tab with file upload and GeoJSON parsing"""
+    cid = st.session_state.get("active_conv_id")
+    conv_dir = _get_conv_workspace_dir(cid) if cid else _WORKSPACE_DIR
+    conv_outputs_dir = conv_dir / "outputs"
+    
+    # Initialize selected_path - starts as None, will be set if user uploads a file
+    selected_path = None
+    
+    # Upload section
+    with st.expander("Upload Map File", expanded=True):
+        uploaded_map = st.file_uploader(
+            "Upload GeoJSON or HTML map file",
+            type=["geojson", "json", "html"],
+            key="map_file_uploader",
+            help="Support GeoJSON (auto-generate map) or HTML files"
+        )
+        
+        if uploaded_map:
+            try:
+                file_ext = uploaded_map.name.split('.')[-1].lower()
+                
+                if file_ext == "html":
+                    save_path = conv_outputs_dir / uploaded_map.name
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    save_path.write_bytes(uploaded_map.getvalue())
+                    st.success(f"HTML file saved: {uploaded_map.name}")
+                    
+                    # 上传后立即预览
+                    st.markdown("**📍 HTML 预览：**")
+                    _render_html_map_inline(str(save_path), height=500)
+                    selected_path = save_path
+                    st.rerun()
+                    
+                elif file_ext in ["geojson", "json"]:
+                    content_bytes = uploaded_map.getvalue().decode("utf-8")
+                    geojson_data = json.loads(content_bytes)
+                    
+                    import geopandas as gpd
+                    import folium
+                    
+                    if isinstance(geojson_data, dict) and geojson_data.get("type") == "FeatureCollection":
+                        gdf = gpd.GeoDataFrame.from_features(geojson_data["features"])
+                    elif isinstance(geojson_data, dict) and geojson_data.get("type") == "Feature":
+                        gdf = gpd.GeoDataFrame.from_features([geojson_data])
+                    elif isinstance(geojson_data, list):
+                        gdf = gpd.GeoDataFrame.from_features(geojson_data)
+                    else:
+                        raise ValueError("Unsupported format")
+                    
+                    if gdf.crs is None:
+                        gdf = gdf.set_crs(epsg=4326, allow_override=True)
+                    if gdf.crs.to_epsg() != 4326:
+                        gdf = gdf.to_crs(epsg=4326)
+                    
+                    bounds = gdf.total_bounds
+                    center_lat = (bounds[1] + bounds[3]) / 2
+                    center_lon = (bounds[0] + bounds[2]) / 2
+                    
+                    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+                    folium.GeoJson(
+                        gdf.__geo_interface__,
+                        name="Uploaded Data",
+                        style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 2, 'fillOpacity': 0.4},
+                        popup=folium.GeoJsonPopup(fields=[c for c in gdf.columns if c != 'geometry'][:5], max_height=150)
+                    ).add_to(m)
+                    
+                    folium.TileLayer('cartodbpositron', name='CartoDB').add_to(m)
+                    folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+                                   attr='ESRI', name='Satellite').add_to(m)
+                    folium.LayerControl().add_to(m)
+                    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+                    
+                    save_path = conv_outputs_dir / f"uploaded_{uploaded_map.name.rsplit('.', 1)[0]}.html"
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    m.save(str(save_path))
+                    
+                    st.success(f"Map generated: {save_path.name}")
+                    selected_path = save_path
+                    st.rerun()
+                    
+            except Exception as e:
+                st.error(f"Processing failed: {str(e)}")
+    
+    if selected_path and selected_path.exists():
+        # Render selected map
         zoom_level = None
         lat, lon = None, None
         layer_names = []
         try:
-            import json
-            # 尝试从 HTML 中解析 Folium 的 bounds 信息
-            with open(map_html_path, encoding="utf-8") as f:
+            with open(selected_path, encoding="utf-8") as f:
                 html_content = f.read()
-            # 提取 LayerControl 名称（多图层指示）
-            layer_names = re.findall(r'L\.control\.layers\([^)]*\([\'"]([^\'"]+)[\'"]', html_content)
-            # 提取缩放级别
+            layer_names = re.findall(r"L.control.layers.*?['\"]([^'\"]+)['\"]", html_content)
             zoom_match = re.search(r'zoom:\s*(\d+)', html_content)
             zoom_level = zoom_match.group(1) if zoom_match else None
-            # 提取中心点
             center_match = re.search(r'center:\s*\[([-\d.]+),\s*([-\d.]+)\]', html_content)
             if center_match:
                 lat, lon = float(center_match.group(1)), float(center_match.group(2))
         except Exception:
             pass
-
-        # 顶栏信息
+        
         if lat is not None and lon is not None:
-            st.caption(
-                f"📍 {map_html_path} | "
-                f"缩放: z{zoom_level or '?'} | "
-                f"中心: ({lat:.4f}, {lon:.4f})"
-            )
+            st.caption(f"File: {selected_path.name} | Zoom: z{zoom_level or '?'} | Center: ({lat:.4f}, {lon:.4f})")
         else:
-            st.caption(f"📍 当前地图: `{map_html_path}`  |  点击地图可捕获坐标")
-
-        _render_html_map_inline(map_html_path, height=height)
-
-        # ── v2.1 增强：视图信息面板 ────────────────────────────────
-        with st.expander("🗺️ 视图信息", expanded=False):
+            st.caption(f"Map: {selected_path.name}")
+        
+        _render_html_map_inline(str(selected_path), height=height)
+        
+        with st.expander("Map Info", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown("**当前视图**")
+                st.markdown("**Map File**")
+                st.text(selected_path.name)
+                if layer_names:
+                    st.markdown("**Layers**")
+                    for name in layer_names:
+                        st.text(f"- {name}")
             with col2:
                 if zoom_level:
-                    st.text(f"缩放: z{zoom_level}")
+                    st.text(f"Zoom: z{zoom_level}")
                 if lat is not None and lon is not None:
-                    st.text(f"中心: ({lat:.4f}, {lon:.4f})")
-        return
-
-    st.info("🗺️ 等待 GeoAgent 生成空间视图...")
-    html_files = list(_OUTPUTS_DIR.glob("*.html"))
-    if html_files:
-        latest = sorted(html_files, key=lambda p: p.stat().st_mtime)[-1]
-        with st.expander(f"📂 或查看 workspace/outputs 中的历史地图: `{latest.name}`"):
-            _render_html_map_inline(str(latest), height=height)
+                    st.text(f"Center: ({lat:.4f}, {lon:.4f})")
+            
+            with open(selected_path, "r", encoding="utf-8") as f:
+                st.download_button(
+                    "Download This Map",
+                    data=f.read(),
+                    file_name=selected_path.name,
+                    mime="text/html",
+                    use_container_width=True
+                )
     else:
+        st.info("Upload a GeoJSON or HTML file to view it on the map")
         st.markdown(
-            "> 💡 **提示**: 在下方对话框中发送地理分析指令，"
-            "GeoAgent 将自动生成交互地图并在此处展示。\n"
+            "> Send a spatial analysis command below, "
+            "GeoAgent will generate an interactive map.\n"
             ">\n"
-            "> 例如：`在芜湖市规划从芜湖南站到方特的最短步行路径`"
+            "> Example: Route from Point A to Point B"
         )
+    
+    _render_geojson_panel(height=height)
 
 
 def _render_html_map_inline(html_path: str, height: int = 760):
@@ -260,8 +540,14 @@ def _render_charts_tab():
         st.info("📊 请先上传或生成 GIS 数据文件")
         return
 
+    # 提取文件名列表（兼容字典和字符串格式）
+    if files and isinstance(files[0], dict):
+        file_names = [f["relative_path"] for f in files]
+    else:
+        file_names = list(files)
+
     st.markdown("**📈 快速统计预览**")
-    vector_files = [f for f in files if f.endswith(('.shp', '.geojson', '.json', '.gpkg'))]
+    vector_files = [f for f in file_names if f.endswith(('.shp', '.geojson', '.json', '.gpkg'))]
     for fname in vector_files[:5]:
         try:
             import geopandas as gpd
@@ -281,7 +567,7 @@ def _render_charts_tab():
         except Exception:
             pass
 
-    raster_files = [f for f in files if f.endswith(('.tif', '.tiff'))]
+    raster_files = [f for f in file_names if f.endswith(('.tif', '.tiff'))]
     if raster_files:
         with st.expander(f"🛰️ 栅格数据统计 — {raster_files[0]}"):
             try:
@@ -318,9 +604,11 @@ def _get_conv_files(cid: str, include_all_types: bool = True) -> list[Path]:
     if include_all_types:
         # 所有支持的文件类型
         all_exts = {
-            # GIS 文件
+            # GIS 文件（主文件）
             ".shp", ".json", ".geojson", ".gpkg", ".gjson",
             ".tif", ".tiff", ".img", ".asc", ".rst", ".nc",
+            # Shapefile 配套文件
+            ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".sbp", ".shp.xml",
             # 文档
             ".pdf", ".docx", ".doc", ".txt", ".md", ".rtf",
             # 表格
@@ -331,8 +619,11 @@ def _get_conv_files(cid: str, include_all_types: bool = True) -> list[Path]:
     else:
         # 仅 GIS 文件
         all_exts = {
+            # GIS 主文件
             ".shp", ".json", ".geojson", ".gpkg", ".gjson",
             ".tif", ".tiff", ".img", ".asc", ".rst", ".nc",
+            # Shapefile 配套文件
+            ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".sbp", ".shp.xml",
         }
 
     # 递归扫描所有子目录
@@ -360,14 +651,15 @@ def _delete_conv_file(cid: str, fname: str) -> bool:
 
 
 def _render_agent_generated_maps() -> str | None:
-    """检测最新生成的 HTML 地图（修复目录隔离问题）"""
+    """检测最新生成的 HTML 地图（使用主 workspace 的 outputs 目录）"""
     cid = st.session_state.get("active_conv_id")
     if not cid:
         return None
-    conv_outputs_dir = _get_conv_workspace_dir(cid) / "outputs"
-    if not conv_outputs_dir.exists():
+    # 始终使用主 workspace 的 outputs（和 HTML 生成位置一致）
+    outputs_dir = _get_outputs_dir()
+    if not outputs_dir.exists():
         return None
-    html_files = list(conv_outputs_dir.glob("*.html"))
+    html_files = list(outputs_dir.glob("*.html"))
     if not html_files:
         return None
     return str(sorted(html_files, key=lambda p: p.stat().st_mtime)[-1])
@@ -387,7 +679,6 @@ def _init_session_state():
         "deepseek_key": _read_key(".api_key"),
         "amap_key": _read_key(".amap_key"),
         "last_map_file": None,
-        "pending_click": None,
         "kpi_data": {
             "nodes": "—",
             "nodes_delta": "",
@@ -622,20 +913,6 @@ def _build_llm_messages(cid: str, system_prompt: str, current_user_message: str,
     return messages
 
 
-def _format_click_context(clicked: dict) -> str:
-    if not clicked:
-        return ""
-    lat = clicked.get("lat") or clicked.get("latitude")
-    lng = clicked.get("lng") or clicked.get("lon") or clicked.get("longitude")
-    if lat is not None and lng is not None:
-        return (
-            f"\n\n[地图交互上下文] 用户在地图上点击了坐标: "
-            f"经度 {lng:.6f}, 纬度 {lat:.6f}。"
-            f"请分析该点周边的空间数据。"
-        )
-    return ""
-
-
 # =============================================================================
 # 侧边栏
 # =============================================================================
@@ -759,17 +1036,38 @@ def _render_sidebar():
             set_conversation_workspace(cid)
             conv_files = _get_conv_files(cid)
 
-            # 显示文件列表（只显示主文件类型，避免 .shx/.dbf/.cpg 等辅助文件造成重复 key）
-            MAIN_FILE_TYPES = {".shp", ".geojson", ".json", ".gpkg", ".gjson", ".tif", ".tiff", ".cog", ".pdf", ".csv", ".xlsx"}
-            main_files = [f for f in conv_files if f.suffix.lower() in MAIN_FILE_TYPES]
+            # 显示文件列表（按 Shapefile 分组显示，包含辅助文件）
+            # 辅助文件后缀
+            AUX_SUFFIXES = {".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".sbp", ".shp.xml"}
+            # 主文件后缀
+            MAIN_SUFFIXES = {".shp", ".geojson", ".json", ".gpkg", ".gjson", ".tif", ".tiff", ".cog", ".pdf", ".csv", ".xlsx"}
+
+            # 按文件名主干分组（将辅助文件归到主文件组）
+            from collections import defaultdict
+            file_groups = defaultdict(list)
+            for f in conv_files:
+                ext = f.suffix.lower()
+                if ext in AUX_SUFFIXES:
+                    # 归到对应的主文件组（如 河流.shx -> 河流.shp 组）
+                    stem = f.stem
+                    main_file = f.parent / f"{stem}.shp"
+                    file_groups[main_file].append(f)
+                elif ext in MAIN_SUFFIXES:
+                    file_groups[f].append(f)
+                else:
+                    # 其他文件单独处理
+                    file_groups[f].append(f)
+
+            # 显示分组后的文件列表
+            main_display_files = list(file_groups.keys())
             
-            if main_files:
-                st.caption(f"📁 {len(main_files)} 个文件")
-                for idx, f in enumerate(main_files):
-                    col1, col2 = st.columns([4, 1])
-                    size = f.stat().st_size
+            if main_display_files:
+                st.caption(f"共 {len(main_display_files)} 个文件（含 Shapefile 辅助文件）")
+                for idx, main_file in enumerate(main_display_files):
+                    group = file_groups[main_file]
+                    size = sum(f.stat().st_size for f in group)
                     size_str = f"{size/1024:.1f} KB" if size < 1048576 else f"{size/1048576:.1f} MB"
-                    ext = f.suffix.upper()
+                    ext = main_file.suffix.upper()
                     icon = (
                         "🗺️"
                         if ext in [".SHP", ".GEOJSON", ".JSON", ".GPKG"]
@@ -778,21 +1076,33 @@ def _render_sidebar():
                         else "🌐" if ext == ".HTML"
                         else "📄"
                     )
-                    with col1:
-                        st.caption(f"{icon} {f.name} ({size_str})")
-                    with col2:
-                        # 使用索引确保 key 唯一
-                        if st.button("🗑️", key=f"del_file_{cid}_{idx}_{f.name}", help=f"删除 {f.name}"):
-                            if _delete_conv_file(cid, f.name):
-                                st.success(f"已删除 {f.name}")
-                                st.rerun()
-            else:
-                st.caption("暂无文件")
+                    # 显示辅助文件数量
+                    aux_count = len(group) - 1
+                    aux_info = f" (+{aux_count} 个辅助文件)" if aux_count > 0 else ""
+                    
+                    with st.expander(f"{icon} `{main_file.name}` ({size_str}){aux_info}"):
+                        # 显示辅助文件列表
+                        if aux_count > 0:
+                            st.caption("📎 包含文件:")
+                            for aux_f in group:
+                                if aux_f != main_file:
+                                    st.caption(f"   - `{aux_f.name}`")
+                        
+                        # 删除按钮
+                        if st.button("🗑️ 删除", key=f"del_file_{cid}_{idx}_{main_file.name}"):
+                            for del_f in group:
+                                try:
+                                    del_f.unlink()
+                                except:
+                                    pass
+                            st.success(f"已删除 {main_file.name} 及其辅助文件")
+                            st.rerun()
 
             # 文件上传（Agent 在线即可使用）
             uploaded = st.file_uploader(
                 "📤 上传 GIS 数据",
-                type=["zip", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv"],
+                type=["zip", "geojson", "json", "gpkg", "tiff", "tif", "gtiff", "png", "jpg", "jpeg", "xlsx", "csv", 
+                      "shp", "shx", "dbf", "prj", "cpg", "sbn", "sbx", "sbp"],
                 key=f"conv_file_uploader_{cid}_{st.session_state.get('_file_upload_key', 0)}",
                 help="支持 GeoJSON / GeoPackage / GeoTIFF 单文件上传；Shapefile 需打包为 .ZIP 后上传（含 .shp/.dbf/.shx 等）",
             )
@@ -816,8 +1126,80 @@ def _render_sidebar():
                             timestamp = int(time.time() * 1000)
                             extract_dir = conv_dir / f"_unzipped_{timestamp}"
                             extract_dir.mkdir(parents=True, exist_ok=True)
+
+                            # ── 统一的文件名解码函数 ────────────────────────────────
+                            def _decode_name(raw: str) -> str:
+                                """将 ZIP 内部原始文件名安全解码为可用字符串"""
+                                # 先尝 UTF-8（现代 ZIP 工具），再尝 GBK（国内常用压缩工具）
+                                for enc in ('utf-8', 'gbk', 'gb2312', 'cp437', 'latin1'):
+                                    try:
+                                        decoded = raw.encode('latin1').decode(enc)
+                                        # 验证没有乱码标记
+                                        if '\ufffd' not in decoded and '?' not in decoded:
+                                            # 进一步确认所有字符都能安全传递给 Windows 文件 API
+                                            # Windows NTFS API 对非 ASCII 字符处理不一致，
+                                            # 为彻底避免 charmap 问题，文件名始终强制 ASCII
+                                            ascii_only = "".join(
+                                                c if (
+                                                    ord(c) < 128
+                                                    and c.isprintable()
+                                                    and c not in r'\/:*?"<>|'
+                                                ) else '_'
+                                                for c in decoded
+                                            )
+                                            return ascii_only or "unnamed"
+                                    except (UnicodeDecodeError, LookupError):
+                                        continue
+                                # 全失败 → 强制 ASCII 化
+                                ascii_only = "".join(
+                                    c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
+                                    for c in raw
+                                )
+                                return ascii_only or "unnamed"
+
+                            # ── 安全的文件写入 ────────────────────────────────────
+                            def _safe_write(dst: Path, data: bytes) -> None:
+                                try:
+                                    with open(dst, 'wb') as fh:
+                                        fh.write(data)
+                                    return  # 成功写入直接返回
+                                except (OSError, UnicodeEncodeError, UnicodeDecodeError):
+                                    pass
+                                # Fallback：始终使用 ASCII-only 文件名（绕过所有编码问题）
+                                ascii_name = "".join(
+                                    c if (
+                                        ord(c) < 128
+                                        and c.isprintable()
+                                        and c not in r'\/:*?"<>|'
+                                    ) else '_'
+                                    for c in dst.name
+                                )
+                                if not ascii_name or ascii_name.isspace():
+                                    ascii_name = "file"
+                                parts = ascii_name.rsplit('.', 1)
+                                stem = parts[0] if len(parts) == 2 else ascii_name
+                                ext = parts[1] if len(parts) == 2 else ''
+                                base = (dst.parent / stem).with_suffix(f".{ext}" if ext else '') if ext else dst.parent / stem
+                                final = base
+                                cnt = 1
+                                while final.exists():
+                                    suffix = f".{ext}" if ext else ''
+                                    final = dst.parent / f"{stem}_{cnt}{suffix}"
+                                    cnt += 1
+                                with open(final, 'wb') as fh:
+                                    fh.write(data)
+
+                            # encoding 参数在 Python 3.11+ 才支持，降级版本直接去掉
                             with zipfile.ZipFile(tmp_path, 'r') as zf:
-                                zf.extractall(extract_dir)
+                                for zinfo in zf.infolist():
+                                    filename = _decode_name(zinfo.filename)
+                                    if filename.endswith('/'):
+                                        (extract_dir / filename.rstrip('/')).mkdir(parents=True, exist_ok=True)
+                                        continue
+                                    target_path = extract_dir / filename
+                                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                                    with zf.open(zinfo) as src:
+                                        _safe_write(target_path, src.read())
                             extracted_count = sum(1 for _ in extract_dir.rglob("*") if _.is_file())
                             new_uploads += extracted_count
                             os.unlink(tmp_path)
@@ -1526,9 +1908,6 @@ def main():
         with tab_ws:
             _render_workspace_browser()
 
-        st.markdown("<hr>", unsafe_allow_html=True)
-        _render_map_click_capture()
-
     # ── 聊天列（填满下方剩余空间）────────────────────────────
     with st.container():
         st.markdown(
@@ -1600,9 +1979,7 @@ def main():
         agent_for_input = st.session_state.get("agent_v2") or st.session_state.get("agent")
         placeholder = "向 GeoAgent 发布空间分析指令..." if agent_for_input else "请先启动 Agent"
         prompt = st.chat_input(
-            placeholder
-            if not st.session_state.get("pending_click")
-            else "📍 已捕获地图点击，继续分析...",
+            placeholder,
             disabled=not agent_for_input,
             key="main_chat_input",
         )
@@ -1848,11 +2225,10 @@ def _handle_user_message(prompt: str, agent):
             return
 
     # ── 正常处理用户输入 ──────────────────────────────────────────
-    injected_ctx = _format_click_context(st.session_state.get("pending_click"))
-    st.session_state["pending_click"] = None
 
     # 动态注入工作区文件列表，帮 LLM 补全缺省的后缀名
     # ⚠️【铁律】区分对待：文件名 ↔ 搜索关键词
+    injected_ctx = ""
     conv_files = _get_conv_files(cid)
     if conv_files:
         available_files = [f.name for f in conv_files]
@@ -1936,8 +2312,9 @@ def _handle_user_message(prompt: str, agent):
             }
 
             baseline = set()
-            if _OUTPUTS_DIR.exists():
-                baseline = set(_OUTPUTS_DIR.glob("*.html"))
+            outputs_dir = _get_outputs_dir()
+            if outputs_dir.exists():
+                baseline = set(outputs_dir.glob("*.html"))
 
             def _update_stream(text: str):
                 """追加新内容并渲染，末尾加闪烁光标表示正在输出。"""
@@ -2377,8 +2754,9 @@ def _handle_user_message(prompt: str, agent):
                                         lines.append(f"  - {f}")
 
                         # 检测是否有新生成的地图文件
-                        if _OUTPUTS_DIR.exists():
-                            new_maps = list(_OUTPUTS_DIR.glob("*.html"))
+                        outputs_dir = _get_outputs_dir()
+                        if outputs_dir.exists():
+                            new_maps = list(outputs_dir.glob("*.html"))
                             if new_maps:
                                 latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
                                 lines.append(f"\n🗺️ **交互式地图已生成**: `{latest_map.name}`")
@@ -2427,8 +2805,9 @@ def _handle_user_message(prompt: str, agent):
                 "id": asst_msg_id,
             })
 
-            if _OUTPUTS_DIR.exists():
-                current_maps = set(_OUTPUTS_DIR.glob("*.html"))
+            outputs_dir = _get_outputs_dir()
+            if outputs_dir.exists():
+                current_maps = set(outputs_dir.glob("*.html"))
                 new_maps = current_maps - baseline
                 if new_maps:
                     latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
@@ -2460,7 +2839,12 @@ def _handle_user_message(prompt: str, agent):
 
 def _update_kpi_from_tool_results(tools: list):
     kpi = st.session_state.get("kpi_data", {})
-    file_count = len(list_workspace_files())
+    files = list_workspace_files()
+    # 提取文件名列表（兼容字典和字符串格式）
+    if files and isinstance(files[0], dict):
+        file_count = len(files)
+    else:
+        file_count = len(files) if isinstance(files, (list, tuple)) else 0
     tool_names = [t.get("tool", "") for t in tools]
     node_tools = {"osmnx_routing", "shortest_path", "reachable_area"}
     area_tools = {
@@ -2483,37 +2867,6 @@ def _update_kpi_from_tool_results(tools: list):
     kpi["count_delta"] = f"共 {file_count} 个文件"
     kpi["count_label"] = "文件总数"
     st.session_state["kpi_data"] = kpi
-
-
-def _render_map_click_capture():
-    last_map = st.session_state.get("last_map_file")
-    if not last_map or not Path(last_map).exists():
-        return
-
-    st.markdown(
-        '<div class="section-heading map-capture-section">📍 &nbsp;点击捕获</div>',
-        unsafe_allow_html=True,
-    )
-    try:
-        import folium
-        fmap = folium.Map(location=[30, 117], zoom_start=5)
-        st_map_data = st_folium(
-            fmap,
-            key="click_capture_main",
-            height=285,
-            use_container_width=True,
-            returned_objects=["last_clicked"],
-        )
-        clicked = st_map_data.get("last_clicked")
-        if clicked:
-            st.session_state["pending_click"] = clicked
-            st.success(
-                f"✅ 坐标已捕获: 经度 "
-                f"{clicked.get('lng', clicked.get('lon', 0)):.6f}, "
-                f"纬度 {clicked.get('lat', 0):.6f} — 发送消息即可分析！"
-            )
-    except Exception as e:
-        st.warning(f"地图点击捕获不可用: {e}")
 
 
 if __name__ == "__main__":

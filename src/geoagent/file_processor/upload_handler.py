@@ -11,7 +11,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 from .content_container import ContentContainer, FileContent, FileType
 from .document_parser import DocumentParser
@@ -65,34 +65,37 @@ class FileUploadHandler:
         if suffix == '.zip':
             return self._handle_zip_upload(path)
 
+        # 尝试各种解析器，不做格式限制
+        # 地理数据 - 优先尝试
+        result = self.geo_reader.parse(file_path)
+        if result and not result.error:
+            return result
+
         # 文档
-        elif suffix in DocumentParser.SUPPORTED_EXTENSIONS:
-            return self.doc_parser.parse(file_path)
+        result = self.doc_parser.parse(file_path)
+        if result and not result.error:
+            return result
 
         # 图片
-        elif suffix in ImageProcessor.SUPPORTED_EXTENSIONS:
-            return self.img_processor.process(file_path)
+        result = self.img_processor.process(file_path)
+        if result and not result.error:
+            return result
 
         # 结构化数据
-        elif suffix in StructuredDataParser.SUPPORTED_EXTENSIONS:
-            return self.data_parser.parse(file_path)
+        result = self.data_parser.parse(file_path)
+        if result and not result.error:
+            return result
 
-        # 地理数据 - 矢量
-        elif suffix in GeoDataReader.VECTOR_EXTENSIONS:
-            return self.geo_reader.parse(file_path)
-
-        # 地理数据 - 栅格
-        elif suffix in GeoDataReader.RASTER_EXTENSIONS:
-            return self.geo_reader.parse(file_path)
-
-        # 未知类型
-        else:
-            return FileContent(
-                file_name=path.name,
-                file_path=str(path),
-                file_type=FileType.UNKNOWN,
-                error=f"不支持的文件类型: {suffix}",
-            )
+        # 所有解析器都无法处理，返回最后一个结果或错误信息
+        if result and result.error:
+            return result
+        
+        return FileContent(
+            file_name=path.name,
+            file_path=str(path),
+            file_type=FileType.UNKNOWN,
+            error=f"无法解析文件: {suffix}",
+        )
 
     def _handle_zip_upload(self, zip_path: Path) -> FileContent:
         """
@@ -113,67 +116,215 @@ class FileUploadHandler:
                 shutil.rmtree(extract_dir)
             extract_dir.mkdir(exist_ok=True, parents=True)
 
-            # 解压文件并修复中文乱码
+            # ═══════════════════════════════════════════════════════════════════
+            # 修复 ZIP 中文文件名解压问题
+            # 问题来源：Windows 上 zipfile 默认用 system encoding (cp1252) 读取文件名
+            #           导致中文文件名变成乱码，进而触发 charmap 编码错误
+            # 解决方案：
+            #   1. 尝试用 UTF-8 编码读取文件名（现代 ZIP 规范）
+            #   2. 尝试用 cp437 读取（老 DOS/WinZip 习惯）
+            #   3. 回退到安全 ASCII 文件名（彻底屏蔽编码问题）
+            # ═══════════════════════════════════════════════════════════════════
+            def _extract_filename(zinfo: zipfile.ZipInfo) -> str:
+                """从 ZipInfo 中安全提取文件名，兼容各种编码"""
+                raw = zinfo.filename
+
+                # 先尝 UTF-8（现代 ZIP 工具），再尝 GBK（国内压缩工具）
+                for enc in ('utf-8', 'gbk', 'gb2312', 'cp437', 'latin1'):
+                    try:
+                        decoded = raw.encode('latin1').decode(enc)
+                        # 验证没有乱码标记
+                        if '\ufffd' not in decoded and '?' not in decoded:
+                            # Windows 文件 API 不稳定 → 文件名始终强制 ASCII
+                            ascii_only = "".join(
+                                c if (
+                                    ord(c) < 128
+                                    and c.isprintable()
+                                    and c not in r'\/:*?"<>|'
+                                ) else '_'
+                                for c in decoded
+                            )
+                            return ascii_only or "unnamed"
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+
+                # 全失败 → 直接 ASCII 化
+                ascii_only = "".join(
+                    c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
+                    for c in raw
+                )
+                return ascii_only or "unnamed"
+
+            def _safe_write(dst_path: Path, data: bytes) -> Path:
+                """将数据安全写入目标路径，处理 Windows 路径编码问题"""
+                try:
+                    with open(dst_path, 'wb') as f:
+                        f.write(data)
+                    return dst_path
+                except (OSError, UnicodeEncodeError, UnicodeDecodeError):
+                    # Windows 中文路径 fallback：始终使用 ASCII 文件名
+                    ascii_name = "".join(
+                        c if (ord(c) < 128 and c.isprintable() and c not in r'\/:*?"<>|') else '_'
+                        for c in dst_path.name
+                    )
+                    if not ascii_name or ascii_name.isspace():
+                        ascii_name = "file"
+                    base = ascii_name.rsplit('.', 1)
+                    if len(base) == 2:
+                        stem, ext = base
+                    else:
+                        stem, ext = ascii_name, ''
+
+                    counter = 1
+                    final_path = dst_path.parent / f"{stem}.{ext}" if ext else dst_path.parent / stem
+                    while final_path.exists():
+                        suffix = f".{ext}" if ext else ""
+                        final_path = dst_path.parent / f"{stem}_{counter}{suffix}"
+                        counter += 1
+
+                    with open(final_path, 'wb') as f:
+                        f.write(data)
+                    return final_path
+
+            # Python 3.8+: ZipFile 支持 encoding 参数；降级版本依赖 _extract_filename() 手动解码
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 for zinfo in zip_ref.infolist():
-                    filename = zinfo.filename
-                    # 尝试修复 Windows 默认 GBK 压缩带来的乱码
-                    try:
-                        filename = filename.encode('cp437').decode('gbk')
-                    except UnicodeDecodeError:
-                        try:
-                            filename = filename.encode('cp437').decode('utf-8')
-                        except UnicodeDecodeError:
-                            pass  # 用原名
-                    
-                    # 写入到解压目录（处理中文文件名）
+                    filename = _extract_filename(zinfo)
                     target_path = extract_dir / filename
-                    if not filename.endswith('/'):
-                        target_path.parent.mkdir(parents=True, exist_ok=True)
-                        # 读取并写入二进制数据
-                        with zip_ref.open(zinfo) as src:
-                            data = src.read()
-                        # 写入文件，处理路径编码问题
-                        try:
-                            with open(target_path, 'wb') as dst:
-                                dst.write(data)
-                        except OSError:
-                            # Windows 中文路径问题：尝试使用 safe name
-                            safe_filename = "".join(
-                                c if ord(c) < 128 or c.isalnum() else '_' 
-                                for c in filename
-                            )
-                            target_path = extract_dir / safe_filename
-                            with open(target_path, 'wb') as dst:
-                                dst.write(data)
 
-            # 扫描解压目录，寻找主要的 GIS 文件 (.shp 或 .geojson)
-            main_geo_file = None
+                    if filename.endswith('/'):
+                        # 目录条目
+                        (extract_dir / filename.rstrip('/')).mkdir(parents=True, exist_ok=True)
+                        continue
+
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    # 读取并写入二进制数据（使用安全的写入函数）
+                    with zip_ref.open(zinfo) as src:
+                        data = src.read()
+                    _safe_write(target_path, data)
+
+            # 扫描解压目录，寻找所有 GIS 文件
+            # 包含 Shapefile 主文件(.shp)和配套文件(.prj/.shx/.dbf/.cpg等)
+            # 以及其他矢量/栅格格式
+            all_geo_files: Dict[Path, List[Path]] = {}
+            
             for root, dirs, files in os.walk(extract_dir):
                 for file in files:
-                    # 优先寻找 shp 或 geojson
-                    if file.lower().endswith(('.shp', '.geojson', '.gpkg')):
-                        main_geo_file = Path(root) / file
-                        break
-                if main_geo_file:
-                    break
+                    # Shapefile 配套文件（必须在 .shp 之前扫描，以确保完整提取）
+                    if file.lower().endswith(('.prj', '.sbn', '.sbx', '.cpg', '.shx', '.dbf')):
+                        parent = Path(root)
+                        if parent not in all_geo_files:
+                            all_geo_files[parent] = []
+                        all_geo_files[parent].append(Path(root) / file)
+                    # 主 GIS 文件
+                    elif file.lower().endswith(('.shp', '.geojson', '.gpkg', '.tif', '.tiff')):
+                        parent = Path(root)
+                        if parent not in all_geo_files:
+                            all_geo_files[parent] = []
+                        all_geo_files[parent].append(Path(root) / file)
 
-            if not main_geo_file:
+            # 按文件优先级排序（shp > geojson > gpkg > tif，配套文件不参与排序）
+            def get_priority(p: Path) -> tuple[int, int]:
+                ext = p.suffix.lower()
+                priority_map = {
+                    '.shp': (0, 0),
+                    '.geojson': (1, 0),
+                    '.gpkg': (2, 0),
+                    '.tif': (3, 0),
+                    '.tiff': (3, 0),
+                }
+                if ext in priority_map:
+                    return priority_map[ext]
+                return (99, 0)  # 配套文件不参与主文件排序
+
+            # 收集所有需要解析的主文件（每个数据集只取优先级最高的）
+            main_files: List[Path] = []
+            for parent, files in all_geo_files.items():
+                # 先过滤出主 GIS 文件
+                main_gis_files = [f for f in files if f.suffix.lower() in ('.shp', '.geojson', '.gpkg', '.tif', '.tiff')]
+                if main_gis_files:
+                    sorted_files = sorted(main_gis_files, key=get_priority)
+                    main_files.append(sorted_files[0])
+
+            if not main_files:
                 return FileContent(
                     file_name=zip_path.name,
                     file_path=str(zip_path),
                     file_type=FileType.UNKNOWN,
-                    error="解压成功，但 ZIP 压缩包内未找到有效的 .shp / .geojson 地理空间数据文件！",
+                    error="解压成功，但 ZIP 压缩包内未找到有效的地理空间数据文件！",
                 )
 
-            # 找到主文件后，将路径丢给 geo_reader 解析
-            # 此时 .dbf, .shx, .prj 等附属文件都躺在同级目录，geopandas 会自动加载
-            result = self.geo_reader.parse(str(main_geo_file))
+            # ═══════════════════════════════════════════════════════════════════
+            # 🆕 关键修复：记录所有辅助文件信息到 metadata
+            # 问题：辅助文件（.shx/.prj/.dbf）信息丢失，前端无法显示完整文件列表
+            # ═══════════════════════════════════════════════════════════════════
+            # 为每个主文件收集所有相关文件（包括辅助文件）
+            shp_related_files: Dict[str, List[str]] = {}
             
-            # 贴心地把原始压缩包名字也附带上，方便 LLM 识别
-            result.file_name = f"{zip_path.name} (内含: {main_geo_file.name})"
+            for parent_dir, file_list in all_geo_files.items():
+                # 按 stem 分组
+                for f in file_list:
+                    stem = f.stem  # "河流" from "河流.shp"
+                    if stem not in shp_related_files:
+                        shp_related_files[stem] = []
+                    shp_related_files[stem].append(f.name)
+            # ═══════════════════════════════════════════════════════════════════
 
-            return result
+            # 解析所有找到的地理文件
+            results: List[FileContent] = []
+            for main_file in main_files:
+                result = self.geo_reader.parse(str(main_file))
+                # 贴心地把原始压缩包名字也附带上，方便 LLM 识别
+                result.file_name = f"{zip_path.name} (内含: {main_file.name})"
+                
+                # 🆕 附加辅助文件信息到 metadata
+                stem = main_file.stem
+                related = shp_related_files.get(stem, [])
+                if "metadata" not in result.__dict__ or result.metadata is None:
+                    result.metadata = {}
+                result.metadata["unzipped_files"] = related
+                result.metadata["unzipped_count"] = len(related)
+                result.metadata["unzipped_dir"] = str(extract_dir)
+                
+                results.append(result)
+
+            # 如果只有一个文件，返回单个结果（保持向后兼容）
+            if len(results) == 1:
+                return results[0]
+            
+            # 多个文件：创建 ContentContainer 并转换为单个 FileContent 返回
+            container = ContentContainer(files=results)
+            
+            # 合并摘要信息
+            summaries = [r.summary for r in results if r.summary]
+            combined_summary = f"ZIP包 {zip_path.name} 包含 {len(results)} 个地理数据文件"
+            if summaries:
+                combined_summary += f": {'; '.join(summaries[:3])}"
+                if len(summaries) > 3:
+                    combined_summary += f" 等共{len(summaries)}个"
+
+            # 合并结构化数据
+            combined_structured = {
+                "file_count": len(results),
+                "files": [r.structured_data for r in results if r.structured_data]
+            }
+
+            # 合并地理元信息
+            combined_geo_metadata = {
+                "file_count": len(results),
+                "files": [r.geo_metadata for r in results if r.geo_metadata]
+            }
+
+            return FileContent(
+                file_name=zip_path.name,
+                file_path=str(zip_path),
+                file_type=FileType.SHAPEFILE,
+                summary=combined_summary,
+                structured_data=combined_structured,
+                geo_metadata=combined_geo_metadata,
+                metadata={"unzipped_files": len(main_files)},
+            )
 
         except zipfile.BadZipFile:
             return FileContent(
@@ -250,30 +401,6 @@ class FileUploadHandler:
             if not new_path.exists():
                 return new_path
             counter += 1
-
-    def get_supported_formats(self) -> Dict[str, List[str]]:
-        """获取支持的文件格式"""
-        return {
-            "压缩包": [".zip"],
-            "文档": list(DocumentParser.SUPPORTED_EXTENSIONS),
-            "图片": list(ImageProcessor.SUPPORTED_EXTENSIONS),
-            "表格": list(StructuredDataParser.SUPPORTED_EXTENSIONS),
-            "矢量地理数据": list(GeoDataReader.VECTOR_EXTENSIONS),
-            "栅格地理数据": list(GeoDataReader.RASTER_EXTENSIONS),
-        }
-
-    def is_supported(self, file_path: str) -> bool:
-        """检查文件是否支持"""
-        suffix = Path(file_path).suffix.lower()
-
-        return (
-            suffix == '.zip'
-            or suffix in DocumentParser.SUPPORTED_EXTENSIONS
-            or suffix in ImageProcessor.SUPPORTED_EXTENSIONS
-            or suffix in StructuredDataParser.SUPPORTED_EXTENSIONS
-            or suffix in GeoDataReader.VECTOR_EXTENSIONS
-            or suffix in GeoDataReader.RASTER_EXTENSIONS
-        )
 
 # =============================================================================
 # 便捷函数

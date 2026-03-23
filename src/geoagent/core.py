@@ -14,7 +14,9 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from openai import OpenAI
+import json
 import threading
+from datetime import datetime
 
 from geoagent.pipeline import (
     GeoAgentPipeline,
@@ -119,6 +121,13 @@ class GeoAgent:
             reasoner_factory=reasoner_factory,
         )
 
+        # 历史对话管理
+        self.max_history = 20  # 最大历史轮次
+        self.history_file = Path.home() / ".geoagent_history" / "conversation_history.json"
+        self._history: List[Dict[str, Any]] = []
+        self._history_lock = threading.Lock()
+        self._load_history()
+
         # 统计
         self.stats: Dict[str, int] = {
             "total_requests": 0,
@@ -152,6 +161,76 @@ class GeoAgent:
         except Exception:
             pass
         return None
+
+    # ── 历史对话管理 ───────────────────────────────────────────────────────
+
+    def _load_history(self) -> None:
+        """加载历史对话"""
+        if not self.history_file.exists():
+            return
+        try:
+            with self._history_lock:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    self._history = json.load(f)
+        except Exception:
+            self._history = []
+
+    def _save_history(self) -> None:
+        """保存历史对话"""
+        try:
+            self.history_file.parent.mkdir(parents=True, exist_ok=True)
+            with self._history_lock:
+                with open(self.history_file, 'w', encoding='utf-8') as f:
+                    json.dump(self._history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def add_to_history(self, role: str, content: str, reasoning: str = None) -> None:
+        """
+        添加对话到历史记录
+
+        Args:
+            role: 角色 (user/assistant)
+            content: 对话内容
+            reasoning: 推理思维内容（可选）
+        """
+        entry = {"role": role, "content": content}
+        if reasoning:
+            entry["reasoning"] = reasoning
+        entry["timestamp"] = datetime.now().isoformat()
+
+        with self._history_lock:
+            self._history.append(entry)
+            # 限制历史长度
+            if len(self._history) > self.max_history:
+                self._history = self._history[-self.max_history:]
+        
+        self._save_history()
+
+    def clear_history(self) -> None:
+        """清除所有历史对话"""
+        with self._history_lock:
+            self._history = []
+        if self.history_file.exists():
+            self.history_file.unlink()
+
+    def get_history(self) -> List[Dict[str, Any]]:
+        """获取历史对话"""
+        with self._history_lock:
+            return self._history.copy()
+
+    def get_history_count(self) -> int:
+        """获取当前历史轮次"""
+        with self._history_lock:
+            return len(self._history)
+
+    def set_max_history(self, max_history: int) -> None:
+        """设置最大历史轮次"""
+        self.max_history = max_history
+        with self._history_lock:
+            if len(self._history) > max_history:
+                self._history = self._history[-max_history:]
+        self._save_history()
 
     # ── 模型信息 ──────────────────────────────────────────────────────────
 
@@ -192,10 +271,25 @@ class GeoAgent:
             event_callback: 事件回调函数
 
         Returns:
-            PipelineResult 标准化结果
+            PipelineResult 标准化结果（包含 reasoning 字段如果有推理思维）
         """
         self.stats["total_requests"] += 1
+
+        # 检查历史上限
+        history_warning = None
+        if self.get_history_count() >= self.max_history:
+            history_warning = f"已达到历史轮次上限 ({self.max_history})，请手动调用 agent.clear_history() 清除历史"
+
         result = self._pipeline.run(user_input, files=files, context=context, event_callback=event_callback)
+
+        # 添加到历史
+        reasoning = getattr(result, 'reasoning_content', None)
+        self.add_to_history("user", user_input)
+        self.add_to_history("assistant", result.to_user_text(), reasoning)
+
+        # 添加警告信息
+        if history_warning:
+            result.history_warning = history_warning
 
         if result.success:
             self.stats["successful"] += 1

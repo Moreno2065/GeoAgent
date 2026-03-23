@@ -64,6 +64,16 @@ class BusinessConclusion:
                 parts.append(f"  - {rec}")
         return "\n".join(parts)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "summary": self.summary,
+            "key_findings": self.key_findings,
+            "recommendations": self.recommendations,
+            "data_quality": self.data_quality,
+            "confidence": self.confidence,
+        }
+
 
 @dataclass
 class RenderResult:

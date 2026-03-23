@@ -369,6 +369,254 @@ SCENARIO_CONFIGS: Dict[str, ScenarioConfig] = {
         output_format="geojson",
         notes="使用 py_repl 沙箱执行任意 Python GIS 代码",
     ),
+
+    # -------------------------------------------------------------------------
+    # 空间邻近筛选 (proximity_filter)
+    # -------------------------------------------------------------------------
+    "proximity_filter": ScenarioConfig(
+        scenario_name="proximity_filter",
+        executor_key="proximity_filter",
+        display_name="空间邻近筛选",
+        description="筛选不在指定缓冲区范围内的目标要素（如不在地铁站400米内的星巴克）",
+        available_engines=["geopandas"],
+        default_engine="geopandas",
+        supported_params=[
+            "target_layer", "filter_layer", "buffer_distance",
+            "buffer_unit", "mode", "output_file",
+        ],
+        output_format="geojson",
+        notes="mode: outside（不在范围内）/ inside（在范围内）",
+    ),
+
+    # -------------------------------------------------------------------------
+    # POI 搜索 (poi_search / osm_poi)
+    # -------------------------------------------------------------------------
+    "poi_search": ScenarioConfig(
+        scenario_name="poi_search",
+        executor_key="osm_poi",
+        display_name="POI 搜索",
+        description="通过 Overpass API 搜索 OpenStreetMap 上的 POI 数据（星巴克、地铁站等）",
+        available_engines=["overpass_api"],
+        default_engine="overpass_api",
+        supported_params=[
+            "poi_types", "center_point", "radius", "bbox",
+            "query_type", "tags", "timeout",
+        ],
+        output_format="geojson",
+        notes="无需 API Key，直接连接 OSM 数据库",
+    ),
+
+    # -------------------------------------------------------------------------
+    # OSM 数据下载 (fetch_osm / overpass)
+    # -------------------------------------------------------------------------
+    "fetch_osm": ScenarioConfig(
+        scenario_name="fetch_osm",
+        executor_key="fetch_osm",
+        display_name="OSM 数据下载",
+        description="从 OpenStreetMap 下载建筑、道路、水体等矢量数据",
+        available_engines=["overpass_api"],
+        default_engine="overpass_api",
+        supported_params=[
+            "center_point", "radius", "bbox", "data_type",
+            "tags", "timeout", "output_file",
+        ],
+        output_format="geojson",
+        notes="bbox 或 center_point+radius 二选一",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 高德 Web 服务 (amap)
+    # -------------------------------------------------------------------------
+    "amap": ScenarioConfig(
+        scenario_name="amap",
+        executor_key="amap",
+        display_name="高德 Web 服务",
+        description="高德地图 Web API 服务（POI搜索、地理编码、路径规划等）",
+        available_engines=["amap_api"],
+        default_engine="amap_api",
+        supported_params=[
+            "address", "keywords", "city", "types",
+            "origin", "destination", "strategy",
+        ],
+        output_format="json",
+        notes="需要高德 API Key",
+    ),
+
+    # -------------------------------------------------------------------------
+    # GDAL 工具 (gdal)
+    # -------------------------------------------------------------------------
+    "gdal": ScenarioConfig(
+        scenario_name="gdal",
+        executor_key="gdal",
+        display_name="GDAL 工具",
+        description="GDAL/OGR 工具集（裁剪、重投影、格式转换等）",
+        available_engines=["gdal"],
+        default_engine="gdal",
+        supported_params=[
+            "operation", "input_file", "output_file",
+            "src_crs", "dst_crs", "bbox", "resolution",
+        ],
+        output_format="auto",
+        notes="支持 raster_clip, raster_reproject, vector_buffer 等",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 代码沙箱 (code_sandbox)
+    # -------------------------------------------------------------------------
+    "code_sandbox": ScenarioConfig(
+        scenario_name="code_sandbox",
+        executor_key="code_sandbox",
+        display_name="代码沙箱",
+        description="在受限环境中执行 Python 代码进行 GIS 分析",
+        available_engines=["sandbox"],
+        default_engine="sandbox",
+        supported_params=[
+            "code", "input_layers", "output_variable",
+        ],
+        output_format="geojson",
+        notes="使用 py_repl 沙箱执行",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 遥感分析 (remote_sensing)
+    # -------------------------------------------------------------------------
+    "remote_sensing": ScenarioConfig(
+        scenario_name="remote_sensing",
+        executor_key="remote_sensing",
+        display_name="遥感分析",
+        description="遥感影像处理（NDWI、云掩膜、波段合成等）",
+        available_engines=["rasterio"],
+        default_engine="rasterio",
+        supported_params=[
+            "input_raster", "operation", "bands", "output_file",
+        ],
+        output_format="raster",
+        notes="支持 ndwi, cloud_mask, band_composite 等",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 三维地形分析 (lidar_3d)
+    # -------------------------------------------------------------------------
+    "lidar_3d": ScenarioConfig(
+        scenario_name="lidar_3d",
+        executor_key="lidar_3d",
+        display_name="三维地形分析",
+        description="基于 DEM/LiDAR 的三维分析（体积计算、坡度坡向、地形起伏等）",
+        available_engines=["gdal"],
+        default_engine="gdal",
+        supported_params=[
+            "dem_file", "operation", "output_file",
+            "parameters",
+        ],
+        output_format="raster",
+        notes="支持 volume, hillshade, roughness, curvature 等",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 可达性分析 (accessibility)
+    # -------------------------------------------------------------------------
+    "accessibility": ScenarioConfig(
+        scenario_name="accessibility",
+        executor_key="accessibility",
+        display_name="可达性分析",
+        description="基于路网计算从起点可达的范围（等时圈/等距离圈）",
+        available_engines=["amap", "networkx"],
+        default_engine="amap",
+        supported_params=[
+            "center_point", "time_threshold", "distance_threshold",
+            "mode", "network_data", "output_file",
+        ],
+        output_format="geojson",
+        notes="使用高德路径规划或本地路网",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 选址分析 (suitability)
+    # -------------------------------------------------------------------------
+    "suitability": ScenarioConfig(
+        scenario_name="suitability",
+        executor_key="suitability",
+        display_name="选址分析",
+        description="多准则决策分析（MCDA）进行适宜性评价和选址",
+        available_engines=["geopandas"],
+        default_engine="geopandas",
+        supported_params=[
+            "criteria_layers", "weights", "method",
+            "top_n", "output_file",
+        ],
+        output_format="geojson",
+        notes="使用加权叠加分析",
+    ),
+
+    # -------------------------------------------------------------------------
+    # STAC 搜索 (stac_search)
+    # -------------------------------------------------------------------------
+    "stac_search": ScenarioConfig(
+        scenario_name="stac_search",
+        executor_key="stac_search",
+        display_name="STAC 影像搜索",
+        description="通过 STAC API 搜索遥感卫星影像",
+        available_engines=["stac_api"],
+        default_engine="stac_api",
+        supported_params=[
+            "bbox", "datetime", "collections", "query",
+            "output_file",
+        ],
+        output_format="json",
+        notes="支持 Landsat, Sentinel, MODIS 等",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 视域分析 (viewshed)
+    # -------------------------------------------------------------------------
+    "viewshed": ScenarioConfig(
+        scenario_name="viewshed",
+        executor_key="viewshed",
+        display_name="视域分析",
+        description="基于 DEM 计算观察点的可视范围",
+        available_engines=["gdal"],
+        default_engine="gdal",
+        supported_params=[
+            "dem_file", "observer_point", "observer_height",
+            "max_distance", "output_file",
+        ],
+        output_format="raster",
+        notes="计算观察点的可视区域",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 地理编码 (geocode)
+    # -------------------------------------------------------------------------
+    "geocode": ScenarioConfig(
+        scenario_name="geocode",
+        executor_key="amap",
+        display_name="地理编码",
+        description="将地址转换为坐标，或将坐标转换为地址",
+        available_engines=["amap_api"],
+        default_engine="amap_api",
+        supported_params=[
+            "address", "city", "coordinates",
+        ],
+        output_format="json",
+        notes="支持正向（地址→坐标）和反向（坐标→地址）",
+    ),
+
+    # -------------------------------------------------------------------------
+    # 多条件综合搜索 (multi_criteria_search)
+    # -------------------------------------------------------------------------
+    "multi_criteria_search": ScenarioConfig(
+        scenario_name="multi_criteria_search",
+        executor_key="multi_criteria_search",
+        display_name="多条件综合搜索",
+        description="基于多个条件搜索 POI 或地点",
+        available_engines=["amap_api"],
+        default_engine="amap_api",
+        supported_params=[
+            "keywords", "types", "city", "offset",
+        ],
+        output_format="json",
+        notes="结合网络搜索和地理编码",
+    ),
 }
 
 

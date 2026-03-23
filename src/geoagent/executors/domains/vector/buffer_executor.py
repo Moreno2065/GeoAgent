@@ -412,6 +412,12 @@ class BufferExecutor(BaseExecutor):
 
             if found_path:
                 # 找到了本地文件
+                shp_path = Path(found_path)
+                
+                # 自动修复缺失的 .shx 文件（Shapefile 索引文件）
+                if shp_path.suffix.lower() == '.shp':
+                    self._repair_shapefile(shp_path)
+                
                 gdf = gpd.read_file(str(found_path))
                 source_label = f"本地文件「{input_layer}」"
                 print(f"[DEBUG] 使用本地文件: {found_path}")
@@ -647,6 +653,12 @@ class BufferExecutor(BaseExecutor):
             # ── 核心保存与打包逻辑 ───────────────────────────────────
             actual_path, driver = self.save_geodataframe(result_gdf, output_path)
 
+            # 获取输入文件名（用于 HTML 地图命名）
+            input_stem = Path(input_layer).stem
+
+            # ── 额外生成 HTML 地图（供网站前端显示）────────────────────
+            html_path = self._generate_html_map(result_gdf, input_stem)
+
             return ExecutorResult.ok(
                 self.task_type,
                 "geopandas",
@@ -654,6 +666,7 @@ class BufferExecutor(BaseExecutor):
                     "input_layer": task["input_layer"],
                     "input_source": source_label,
                     "output_file": actual_path,
+                    "html_file": html_path,
                     "distance": distance,
                     "unit": unit,
                     "dissolve": dissolve,
@@ -670,6 +683,7 @@ class BufferExecutor(BaseExecutor):
                     "projected_crs": str(result_gdf.crs) if result_gdf.crs else None,
                     "geometry_types": geom_types,
                     "output_geometry_type": result_gdf.geometry.type.iloc[0] if len(result_gdf) > 0 else None,
+                    "html_file": html_path,
                 }
             )
 
@@ -695,7 +709,9 @@ class BufferExecutor(BaseExecutor):
         Returns:
             Path 或 None
         """
-        base_ws = Path(__file__).resolve().parents[3] / "workspace"
+        # 使用 get_workspace_dir() 获取工作目录（支持对话隔离）
+        from geoagent.gis_tools.fixed_tools import get_workspace_dir
+        base_ws = get_workspace_dir()
         name_stem = Path(name).stem.lower()
 
         # 1. 精确匹配
@@ -707,11 +723,11 @@ class BufferExecutor(BaseExecutor):
         # 优先匹配 .shp 等主文件类型
         PRIORITY_EXTENSIONS = [".shp", ".geojson", ".json", ".gpkg", ".gjson"]
         
+        priority_matches = []
+        other_matches = []
+        
         if base_ws.exists():
             # 收集所有匹配的文件
-            priority_matches = []
-            other_matches = []
-            
             for p in base_ws.rglob("*.shp"):  # 只搜索 .shp 避免 .dbf/.shx
                 p_stem = p.stem.lower()
                 if name_stem in p_stem or p_stem in name_stem:
@@ -724,37 +740,57 @@ class BufferExecutor(BaseExecutor):
                     p_stem = p.stem.lower()
                     if name_stem in p_stem or p_stem in name_stem:
                         other_matches.append(p)
+        
+        # 优先返回完整且有效的 .shp 文件
+        if priority_matches:
+            # 按优先级排序：
+            # 1. 验证通过的完整文件
+            # 2. 其他候选文件（可能不完整）
+            valid_files = []
+            invalid_files = []
             
-            # 优先返回完整且有效的 .shp 文件
-            if priority_matches:
-                # 按优先级排序：
-                # 1. 验证通过的完整文件
-                # 2. 其他候选文件（可能不完整）
-                valid_files = []
-                invalid_files = []
+            for p in priority_matches:
+                valid, msg = self._validate_shapefile(p)
+                if valid:
+                    valid_files.append((p, msg))
+                else:
+                    invalid_files.append((p, msg))
+            
+            # 如果有完整文件，优先返回
+            if valid_files:
+                print(f"[DEBUG] 找到 {len(valid_files)} 个完整shapefile，选用: {valid_files[0][0].name}")
+                return valid_files[0][0]
+            
+            # 没有完整文件，尝试自动修复
+            if invalid_files:
+                print(f"[WARN] 发现 {len(invalid_files)} 个不完整的shapefile，尝试自动修复...")
+                for p, msg in invalid_files:
+                    print(f"       正在修复: {p.name} ({msg})")
+                    if self._repair_shapefile(p):
+                        # 修复后重新验证
+                        valid, _ = self._validate_shapefile(p)
+                        if valid:
+                            print(f"[INFO] 修复成功: {p.name}")
+                            return p
+                        else:
+                            print(f"[WARN] 修复后验证仍失败: {p.name}")
                 
+                # 再次验证所有文件
                 for p in priority_matches:
-                    valid, msg = self._validate_shapefile(p)
+                    valid, _ = self._validate_shapefile(p)
                     if valid:
-                        valid_files.append(p)
-                    else:
-                        invalid_files.append((p, msg))
+                        print(f"[DEBUG] 修复后验证通过: {p.name}")
+                        return p
                 
-                # 如果有完整文件，优先返回第一个
-                if valid_files:
-                    print(f"[DEBUG] 找到 {len(valid_files)} 个完整shapefile，选用: {valid_files[0].name}")
-                    return valid_files[0]
-                
-                # 没有完整文件，打印警告并尝试返回（让读取时处理）
-                if invalid_files:
-                    best_candidate = invalid_files[0][0]
-                    print(f"[WARN] 所有shapefile都不完整，选用最接近的: {best_candidate.name}")
-                    for _, msg in invalid_files:
-                        print(f"       - {msg}")
-                    return best_candidate
-                
-            if other_matches:
-                return other_matches[0]
+                # 所有修复都失败，返回详细错误信息
+                print(f"[ERROR] 所有shapefile都不完整，且自动修复失败:")
+                for p, msg in invalid_files:
+                    print(f"       - {p}: {msg}")
+                error_detail = "; ".join([msg for _, msg in invalid_files])
+                raise FileNotFoundError(f"Shapefile验证失败: {error_detail}")
+            
+        if other_matches:
+            return other_matches[0]
 
         # 3. 当前 workspace
         curr_ws = self._resolve_path(name)
@@ -769,6 +805,20 @@ class BufferExecutor(BaseExecutor):
                 return Path(shp_curr)
 
         return None
+
+    def _repair_shapefile(self, shp_path: Path) -> bool:
+        """
+        自动修复缺失的 Shapefile 配套文件（.shx）。
+
+        使用 GDAL 或 GeoPandas 自动重建索引。
+
+        Args:
+            shp_path: .shp 文件路径
+
+        Returns:
+            是否修复成功
+        """
+        return super()._repair_shapefile(str(shp_path))
 
     def _validate_shapefile(self, shp_path: Path) -> tuple[bool, str]:
         """
@@ -826,7 +876,8 @@ class BufferExecutor(BaseExecutor):
             # ── 主 workspace 回退搜索（与 _run_geopandas 一致）─────────────
             def _find_file(name: str) -> Path | None:
                 """在主 workspace 和当前 workspace 中查找文件"""
-                base_ws = Path(__file__).resolve().parents[3] / "workspace"
+                # 从 buffer_executor.py -> domains -> executors -> geoagent -> src -> 项目根目录 -> workspace
+                base_ws = Path(__file__).resolve().parents[5] / "workspace"
                 candidates = [
                     base_ws / name,
                     base_ws / f"{name}.shp",
@@ -910,3 +961,85 @@ class BufferExecutor(BaseExecutor):
                 f"ArcPy 缓冲区分析失败: {str(e)}",
                 engine="arcpy"
             )
+
+    def _generate_html_map(self, gdf, layer_name: str = "buffer") -> Optional[str]:
+        """
+        生成交互式 HTML 地图（Folium）
+
+        Args:
+            gdf: 要可视化的 GeoDataFrame
+            layer_name: 图层名称（用于文件名）
+
+        Returns:
+            HTML 文件路径，失败返回 None
+        """
+        try:
+            import folium
+            from pathlib import Path
+
+            # 确保坐标是 WGS84
+            if gdf.crs and gdf.crs.to_epsg() != 4326:
+                gdf_plot = gdf.to_crs(epsg=4326)
+            else:
+                gdf_plot = gdf
+
+            # 计算中心点
+            bounds = gdf_plot.total_bounds
+            center_lat = (bounds[1] + bounds[3]) / 2
+            center_lon = (bounds[0] + bounds[2]) / 2
+
+            # 创建地图
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=10)
+
+            # 添加底图选项
+            folium.TileLayer('cartodbpositron', name='CartoDB').add_to(m)
+            folium.TileLayer(
+                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr='ESRI', name='Satellite'
+            ).add_to(m)
+
+            # 添加缓冲区图层（蓝色半透明）
+            folium.GeoJson(
+                gdf_plot.__geo_interface__,
+                name='缓冲区',
+                style_function=lambda x: {
+                    'fillColor': '#3388ff',
+                    'color': '#3388ff',
+                    'weight': 2,
+                    'fillOpacity': 0.4
+                },
+                highlight_function=lambda x: {
+                    'weight': 4,
+                    'color': '#ff7800',
+                    'fillOpacity': 0.6
+                }
+            ).add_to(m)
+
+            # 添加图层控制
+            folium.LayerControl().add_to(m)
+            m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+
+            # 保存到主 workspace 的 outputs 目录（供网站前端显示）
+            # 注意：始终使用主 workspace，避免对话隔离导致的前端找不到文件
+            import time
+            main_workspace = Path(__file__).resolve().parents[5] / "workspace"
+            outputs_dir = main_workspace / "outputs"
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+
+            # 使用时间戳生成文件名，避免中文乱码问题
+            timestamp = int(time.time() * 1000)
+            html_path = outputs_dir / f"buffer_{timestamp}.html"
+
+            # 显式使用 UTF-8 编码保存 HTML
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(m._repr_html_())
+            print(f"[DEBUG] HTML 地图已生成: {html_path}")
+
+            return str(html_path)
+
+        except ImportError:
+            print("[WARN] folium 未安装，无法生成 HTML 地图")
+            return None
+        except Exception as e:
+            print(f"[WARN] 生成 HTML 地图失败: {e}")
+            return None

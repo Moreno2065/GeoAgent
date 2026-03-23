@@ -1,4 +1,4 @@
-"""
+﻿"""
 多轮推理 - 多轮执行器
 ======================
 核心执行器，协调 Pipeline、StepParser 和 MultiRoundManager。

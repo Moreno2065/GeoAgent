@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 GeoAgent 语义路由引擎 (Embedding Router)
 =========================================

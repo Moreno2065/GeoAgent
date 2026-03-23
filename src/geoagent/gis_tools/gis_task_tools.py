@@ -17,6 +17,8 @@ import warnings
 from pathlib import Path
 from typing import Optional, List
 
+from geoagent.geo_engine.data_utils import save_shapefile
+
 # =============================================================================
 # 路径工具
 # =============================================================================
@@ -189,7 +191,7 @@ def vector_buffer(input_file: str, output_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        gdf_proj.to_crs(gdf.crs).to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(gdf_proj.to_crs(gdf.crs), out_path)
         return _ok({
             "task": "vector_buffer",
             "input": input_file,
@@ -237,7 +239,7 @@ def vector_clip(input_file: str, clip_file: str, output_file: str) -> str:
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        clipped.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(clipped, out_path)
         return _ok({
             "task": "vector_clip",
             "input": input_file,
@@ -286,7 +288,7 @@ def vector_intersect(input_file: str, intersect_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        result.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(result, out_path)
         return _ok({
             "task": "vector_intersect",
             "input": input_file,
@@ -333,7 +335,7 @@ def vector_union(input_file: str, union_file: str, output_file: str) -> str:
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        result.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(result, out_path)
         return _ok({
             "task": "vector_union",
             "input": input_file,
@@ -386,7 +388,7 @@ def vector_spatial_join(target_file: str, join_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        result.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(result, out_path)
         return _ok({
             "task": "vector_spatial_join",
             "target": target_file,
@@ -428,7 +430,7 @@ def vector_dissolve(input_file: str, output_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        dissolved.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(dissolved, out_path)
         return _ok({
             "task": "vector_dissolve",
             "input": input_file,
@@ -473,7 +475,7 @@ def vector_simplify(input_file: str, output_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        simplified.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(simplified, out_path)
         return _ok({
             "task": "vector_simplify",
             "input": input_file,
@@ -521,7 +523,7 @@ def vector_erase(input_file: str, erase_file: str, output_file: str) -> str:
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        result.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(result, out_path)
         return _ok({
             "task": "vector_erase",
             "input": input_file,
@@ -996,7 +998,9 @@ def spatial_hotspot(input_file: str, output_file: str,
         gdf_proj["Gi"] = gi_star.Gs
         gdf_proj["Gi_p"] = gi_star.p_sim
         gdf_proj["Gi_z"] = gi_star.Z_sim
-        gdf_proj.to_file(_resolve(output_file), driver="ESRI Shapefile")
+        out_path = _resolve(output_file)
+        _ensure_dir(out_path)
+        save_shapefile(gdf_proj, out_path)
         return _ok({
             "task": "spatial_hotspot",
             "input": input_file,
@@ -1180,7 +1184,7 @@ def spatial_zonal_stats(input_file: str, raster_file: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        result_gdf.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(result_gdf, out_path)
         return _ok({
             "task": "spatial_zonal_stats",
             "zone_file": input_file,
@@ -1305,7 +1309,9 @@ def crs_define(input_file: str, crs_string: str) -> str:
         suffix = _resolve(input_file).suffix.lower()
         if suffix in ['.shp', '.geojson', '.gpkg', '.json']:
             gdf = _gpd.read_file(_resolve(input_file))
-            gdf.set_crs(crs_string, allow_override=True).to_file(_resolve(input_file), driver="ESRI Shapefile")
+            out_path = _resolve(input_file)
+            gdf = gdf.set_crs(crs_string, allow_override=True)
+            save_shapefile(gdf, out_path)
             return _ok({
                 "task": "crs_define",
                 "file": input_file,
@@ -1352,7 +1358,7 @@ def crs_transform(input_file: str, output_file: str,
 
             out_path = _resolve(output_file)
             _ensure_dir(out_path)
-            gdf_proj.to_file(out_path, driver="ESRI Shapefile")
+            save_shapefile(gdf_proj, out_path)
             return _ok({
                 "task": "crs_transform",
                 "input": input_file,
@@ -1769,7 +1775,10 @@ def db_convert_format(input_file: str, output_file: str,
             "fgb": "FlatGeobuf", "gb": "GeoJSON"
         }
         driver = drivers.get(target_format.lower(), target_format)
-        gdf.to_file(out, driver=driver)
+        if driver == "ESRI Shapefile" and str(out).endswith(".shp"):
+            save_shapefile(gdf, out)
+        else:
+            gdf.to_file(out, driver=driver)
         return _ok({
             "task": "db_convert_format",
             "input": input_file,
@@ -1808,7 +1817,7 @@ def db_read_postgis(connection_string: str,
 
         out_path = _resolve(output_file)
         _ensure_dir(out_path)
-        gdf.to_file(out_path, driver="ESRI Shapefile")
+        save_shapefile(gdf, out_path)
         return _ok({
             "task": "db_read_postgis",
             "query": query,
@@ -1893,7 +1902,10 @@ def db_geojson_to_features(input_file: str,
             "geojson": "GeoJSON", "json": "GeoJSON",
         }
         driver = drivers.get(target_format.lower(), target_format)
-        gdf.to_file(out, driver=driver)
+        if driver == "ESRI Shapefile" and str(out).endswith(".shp"):
+            save_shapefile(gdf, out)
+        else:
+            gdf.to_file(out, driver=driver)
         return _ok({
             "task": "db_geojson_to_features",
             "input": input_file,
@@ -1966,7 +1978,10 @@ def db_batch_convert(folder: str, output_format: str,
                 ext_map = {"GPKG": "gpkg", "GeoJSON": "geojson", "ESRI Shapefile": "shp"}
                 ext = ext_map.get(output_format, "gpkg")
                 out_path = out_folder / f"{basename}.{ext}"
-                gdf.to_file(out_path, driver=drivers.get(output_format, "GPKG"))
+                if drivers.get(output_format, "GPKG") == "ESRI Shapefile":
+                    save_shapefile(gdf, out_path)
+                else:
+                    gdf.to_file(out_path, driver=drivers.get(output_format, "GPKG"))
                 results.append({"file": Path(f).name, "status": "success", "output": str(out_path)})
             except Exception as ex:
                 results.append({"file": Path(f).name, "status": "error", "error": str(ex)})

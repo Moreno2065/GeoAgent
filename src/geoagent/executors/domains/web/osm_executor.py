@@ -18,10 +18,24 @@ OSMExecutor - OpenStreetMap 在线数据下载执行器
 from __future__ import annotations
 
 import json
+import traceback
 from pathlib import Path
 from typing import Any, Dict
 
 from geoagent.executors.base import BaseExecutor, ExecutorResult
+
+
+def _debug_log(hypothesis: str, location: str, message: str, data: dict = None):
+    """调试日志（仅在 DEBUG 模式输出）"""
+    import os
+    if os.getenv("GEOAGENT_DEBUG", "").lower() in ("1", "true", "yes"):
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        log_line = f"{ts} [{hypothesis}] {message} @ {location}"
+        if data:
+            import json as _json
+            log_line += f"\n  data: {_json.dumps(data, ensure_ascii=False, indent=2)}"
+        print(log_line, flush=True)
 
 
 class OSMExecutor(BaseExecutor):
@@ -320,73 +334,27 @@ class OSMExecutor(BaseExecutor):
 
         lat, lng = center
 
-        # 使用自定义 TileLayer 类添加 Referer 头
-        # OSM 瓦片服务要求 Referer: https://www.openstreetmap.org
-        osm_tile_js = """
-        L.TileLayer.OsmWithReferer = L.TileLayer.extend({
-            createTile: function(coords, done) {
-                var tile = document.createElement('img');
-                tile.alt = '';
-                tile.setAttribute('role', 'presentation');
-
-                var tileUrl = this.getTileUrl(coords);
-                var xhr = new XMLHttpRequest();
-                xhr.responseType = 'blob';
-
-                xhr.onload = function() {
-                    if (xhr.status === 200) {
-                        var blob = xhr.response;
-                        var url = URL.createObjectURL(blob);
-                        tile.src = url;
-                        done(null, tile);
-                    } else {
-                        done(new Error('Tile load error: ' + xhr.status), tile);
-                    }
-                };
-
-                xhr.onerror = function() {
-                    done(new Error('Network error'), tile);
-                };
-
-                xhr.open('GET', tileUrl, true);
-                xhr.setRequestHeader('Referer', 'https://www.openstreetmap.org/');
-                xhr.send();
-
-                if (!this.options.crossOrigin) {
-                    tile.crossOrigin = 'anonymous';
-                } else if (this.options.crossOrigin === '') {
-                    // pass
-                } else {
-                    tile.crossOrigin = this.options.crossOrigin;
-                }
-
-                return tile;
-            }
-        });
-
-        L.tileLayer.osmWithReferer = function(url, options) {
-            return new L.TileLayer.OsmWithReferer(url, options);
-        };
-        """
-
         m = folium.Map(location=[lat, lng], zoom_start=15, tiles=None)
 
-        # 注册自定义 TileLayer 类（添加 Referer 头）
-        m.add_child(folium.Element(f"<script>{osm_tile_js}</script>"))
+        # CartoDB Voyager（默认首选，包含完整的道路、建筑等底图）
+        folium.TileLayer(
+            tiles="https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
+            attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            name="CartoDB Voyager",
+            max_zoom=19,
+        ).add_to(m)
 
-        # 通过 JS 创建 OSM 瓦片层（使用自定义类）
-        osm_layer_js = f"""
-        var osmTileLayer = L.tileLayer.osmWithReferer(
-            'https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
-            {{
-                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
-                maxZoom: 19
-            }}
-        ).addTo(map);
-        """
-        m.add_child(folium.Element(f"<script>{osm_layer_js}</script>"))
+        # CartoDB Positron（简洁浅色风格）
+        folium.TileLayer(
+            tiles="https://a.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}.png",
+            attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            name="CartoDB Positron",
+            max_zoom=19,
+        ).add_to(m)
 
-        # 添加图层控制（可选底图）
+        # 注：标准 OpenStreetMap 瓦片服务 (tile.openstreetmap.org) 需要 Referer 头，
+        # 在浏览器直接打开 HTML 时会被阻止访问，故不启用
+        # 如需使用 OSM 瓦片，请通过 Web 服务器托管，或使用带有 Referer 的代理服务
 
         # 添加中心点标记
         folium.Marker(

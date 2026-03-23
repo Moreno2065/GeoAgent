@@ -1,4 +1,4 @@
-"""
+﻿"""
 Executor 功能域 (Executor Domains)
 ===================================
 按功能域组织 Executor 模块：

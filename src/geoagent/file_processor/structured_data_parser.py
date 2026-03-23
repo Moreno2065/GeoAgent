@@ -22,8 +22,6 @@ class StructuredDataParser:
     - Excel (.xlsx, .xls)
     """
 
-    SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
-
     def __init__(self):
         self._has_pandas = self._check_pandas()
         self._has_openpyxl = self._check_openpyxl()
@@ -43,11 +41,6 @@ class StructuredDataParser:
             return True
         except ImportError:
             return False
-
-    def can_parse(self, file_path: str) -> bool:
-        """判断是否能解析此文件"""
-        ext = Path(file_path).suffix.lower()
-        return ext in self.SUPPORTED_EXTENSIONS
 
     def parse(self, file_path: str) -> FileContent:
         """

@@ -31,6 +31,9 @@ from geoagent.layers.layer5_executor import ExecutorResult, execute_task
 from geoagent.layers.layer5_executor import execute_task as do_execute
 from geoagent.renderer.result_renderer import render_result
 
+# 🆕 输出验证器（解决 LLM 幻觉问题）
+from geoagent.output_validator import OutputValidator, validate_executor_result
+
 # P2: 状态机模式
 from geoagent.layers.state_machine import (
     State,
@@ -135,6 +138,7 @@ class PipelineResult:
         error_detail: 错误详情
         questions: 需要追问的问题（如果参数不完整）
         events: 所有事件的日志
+        output_validation: 🆕 输出验证结果（防止 LLM 幻觉）
     """
     status: PipelineStatus = PipelineStatus.PENDING
     layer_reached: int = 0
@@ -148,6 +152,8 @@ class PipelineResult:
     error_detail: Optional[str] = None
     questions: list = field(default_factory=list)
     events: list = field(default_factory=list)
+    output_validation: Optional[Any] = None  # 🆕 OutputValidation
+    warning: Optional[str] = None  # 🆕 警告信息（如幻觉检测）
 
     @property
     def success(self) -> bool:
@@ -173,6 +179,18 @@ class PipelineResult:
             "error_detail": self.error_detail,
             "events": self.events,
             "result": self.rendered_result,
+            # 🆕 输出验证信息
+            "output_validated": self.output_validation is not None,
+            "output_validation": {
+                "is_valid": self.output_validation.is_valid if self.output_validation else None,
+                "has_output": self.output_validation.has_output if self.output_validation else None,
+                "total_files": self.output_validation.total_files if self.output_validation else 0,
+                "existing_files": self.output_validation.existing_files if self.output_validation else 0,
+                "missing_files": self.output_validation.missing_files if self.output_validation else 0,
+                "llm_feedback": self.output_validation.llm_feedback if self.output_validation else "",
+                "summary": self.output_validation.summary if self.output_validation else "",
+            } if self.output_validation else None,
+            "warning": self.warning,
         }
 
     def to_json(self) -> str:
@@ -342,6 +360,7 @@ class SixLayerPipeline:
                 context=user_input.context,
                 intent_result=intent_result,
                 event_callback=lambda e, d: self._record(3, e, d),
+                file_contents=user_input.file_contents,
             )
 
             result.orchestration_result = orchestration_result
@@ -448,12 +467,33 @@ class SixLayerPipeline:
 
             result.executor_result = executor_result
 
+            # ═══════════════════════════════════════════════════════════════════════
+            # 🆕 输出验证：防止 LLM 幻觉报告文件已生成
+            # ═══════════════════════════════════════════════════════════════════════
+            output_validator = OutputValidator()
+            validation = output_validator.validate(executor_result)
+            result.output_validation = validation
+            
             if executor_result.success:
-                result.status = PipelineStatus.EXECUTING
-                self._record(5, "layer5_executing", {
-                    "scenario": _get_enum_value(scenario),
-                    "engine": executor_result.engine,
-                })
+                if validation.is_valid:
+                    result.status = PipelineStatus.EXECUTING
+                    self._record(5, "layer5_executing", {
+                        "scenario": _get_enum_value(scenario),
+                        "engine": executor_result.engine,
+                        "output_validated": True,
+                        "files_count": validation.existing_files,
+                    })
+                else:
+                    # Executor 报告成功，但文件验证失败！这是幻觉警告
+                    result.status = PipelineStatus.EXECUTING  # 仍然标记为执行中
+                    result.warning = f"⚠️ LLM 幻觉警告：Executor 返回 success=True，但文件验证失败！\n{validation.llm_feedback}"
+                    self._record(5, "layer5_hallucination_warning", {
+                        "scenario": _get_enum_value(scenario),
+                        "validation_summary": validation.summary,
+                        "llm_feedback": validation.llm_feedback,
+                    })
+                    print(f"\n🚨 【LLM 幻觉检测】任务 {dsl.task} 报告成功但文件缺失:")
+                    print(f"   {validation.llm_feedback}\n")
             else:
                 result.status = PipelineStatus.FAILED
                 result.error = executor_result.error

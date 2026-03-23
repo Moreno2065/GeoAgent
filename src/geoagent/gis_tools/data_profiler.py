@@ -328,7 +328,7 @@ def sniff_spatial_file_as_text(file_path: Path) -> str:
 
 def sniff_workspace_dir(workspace_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     """
-    扫描工作区目录，批量探针所有空间文件
+    扫描工作区目录，批量探针所有空间文件（包括子目录）
 
     Args:
         workspace_dir: 工作区目录路径，默认为 get_workspace_dir()
@@ -348,10 +348,13 @@ def sniff_workspace_dir(workspace_dir: Optional[Path] = None) -> List[Dict[str, 
     }
 
     results = []
-    for f in workspace_dir.iterdir():
+    # 递归扫描所有子目录（包括 conversation_files/_unzipped_xxx/）
+    for f in workspace_dir.rglob('*'):
         if f.is_file() and f.suffix.lower() in gis_extensions:
             result = sniff_spatial_file(f)
             if result.get("success") is not False:
+                # 添加 relative_path 用于后续处理
+                result["relative_path"] = str(f.relative_to(workspace_dir))
                 results.append(result)
 
     return results

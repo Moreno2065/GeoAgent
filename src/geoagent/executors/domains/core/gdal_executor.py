@@ -1,4 +1,4 @@
-"""
+﻿"""
 GDALExecutor - GDAL 工具执行器
 ================================
 将 GDAL 工具调用集成到 Layer 5 Executor 架构。

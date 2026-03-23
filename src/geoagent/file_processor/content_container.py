@@ -309,6 +309,13 @@ class ContentContainer:
                     data_str = data_str[:1000] + "\n... (数据已截断)"
                 parts.append(f"结构化数据:\n{data_str}")
 
+            # 🆕 展示解压后的完整文件列表（包括辅助文件）
+            if f.metadata and f.metadata.get("unzipped_files"):
+                unzipped = f.metadata["unzipped_files"]
+                parts.append(f"压缩包内文件 ({len(unzipped)} 个):")
+                for aux_file in sorted(unzipped):
+                    parts.append(f"  - {aux_file}")
+
             # 元信息（可选）
             if include_metadata and f.metadata:
                 meta_str = ", ".join(f"{k}: {v}" for k, v in f.metadata.items() if v)
@@ -317,7 +324,32 @@ class ContentContainer:
 
             # 地理数据元信息
             if f.geo_metadata:
-                parts.append(f"地理信息: {f.geo_metadata}")
+                # 检查是否是 ZIP 包合并的结果
+                if "file_count" in f.geo_metadata and "files" in f.geo_metadata:
+                    parts.append(f"地理信息 (共 {f.geo_metadata['file_count']} 个文件):")
+                    for i, sub_meta in enumerate(f.geo_metadata.get("files", []), 1):
+                        parts.append(f"  文件 {i}: {sub_meta}")
+                else:
+                    parts.append(f"地理信息: {f.geo_metadata}")
+
+            # 结构化数据（展开显示）
+            if f.structured_data:
+                # 检查是否是 ZIP 包合并的结果
+                if "file_count" in f.structured_data and "files" in f.structured_data:
+                    parts.append(f"结构化数据 (共 {f.structured_data['file_count']} 个文件):")
+                    for i, sub_data in enumerate(f.structured_data.get("files", []), 1):
+                        if isinstance(sub_data, dict):
+                            # 只显示关键信息
+                            parts.append(f"  文件 {i}:")
+                            for k, v in list(sub_data.items())[:5]:
+                                if k not in ('sample_features',):
+                                    parts.append(f"    {k}: {v}")
+                else:
+                    import json
+                    data_str = json.dumps(f.structured_data, ensure_ascii=False, indent=2)
+                    if len(data_str) > 1000:
+                        data_str = data_str[:1000] + "\n... (数据已截断)"
+                    parts.append(f"结构化数据:\n{data_str}")
 
         # 处理失败的文件
         if failed:
@@ -347,7 +379,12 @@ class ContentContainer:
             if f.summary:
                 parts.append(f"  {f.summary}")
             if f.geo_metadata:
-                parts.append(f"  元信息: {f.geo_metadata}")
+                # 检查是否是 ZIP 包合并的结果
+                if "file_count" in f.geo_metadata and "files" in f.geo_metadata:
+                    for j, sub_meta in enumerate(f.geo_metadata.get("files", []), 1):
+                        parts.append(f"  子文件 {j}: {sub_meta}")
+                else:
+                    parts.append(f"  元信息: {f.geo_metadata}")
 
         return "\n".join(parts)
 

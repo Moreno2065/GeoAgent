@@ -25,16 +25,9 @@ class DocumentParser:
     - RTF (.rtf)
     """
 
-    SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".rtf"}
-
     def __init__(self):
         self._pdf_parser: Optional[object] = None
         self._word_parser: Optional[object] = None
-
-    def can_parse(self, file_path: str) -> bool:
-        """判断是否能解析此文件"""
-        ext = Path(file_path).suffix.lower()
-        return ext in self.SUPPORTED_EXTENSIONS
 
     def parse(self, file_path: str) -> FileContent:
         """

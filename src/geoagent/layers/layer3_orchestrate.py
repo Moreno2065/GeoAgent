@@ -105,6 +105,7 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
             if p.get("success") is not False:
                 results.append({
                     "file_name": p.get("file_name", ""),
+                    "relative_path": p.get("relative_path", p.get("file_name", "")),
                     "file_type": p.get("file_type", "vector"),
                     "geometry_type": [p.get("geometry_type", "Unknown")],
                     "columns": p.get("columns", []),
@@ -128,13 +129,17 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
 
     # 关键修复：获取当前工作目录（主 workspace 或对话目录）
     workspace = get_workspace_dir()
-    files = list_workspace_files()
-    if not files:
+    files_info = list_workspace_files()
+    if not files_info:
         return []
 
     import json
     result = []
-    for fname in files:
+    for file_entry in files_info:
+        # 支持新的字典格式和旧的字符串格式
+        fname = file_entry.get("relative_path", file_entry.get("file_name", "")) if isinstance(file_entry, dict) else file_entry
+        display_name = file_entry.get("file_name", "") if isinstance(file_entry, dict) else file_entry
+        
         try:
             info_json = get_data_info(fname)
             info = json.loads(info_json) if isinstance(info_json, str) else {}
@@ -144,7 +149,8 @@ def _scan_workspace_files() -> List[Dict[str, Any]]:
                 numeric_cols = [c for c in columns if dtypes.get(c) in ("int64", "float64", "int32", "float32")]
                 text_cols = [c for c in columns if dtypes.get(c) in ("object", "string", "str")]
                 result.append({
-                    "file_name": fname,
+                    "file_name": display_name,
+                    "relative_path": fname,
                     "file_type": info.get("file_type", "vector"),
                     "geometry_type": _detect_geometry_type(info),
                     "columns": columns,
@@ -225,9 +231,18 @@ def _build_workspace_profile_block(workspace_files: Optional[List[Dict[str, Any]
 
     for f in workspace_files:
         fname = f.get("file_name", "未知文件")
-        lines.append(f"- 📄 {fname}")
+        rel_path = f.get("relative_path", fname)
+        
+        # 如果有子目录路径，显示完整信息
+        if "/" in rel_path or "\\" in rel_path:
+            lines.append(f"- 📄 {fname}")
+            lines.append(f"  - 路径: {rel_path}")
+        else:
+            lines.append(f"- 📄 {fname}")
+        
         lines.append(f"  - 几何类型: {', '.join(f.get('geometry_type', ['Unknown']))}")
         lines.append(f"  - 坐标系: {f.get('crs', 'Unknown')}")
+        lines.append(f"  - 要素数量: {f.get('feature_count', 0)}")
 
         columns = f.get("columns", [])
         column_types = f.get("column_types", {})
@@ -1391,16 +1406,25 @@ class ParameterExtractor:
             return "IDW"
         return "IDW"  # 默认
 
-    def extract_all(self, query: str, scenario: Any) -> Dict[str, Any]:
+    def extract_all(
+        self,
+        query: str,
+        scenario: Any,
+        file_contents: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """
         从查询中提取所有相关参数【防御性安全版本】
 
         覆盖所有 11 个场景。
         【安全特性】：所有字典访问使用 .get() 链式调用
 
+        【关键修复】：支持从上传的文件（file_contents）自动获取 input_layer，
+        解决用户上传 GeoJSON 后只说"添加缓冲区"时无法识别输入文件的问题。
+
         Args:
             query: 用户查询
             scenario: 场景类型（字符串或 Scenario 枚举）
+            file_contents: 上传的文件内容容器（ContentContainer）
 
         Returns:
             提取的参数字典
@@ -1421,6 +1445,25 @@ class ParameterExtractor:
         params["resolution"] = self.extract_resolution(query)
         params["datetime"] = self.extract_datetime(query)
 
+        # ── 【关键修复】从上传文件自动获取 input_layer ──────────────────
+        # 当用户说"添加缓冲区"但没有指定文件时，从 file_contents 获取
+        if _scenario_str == "buffer" and file_contents:
+            from geoagent.file_processor.content_container import FileType
+            # 检查是否已有 input_layer（从 query 中提取的）
+            if not params.get("input_layer") and not params.get("files"):
+                for fc_file in getattr(file_contents, 'files', []) or []:
+                    if fc_file.file_type in (
+                        FileType.SHAPEFILE,
+                        FileType.GEOJSON,
+                        FileType.GEOPACKAGE,
+                        FileType.RASTER,
+                    ):
+                        params["input_layer"] = fc_file.file_name
+                        params["_input_layer_source"] = "uploaded_file"
+                        print(f"[DEBUG extract_all] 从上传文件设置 input_layer: {fc_file.file_name}")
+                        break
+        # ──────────────────────────────────────────────────────────────
+
         # ── 【安全】通用地点（使用 .get() 防止 KeyError）───────────────
         locations = params.get("locations", {}) or {}
         params["start"] = locations.get("start")
@@ -1435,8 +1478,10 @@ class ParameterExtractor:
         # ── buffer 场景 ─────────────────────────────────────────────
         elif _scenario_str == "buffer":
             files = params.get("files", [])
+            print(f"[DEBUG extract_all] buffer场景: files={files}")
             if files:
                 params["input_layer"] = files[0]
+                print(f"[DEBUG extract_all] 从files[0]设置input_layer: {files[0]}")
             # 【安全】距离信息使用链式 .get()
             distance_info = params.get("distance_info")
             if distance_info:
@@ -1444,11 +1489,14 @@ class ParameterExtractor:
                 params["unit"] = distance_info.get("unit", "meters")
             # 尝试从 query 中提取图层名
             entity = self._extract_entity_name(query)
+            print(f"[DEBUG extract_all] _extract_entity_name结果: {entity}")
             # 🆕 安全验证：entity 必须是真实工作区文件（防止"我上传的文件""面要素"等虚假引用）
             if entity and not params.get("input_layer"):
                 if self._is_valid_ws_file_reference(entity):
                     params["input_layer"] = entity
+                    print(f"[DEBUG extract_all] 从entity设置input_layer: {entity}")
                 # 不验证不通过则跳过，让后续 ClarificationEngine 从工作区自动选择
+            print(f"[DEBUG extract_all] 最终input_layer: {params.get('input_layer')}")
 
         # ── overlay 场景 ─────────────────────────────────────────────
         elif _scenario_str == "overlay":
@@ -2513,34 +2561,66 @@ class ScenarioOrchestrator:
             "input_points", "files"
         )):
             return True
-        if scenario in ("route", "accessibility", "buffer", "overlay",
-                        "interpolation", "hotspot", "statistics",
-                        "viewshed", "shadow_analysis", "ndvi", "raster",
-                        "suitability", "poi_search", "geocode",
-                        "regeocode", "visualization", "code_sandbox",
-                        "fetch_osm", "overpass",  # OSM 地图下载
-                        "multi_criteria_search",  # 多条件综合搜索
-                        # Amap 高德 Web 服务
-                        "input_tips", "district", "static_map",
-                        "coord_convert", "grasp_road", "traffic_status",
-                        "traffic_events", "transit_info", "ip_location",
-                        "weather"):
-            return True
-        return False
+        # 完整场景列表
+        known_scenarios = {
+            # 核心空间分析
+            "route", "accessibility", "buffer", "overlay",
+            "interpolation", "hotspot", "statistics",
+            "viewshed", "shadow_analysis", "ndvi", "raster",
+            "suitability",
+            # 数据获取
+            "poi_search", "fetch_osm", "overpass", "stac_search",
+            "geocode", "regeocode",
+            # 可视化
+            "visualization",
+            # 执行方式
+            "code_sandbox", "general",
+            # 高德服务
+            "amap", "input_tips", "district", "static_map",
+            "coord_convert", "grasp_road", "traffic_status",
+            "traffic_events", "transit_info", "ip_location", "weather",
+            # 高级分析
+            "multi_criteria_search", "proximity_filter",
+            # GDAL/工具
+            "gdal", "postgis",
+            # 遥感/地形
+            "remote_sensing", "lidar_3d",
+            # 其他
+            "osm_poi", "ndwi", "index_calc", "change_detection",
+            "image_classify", "band_composite", "cloud_mask",
+            "volume", "profile", "hillshade", "roughness",
+            "curvature", "watershed", "flow_direction",
+            "flow_accumulation", "cut_fill", "satellite_search",
+        }
+        return scenario in known_scenarios
 
     def _can_decompose(self, scenario: str, task_text: str, params: Dict[str, Any]) -> bool:
         """条件3：判断任务是否能拆成有限步骤。"""
         standard = {
+            # 核心空间分析
             "route", "buffer", "overlay", "interpolation", "viewshed",
             "shadow_analysis", "statistics", "hotspot", "suitability",
-            "accessibility", "raster", "ndvi", "visualization",
-            "poi_search", "geocode", "regeocode", "district", "code_sandbox",
-            "fetch_osm", "overpass",  # OSM 地图下载
-            "multi_criteria_search",  # 多条件综合搜索
-            # Amap 高德 Web 服务
-            "input_tips", "static_map", "coord_convert", "grasp_road",
-            "traffic_status", "traffic_events", "transit_info",
-            "ip_location", "weather",
+            "accessibility",
+            # 数据获取
+            "poi_search", "fetch_osm", "overpass", "stac_search",
+            "geocode", "regeocode",
+            # 可视化
+            "visualization",
+            # 执行方式
+            "code_sandbox", "general",
+            # 高德服务
+            "amap", "input_tips", "district", "static_map",
+            "coord_convert", "grasp_road", "traffic_status",
+            "traffic_events", "transit_info", "ip_location", "weather",
+            # 高级分析
+            "multi_criteria_search", "proximity_filter",
+            # GDAL/工具
+            "gdal", "postgis",
+            # 遥感/地形
+            "remote_sensing", "lidar_3d",
+            # 其他
+            "osm_poi", "ndwi", "index_calc", "change_detection",
+            "image_classify", "band_composite", "cloud_mask",
         }
         if scenario in standard:
             return True
@@ -2567,17 +2647,33 @@ class ScenarioOrchestrator:
 
     def _has_standard_output(self, scenario: str) -> bool:
         """条件5：判断输出是否能标准化为 GeoJSON + 摘要格式。"""
+        # 完整场景列表 - 所有支持输出的场景
         standard = {
+            # 核心空间分析
             "route", "buffer", "overlay", "interpolation", "viewshed",
             "shadow_analysis", "statistics", "hotspot", "suitability",
-            "accessibility", "raster", "ndvi", "visualization",
-            "poi_search", "geocode", "regeocode", "district", "code_sandbox",
-            "fetch_osm", "overpass",  # OSM 地图下载
-            "multi_criteria_search",  # 多条件综合搜索
-            # Amap 高德 Web 服务
-            "input_tips", "static_map", "coord_convert", "grasp_road",
-            "traffic_status", "traffic_events", "transit_info",
-            "ip_location", "weather",
+            "accessibility",
+            # 数据获取
+            "poi_search", "fetch_osm", "overpass", "stac_search",
+            "geocode", "regeocode",
+            # 可视化
+            "visualization",
+            # 执行方式
+            "code_sandbox", "general",
+            # 高德服务
+            "amap", "input_tips", "district", "static_map",
+            "coord_convert", "grasp_road", "traffic_status",
+            "traffic_events", "transit_info", "ip_location", "weather",
+            # 高级分析
+            "multi_criteria_search", "proximity_filter",
+            # GDAL/工具
+            "gdal", "postgis",
+            # 遥感/地形
+            "remote_sensing", "lidar_3d",
+            # 其他
+            "osm_poi", "ndwi", "index_calc", "change_detection",
+            "image_classify", "band_composite", "cloud_mask",
+            "raster", "ndvi",
         }
         return scenario in standard
 
@@ -2634,7 +2730,9 @@ class ScenarioOrchestrator:
                 "matched_keywords": intent_result.matched_keywords,
             })
 
-        extracted_params = self.parameter_extractor.extract_all(text, scenario)
+        extracted_params = self.parameter_extractor.extract_all(
+            text, scenario, file_contents=file_contents
+        )
 
         if event_callback:
             event_callback("params_extracted", {
@@ -2657,6 +2755,35 @@ class ScenarioOrchestrator:
             extracted_params["user_input"] = text
             extracted_params["instruction"] = text
         # ───────────────────────────────────────────────────────────────────
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # 🆕 关键修复：优先从 file_contents 提取 input_layer
+        # 问题：file_contents 从 Pipeline 传入但从未被使用
+        # 解决：如果 file_contents 有地理数据文件，自动填充 input_layer
+        # ═══════════════════════════════════════════════════════════════════════
+        print(f"[DEBUG] orchestrate: scenario_str={scenario_str}, file_contents={'有' if file_contents else '无'}")
+        if file_contents and scenario_str == "buffer" and not extracted_params.get("input_layer"):
+            from geoagent.file_processor.content_container import FileType
+            print(f"[DEBUG] file_contents.files 数量: {len(file_contents.files)}")
+            for fc_file in file_contents.files:
+                print(f"[DEBUG] 遍历文件: {fc_file.file_name}, type={fc_file.file_type}")
+                if fc_file.file_type in (
+                    FileType.SHAPEFILE,
+                    FileType.GEOJSON,
+                    FileType.GEOPACKAGE,
+                    FileType.RASTER,
+                ):
+                    extracted_params["input_layer"] = fc_file.file_name
+                    extracted_params["_input_layer_source"] = "uploaded_file"
+                    print(f"[DEBUG] 从上传文件自动填充 input_layer: {fc_file.file_name}")
+                    break
+        elif not file_contents:
+            print(f"[DEBUG] file_contents 为空，无法自动填充 input_layer")
+        elif scenario_str != "buffer":
+            print(f"[DEBUG] scenario 不是 buffer ({scenario_str})，跳过自动填充")
+        elif extracted_params.get("input_layer"):
+            print(f"[DEBUG] extracted_params['input_layer'] 已有值: {extracted_params.get('input_layer')}")
+        # ═══════════════════════════════════════════════════════════════════════
 
         clarification = self.clarification_engine.check_params(scenario, extracted_params)
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 核心/通用域 (Core Domain)
 ==========================
 包含通用和基础设施 Executor。
@@ -15,17 +15,15 @@
 from geoagent.executors.domains.core.general_executor import GeneralExecutor
 from geoagent.executors.domains.core.gdal_executor import GDALExecutor
 from geoagent.executors.domains.core.postgis_executor import PostGISExecutor
+from geoagent.executors.domains.core.code_sandbox_executor import CodeSandboxExecutor
 from geoagent.executors.domains.core.arcgis_executor import ArcGISExecutor
 from geoagent.executors.domains.core.workflow_engine import WorkflowEngine
-
-# CodeSandboxExecutor 暂不可用 (源文件编码损坏)
-CodeSandboxExecutor = None
 
 __all__ = [
     "GeneralExecutor",
     "GDALExecutor",
     "PostGISExecutor",
-    "CodeSandboxExecutor",  # 暂不可用
+    "CodeSandboxExecutor",
     "ArcGISExecutor",
     "WorkflowEngine",
 ]

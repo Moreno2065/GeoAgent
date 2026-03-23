@@ -120,6 +120,7 @@ class OverlayExecutor(BaseExecutor):
             raw1 = task["layer1"]
             path1 = self._resolve_path(raw1)
             if Path(path1).exists():
+                self._repair_shapefile(path1)
                 gdf1 = gpd.read_file(path1)
             else:
                 gdf1 = self._build_point_from_place(raw1)
@@ -128,6 +129,7 @@ class OverlayExecutor(BaseExecutor):
             raw2 = task["layer2"]
             path2 = self._resolve_path(raw2)
             if Path(path2).exists():
+                self._repair_shapefile(path2)
                 gdf2 = gpd.read_file(path2)
             else:
                 gdf2 = self._build_point_from_place(raw2)

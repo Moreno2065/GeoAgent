@@ -103,6 +103,8 @@ class HotspotExecutor(BaseExecutor):
             k_neighbors = int(task.get("k_neighbors", 8))
             output_path = self._resolve_output(task["input_file"], task.get("output_file"))
 
+            # 自动修复缺失的 .shx 文件
+            self._repair_shapefile(input_path)
             # 读取数据
             gdf = gpd.read_file(input_path)
 

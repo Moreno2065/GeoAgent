@@ -25,8 +25,10 @@ class GeoDataReader:
     - 栅格数据 (.tif, .tiff, .img, .asc)
     """
 
-    VECTOR_EXTENSIONS = {".geojson", ".json", ".shp", ".gpkg"}
-    RASTER_EXTENSIONS = {".tif", ".tiff", ".img", ".asc", ".rst", ".nc"}
+    # 内部使用的扩展名常量
+    _VECTOR_EXTENSIONS = {".geojson", ".json", ".shp", ".gpkg"}
+    _RASTER_EXTENSIONS = {".tif", ".tiff", ".img", ".asc", ".rst", ".nc"}
+    _SHP附属_EXTENSIONS = {".prj", ".shx", ".dbf", ".sbn", ".sbx", ".cpg", ".shp.xml"}
 
     def __init__(self):
         self._has_geopandas = self._check_geopandas()
@@ -47,11 +49,6 @@ class GeoDataReader:
             return True
         except ImportError:
             return False
-
-    def can_parse(self, file_path: str) -> bool:
-        """判断是否能解析此文件"""
-        ext = Path(file_path).suffix.lower()
-        return ext in self.VECTOR_EXTENSIONS or ext in self.RASTER_EXTENSIONS
 
     def parse(self, file_path: str) -> FileContent:
         """
@@ -76,17 +73,26 @@ class GeoDataReader:
         suffix = path.suffix.lower()
         file_size = path.stat().st_size
 
-        if suffix in self.VECTOR_EXTENSIONS:
+        if suffix in self._VECTOR_EXTENSIONS:
             return self._parse_vector(path, file_size)
-        elif suffix in self.RASTER_EXTENSIONS:
+        elif suffix in self._RASTER_EXTENSIONS:
             return self._parse_raster(path, file_size)
+        elif suffix in self._SHP附属_EXTENSIONS:
+            # 处理 Shapefile 配套文件：尝试找到对应的 .shp 主文件
+            shp_path = self._find_shp_by_related(path)
+            if shp_path:
+                result = self._parse_vector(shp_path, file_size)
+                # 额外读取 prj 文件获取坐标系描述
+                if suffix == ".prj":
+                    crs_info = self._read_prj_content(path)
+                    if crs_info and result.geo_metadata:
+                        result.geo_metadata["prj_content"] = crs_info
+                        result.summary = (result.summary or "") + f" | PRJ: {crs_info[:50]}..."
+                return result
+            else:
+                raise ValueError(f"无法找到对应的 .shp 主文件，请同时上传 {path.stem}.shp")
         else:
-            return FileContent(
-                file_name=path.name,
-                file_path=str(path),
-                file_type=FileType.from_extension(suffix),
-                error=f"不支持的地理数据格式: {suffix}",
-            )
+            raise ValueError(f"不支持的地理数据格式: {suffix}")
 
     def _parse_vector(self, path: Path, file_size: int) -> FileContent:
         """解析矢量数据"""
@@ -201,6 +207,44 @@ class GeoDataReader:
                 "format": path.suffix.lstrip("."),
             },
         )
+
+    def _find_shp_by_related(self, related_path: Path) -> Optional[Path]:
+        """
+        根据 Shapefile 配套文件（如 .prj/.shx/.dbf）查找对应的 .shp 主文件
+
+        Args:
+            related_path: 配套文件路径，如 /path/to/data.prj
+
+        Returns:
+            对应的 .shp 路径，如果不存在返回 None
+        """
+        stem = related_path.stem  # "data" from "data.prj"
+        shp_path = related_path.parent / f"{stem}.shp"
+        if shp_path.exists():
+            return shp_path
+        return None
+
+    def _read_prj_content(self, prj_path: Path) -> Optional[str]:
+        """
+        读取 .prj 文件内容，获取坐标系 WKT 描述
+
+        Args:
+            prj_path: .prj 文件路径
+
+        Returns:
+            WKT 坐标系描述字符串，失败返回 None
+        """
+        try:
+            with open(prj_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except UnicodeDecodeError:
+            try:
+                with open(prj_path, 'r', encoding='latin-1') as f:
+                    return f.read().strip()
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     def _parse_raster(self, path: Path, file_size: int) -> FileContent:
         """解析栅格数据"""

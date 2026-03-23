@@ -34,6 +34,7 @@ GeoAgent Pipeline - 空间Agent七层统一流水线
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable, Generator
 from enum import Enum
@@ -171,10 +172,14 @@ class PipelineResult:
     error: Optional[str] = None
     error_type: Optional[str] = None
     context: Optional[PipelineContext] = None
+    # 推理思维内容（从 reasoner 模型提取）
+    reasoning_content: Optional[str] = None
+    # 动态添加的警告信息（不存储在字段中）
+    history_warning: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "success": self.success,
             "status": self.status.value,
             "scenario": self.scenario,
@@ -189,6 +194,12 @@ class PipelineResult:
             "error": self.error,
             "error_type": self.error_type,
         }
+        # 添加可选字段
+        if self.reasoning_content:
+            result["reasoning_content"] = self.reasoning_content
+        if self.history_warning:
+            result["history_warning"] = self.history_warning
+        return result
 
     def to_json(self) -> str:
         """序列化为 JSON"""

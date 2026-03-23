@@ -23,16 +23,10 @@ class ImageProcessor:
     - 图像描述（可扩展为调用多模态 LLM）
     """
 
-    SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 
     def __init__(self):
         self._ocr_available: Optional[bool] = None
         self._tesseract_cmd: Optional[str] = None
-
-    def can_parse(self, file_path: str) -> bool:
-        """判断是否能处理此文件"""
-        ext = Path(file_path).suffix.lower()
-        return ext in self.SUPPORTED_EXTENSIONS
 
     def process(self, file_path: str, enable_ocr: bool = True, include_base64: bool = True) -> FileContent:
         """

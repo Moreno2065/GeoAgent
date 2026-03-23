@@ -38,66 +38,66 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
 
     cls_map: Dict[str, type[BaseExecutor]] = {
         "route":         lambda: __import__(
-                              "geoagent.executors.route_executor",
+                              "geoagent.executors.domains.vector.route_executor",
                               fromlist=["RouteExecutor"]).RouteExecutor,
         "buffer":        lambda: __import__(
-                              "geoagent.executors.buffer_executor",
+                              "geoagent.executors.domains.vector.buffer_executor",
                               fromlist=["BufferExecutor"]).BufferExecutor,
         "overlay":       lambda: __import__(
-                              "geoagent.executors.overlay_executor",
+                              "geoagent.executors.domains.vector.overlay_executor",
                               fromlist=["OverlayExecutor"]).OverlayExecutor,
         "interpolation":  lambda: __import__(
-                              "geoagent.executors.idw_executor",
+                              "geoagent.executors.domains.vector.idw_executor",
                               fromlist=["IDWExecutor"]).IDWExecutor,
         "ndvi":          lambda: __import__(
-                              "geoagent.executors.ndvi_executor",
+                              "geoagent.executors.domains.remote.ndvi_executor",
                               fromlist=["NdviExecutor"]).NdviExecutor,
         "hotspot":        lambda: __import__(
-                              "geoagent.executors.hotspot_executor",
+                              "geoagent.executors.domains.vector.hotspot_executor",
                               fromlist=["HotspotExecutor"]).HotspotExecutor,
         "shadow_analysis": lambda: __import__(
-                              "geoagent.executors.shadow_executor",
+                              "geoagent.executors.domains.terrain.shadow_executor",
                               fromlist=["ShadowExecutor"]).ShadowExecutor,
         "viewshed":      lambda: __import__(
-                              "geoagent.executors.shadow_executor",
+                              "geoagent.executors.domains.terrain.shadow_executor",
                               fromlist=["ShadowExecutor"]).ShadowExecutor,
         "visualization":  lambda: __import__(
-                              "geoagent.executors.viz_executor",
+                              "geoagent.executors.domains.viz.viz_executor",
                               fromlist=["VisualizationExecutor"]).VisualizationExecutor,
         "accessibility":   lambda: __import__(
-                              "geoagent.executors.route_executor",
+                              "geoagent.executors.domains.vector.route_executor",
                               fromlist=["RouteExecutor"]).RouteExecutor,
         "suitability":   lambda: __import__(
-                              "geoagent.executors.suitability_executor",
+                              "geoagent.executors.domains.vector.suitability_executor",
                               fromlist=["SuitabilityExecutor"]).SuitabilityExecutor,
         "postgis":       lambda: __import__(
-                              "geoagent.executors.postgis_executor",
+                              "geoagent.executors.domains.core.postgis_executor",
                               fromlist=["PostGISExecutor"]).PostGISExecutor,
         "general":        lambda: __import__(
-                              "geoagent.executors.general_executor",
+                              "geoagent.executors.domains.core.general_executor",
                               fromlist=["GeneralExecutor"]).GeneralExecutor,
         # GDAL 工具执行器（支持 raster_clip, raster_reproject, vector_buffer 等）
         "gdal":          lambda: __import__(
-                              "geoagent.executors.gdal_executor",
+                              "geoagent.executors.domains.core.gdal_executor",
                               fromlist=["GDALExecutor"]).GDALExecutor,
         # OSM 在线下载
         "fetch_osm":     lambda: __import__(
-                              "geoagent.executors.osm_executor",
+                              "geoagent.executors.domains.web.osm_executor",
                               fromlist=["OSMExecutor"]).OSMExecutor,
         "overpass_executor": lambda: __import__(
-                              "geoagent.executors.overpass_executor",
+                              "geoagent.executors.domains.web.overpass_executor",
                               fromlist=["OverpassExecutor"]).OverpassExecutor,
         # OSM POI 搜索（Overpass API 直连，无需 API Key）
         "osm_poi":       lambda: __import__(
-                              "geoagent.executors.overpass_executor",
+                              "geoagent.executors.domains.web.overpass_executor",
                               fromlist=["OverpassExecutor"]).OverpassExecutor,
         # ArcGIS Online 下载
         "arcgis_download": lambda: __import__(
-                              "geoagent.executors.arcgis_executor",
+                              "geoagent.executors.domains.core.arcgis_executor",
                               fromlist=["ArcGISExecutor"]).ArcGISExecutor,
         # 受限代码执行
         "code_sandbox":  lambda: __import__(
-                              "geoagent.executors.code_sandbox_executor",
+                              "geoagent.executors.domains.core.code_sandbox_executor",
                               fromlist=["CodeSandboxExecutor"]).CodeSandboxExecutor,
         # ── 可视化 Pipeline 扩展 ──────────────────────────────────
         "poi_executor":  lambda: __import__(
@@ -112,9 +112,16 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "datasource_executor": lambda: __import__(
                               "geoagent.executors.datasource_executor",
                               fromlist=["DatasourceExecutor"]).DatasourceExecutor,
+    # ── 🆕 空间邻近筛选执行器 ──────────────────────────────────
+        "proximity_filter": lambda: __import__(
+                              "geoagent.executors.proximity_filter_executor",
+                              fromlist=["ProximityFilterExecutor"]).ProximityFilterExecutor,
+        "proximity": lambda: __import__(
+                              "geoagent.executors.proximity_filter_executor",
+                              fromlist=["ProximityFilterExecutor"]).ProximityFilterExecutor,
         # Amap 高德 Web 服务（输入提示/POI/地理编码/天气等）
         "amap":          lambda: __import__(
-                              "geoagent.executors.amap_executor",
+                              "geoagent.executors.domains.web.amap_executor",
                               fromlist=["AmapExecutor"]).AmapExecutor,
         # 多条件综合搜索（联网推理）
         "multi_criteria_search": lambda: __import__(
@@ -130,63 +137,63 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
                               fromlist=["HybridRetrieverExecutor"]).HybridRetrieverExecutor,
         # ── 🆕 遥感分析执行器 ───────────────────────────────────────
         "remote_sensing": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "ndwi": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "index_calc": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "change_detection": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "image_classify": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "band_composite": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         "cloud_mask": lambda: __import__(
-                              "geoagent.executors.remote_sensing_executor",
+                              "geoagent.executors.domains.remote.remote_sensing_executor",
                               fromlist=["RemoteSensingExecutor"]).RemoteSensingExecutor,
         # ── 🆕 三维分析执行器 ───────────────────────────────────────
         "lidar_3d": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "volume": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "profile": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "hillshade": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "roughness": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "curvature": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "watershed": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "flow_direction": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "flow_accumulation": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         "cut_fill": lambda: __import__(
-                              "geoagent.executors.lidar_3d_executor",
+                              "geoagent.executors.domains.terrain.lidar_3d_executor",
                               fromlist=["LiDAR3DExecutor"]).LiDAR3DExecutor,
         # ── 🆕 STAC搜索执行器 ───────────────────────────────────────
         "stac_search": lambda: __import__(
-                              "geoagent.executors.stac_search_executor",
+                              "geoagent.executors.domains.web.stac_search_executor",
                               fromlist=["STACSearchExecutor"]).STACSearchExecutor,
         "satellite_search": lambda: __import__(
-                              "geoagent.executors.stac_search_executor",
+                              "geoagent.executors.domains.web.stac_search_executor",
                               fromlist=["STACSearchExecutor"]).STACSearchExecutor,
     }
 
@@ -247,6 +254,7 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "heatmap":         "heatmap_executor",  # 热力图
     "choropleth":      "choropleth_executor",  # 分级设色
     "data_source":     "datasource_executor",  # 数据源加载
+    "proximity_filter": "proximity_filter",     # 空间邻近筛选
     "dissolve":       "overlay_executor",  # dissolve 复用 overlay
     # ── Amap 高德 Web 服务 ────────────────────────────────────────────
     "geocode":       "amap",      # 地理编码
@@ -342,6 +350,7 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "heatmap":          "heatmap",
     "choropleth":       "choropleth",
     "data_source":      "data_source",
+    "proximity_filter": "proximity_filter",
     "dissolve":         "dissolve",
     # ── Amap 高德 Web 服务 ────────────────────────────────────────
     "geocode":         "geocode",

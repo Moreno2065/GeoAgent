@@ -68,13 +68,16 @@ def get_data_info(file_name: str) -> str:
 
     Args:
         file_name: 文件名（不含路径），如 "data.shp" 或 "dem.tif"
+                   也可以是相对路径，如 "conversation_files/xxx/data.shp"
 
     Returns:
         包含 EPSG 坐标系代码、边界(BBox)和字段列表/波段数的 JSON 字符串
     """
     workspace = get_workspace_dir()
-    file_path = workspace / file_name
-
+    
+    # 支持相对路径（如 conversation_files/xxx/data.shp）
+    file_path = workspace / file_name if '/' not in file_name else workspace / file_name
+    
     if not file_path.exists():
         return json.dumps({
             "success": False,
@@ -255,10 +258,10 @@ def _get_raster_info(file_path: Path) -> str:
 
 def list_workspace_files() -> list:
     """
-    列出 workspace 目录下的所有 GIS 文件
+    列出 workspace 目录下的所有 GIS 文件（包括子目录）
 
     Returns:
-        文件名列表
+        文件信息列表，每个元素包含 file_name 和 relative_path
     """
     workspace = get_workspace_dir()
     if not workspace.exists():
@@ -268,11 +271,17 @@ def list_workspace_files() -> list:
                       '.tif', '.tiff', '.img', '.asc', '.rst', '.nc'}
 
     files = []
-    for f in workspace.iterdir():
+    # 递归扫描所有子目录（包括 conversation_files/_unzipped_xxx/）
+    for f in workspace.rglob('*'):
         if f.is_file() and f.suffix.lower() in gis_extensions:
-            files.append(f.name)
+            # 返回相对于 workspace 的路径，以便后续拼接完整路径
+            rel_path = f.relative_to(workspace)
+            files.append({
+                "file_name": f.name,
+                "relative_path": str(rel_path)
+            })
 
-    return sorted(files)
+    return sorted(files, key=lambda x: x["file_name"])
 
 
 # =============================================================================

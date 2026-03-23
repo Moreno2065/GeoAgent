@@ -238,6 +238,85 @@ class BaseExecutor(ABC):
         """
         return task.get("engine") or task.get("provider") or None
 
+    def _repair_shapefile(self, shp_path: str) -> bool:
+        """
+        自动修复缺失的 Shapefile 配套文件（.shx）。
+
+        使用 GDAL 或 GeoPandas 自动重建索引。
+
+        Args:
+            shp_path: .shp 文件路径
+
+        Returns:
+            是否修复成功
+        """
+        from pathlib import Path
+        import warnings
+        
+        shp_path = Path(shp_path)
+        if shp_path.suffix.lower() != '.shp':
+            return True
+        
+        # 检查 .shx 是否已存在
+        shx_path = shp_path.with_suffix('.shx')
+        if shx_path.exists() and shx_path.stat().st_size > 0:
+            return True
+        
+        # 尝试 GDAL 修复
+        try:
+            from osgeo import ogr, gdal
+            
+            ogr.UseExceptions()
+            gdal.UseExceptions()
+            
+            # 打开并重新写入，强制触发 .shx 重建
+            ds = ogr.Open(str(shp_path), update=1)
+            if ds:
+                layer = ds.GetLayer()
+                if layer:
+                    _ = layer.GetFeatureCount()  # 触发索引读取
+                ds.FlushCache()
+                ds = None
+            
+            if shx_path.exists() and shx_path.stat().st_size > 0:
+                print(f"[INFO] GDAL 已修复 .shx 索引: {shx_path.name}")
+                return True
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[WARN] GDAL 修复失败: {e}")
+        
+        # 尝试 GeoPandas 修复
+        try:
+            import geopandas as gpd
+            import tempfile
+            import shutil
+            
+            # 读取数据
+            gdf = gpd.read_file(str(shp_path))
+            
+            # 创建临时目录
+            temp_dir = tempfile.mkdtemp(prefix='shp_repair_')
+            temp_path = Path(temp_dir) / shp_path.stem
+            
+            try:
+                # 写入临时文件
+                gdf.to_file(str(temp_path), driver='ESRI Shapefile')
+                
+                # 检查临时 .shx
+                temp_shx = temp_path.with_suffix('.shx')
+                if temp_shx.exists() and temp_shx.stat().st_size > 0:
+                    # 复制到目标
+                    shutil.copy2(temp_shx, shx_path)
+                    print(f"[INFO] GeoPandas 已修复 .shx 索引: {shx_path.name}")
+                    return True
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"[WARN] GeoPandas 修复失败: {e}")
+        
+        return False
+
     def _build_point_from_place(self, place_name: str) -> "gpd.GeoDataFrame":
         """
         将地名词转换为单点 GeoDataFrame（用于直接做缓冲区或叠置）。
@@ -399,54 +478,6 @@ class BaseExecutor(ABC):
 
         return gdf, actual_path
 
-    def _ensure_shapefile_aux_files(
-        self,
-        gdf: "gpd.GeoDataFrame",
-        output_path: Path,
-        encoding: str = "utf-8"
-    ) -> None:
-        """
-        确保 Shapefile 辅助文件完整。
-
-        Shapefile 格式需要以下文件：
-        - .shp: 主文件（由 gdf.to_file 生成）
-        - .shx: 索引文件（通常由 gdf.to_file 自动生成）
-        - .dbf: 属性数据（由 gdf.to_file 自动生成）
-        - .prj: 投影文件（可能缺失，需要手动创建）
-        - .cpg: 编码文件（可能缺失，需要手动创建）
-
-        Args:
-            gdf: GeoDataFrame
-            output_path: 输出路径（.shp 文件）
-            encoding: 编码
-        """
-        import os
-
-        # 设置 GDAL 环境变量
-        os.environ["SHAPE_RESTORE_SHX"] = "YES"
-
-        base_path = output_path.with_suffix("")
-
-        # 生成 .prj 文件
-        if gdf.crs is not None:
-            prj_path = base_path.with_suffix(".prj")
-            if not prj_path.exists():
-                try:
-                    crs_wkt = gdf.crs.to_wkt()
-                    with open(prj_path, "w", encoding="utf-8") as f:
-                        f.write(crs_wkt)
-                except Exception:
-                    pass
-
-        # 生成 .cpg 文件
-        cpg_path = base_path.with_suffix(".cpg")
-        if not cpg_path.exists():
-            try:
-                with open(cpg_path, "w", encoding="utf-8") as f:
-                    f.write(encoding)
-            except Exception:
-                pass
-
     def save_geodataframe(
         self,
         gdf: "gpd.GeoDataFrame",
@@ -482,6 +513,7 @@ class BaseExecutor(ABC):
         import tempfile
         import os
         from pathlib import Path
+        from geoagent.geo_engine.data_utils import save_shapefile
 
         output_path_obj = Path(output_path).resolve()
 
@@ -493,7 +525,7 @@ class BaseExecutor(ABC):
                 # 生成 Shapefile 全家桶到临时文件夹（使用ASCII文件名避免编码问题）
                 shp_base_name = f"output"
                 shp_path = temp_dir / f"{shp_base_name}.shp"
-                gdf.to_file(str(shp_path), driver="ESRI Shapefile", encoding=encoding)
+                save_shapefile(gdf, shp_path, encoding=encoding)
 
                 # 确保输出目录存在
                 output_path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -517,15 +549,16 @@ class BaseExecutor(ABC):
             # 非 ZIP 格式，直接保存
             driver = self._get_driver(output_path)
             output_path_obj.parent.mkdir(parents=True, exist_ok=True)
-            gdf.to_file(str(output_path_obj), driver=driver, encoding=encoding)
+
+            if driver == "ESRI Shapefile" and output_path.endswith(".shp"):
+                # 使用统一的 shapefile 保存函数，自动生成完整辅助文件
+                save_shapefile(gdf, output_path_obj, encoding=encoding)
+            else:
+                gdf.to_file(str(output_path_obj), driver=driver, encoding=encoding)
 
             # 【防幻觉】验证文件是否真正创建
             if not output_path_obj.exists():
                 raise Exception(f"文件创建失败: {output_path_obj}")
-
-            # 确保 Shapefile 辅助文件完整（.prj 和 .cpg）
-            if driver == "ESRI Shapefile" and output_path.endswith(".shp"):
-                self._ensure_shapefile_aux_files(gdf, output_path_obj, encoding)
 
             return str(output_path_obj), driver
 
