@@ -184,6 +184,16 @@ class FileFallbackHandler:
         """
         logger.info(f"尝试在线数据源 fallback: file_name={file_name}, task_type={task_type}")
 
+        # 【关键修复】如果文件名包含 GIS 扩展名，说明它是一个文件引用而不是地名
+        # 不应该尝试在线下载（可能是 shapefile 不完整等情况）
+        file_ext = Path(file_name).suffix.lower()
+        if file_ext in VECTOR_EXTENSIONS + RASTER_EXTENSIONS:
+            logger.warning(
+                f"文件名 '{file_name}' 包含扩展名 '{file_ext}'，"
+                f"跳过在线 fallback（可能是文件缺失或不完整）"
+            )
+            return None
+
         # 推断数据类型
         data_type = self.guess_data_type(file_name, task_type)
 

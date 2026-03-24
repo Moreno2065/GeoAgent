@@ -433,8 +433,18 @@ class BufferExecutor(BaseExecutor):
                     repair_ok = self._repair_shapefile(shp_path)
                     print(f"[DEBUG] Shapefile 修复结果: {repair_ok}")
                 
-                gdf = gpd.read_file(str(found_path))
-                print(f"[DEBUG] GeoDataFrame 读取成功: {len(gdf)} 个要素, CRS: {gdf.crs}")
+                try:
+                    gdf = gpd.read_file(str(found_path))
+                    print(f"[DEBUG] GeoDataFrame 读取成功: {len(gdf)} 个要素, CRS: {gdf.crs}")
+                except Exception as e:
+                    print(f"[ERROR] 读取文件失败: {e}")
+                    return ExecutorResult.err(
+                        self.task_type,
+                        f"无法读取文件「{input_layer}」: {str(e)}。"
+                        f"可能是文件损坏或不完整。",
+                        engine="geopandas"
+                    )
+                
                 source_label = f"本地文件「{input_layer}」"
                 
                 # 尝试从同目录的 .prj 文件读取 CRS
@@ -453,6 +463,19 @@ class BufferExecutor(BaseExecutor):
                             print(f"[DEBUG] .prj 文件解析失败: {e}")
 
             else:
+                # 【关键修复】检查是否是 GIS 文件（扩展名存在但不完整）
+                # 如果文件名包含 GIS 扩展名但找不到完整文件，应该报错而不是尝试当作地名
+                import re
+                gis_ext_pattern = r'\.(shp|geojson|json|gpkg|gjson|tif|tiff|img)$'
+                if re.search(gis_ext_pattern, input_layer, re.IGNORECASE):
+                    print(f"[ERROR] 文件 '{input_layer}' 存在但不完整或缺少必要的配套文件")
+                    return ExecutorResult.err(
+                        self.task_type,
+                        f"文件「{input_layer}」不完整或缺少必要的配套文件（如 .dbf、.shx 等）。"
+                        f"请检查 Shapefile 是否包含所有必需的文件。",
+                        engine="geopandas"
+                    )
+                
                 # 2. 尝试解析"地点+距离"模式
                 parsed = self._parse_place_and_distance(input_layer)
 
@@ -823,12 +846,12 @@ class BufferExecutor(BaseExecutor):
                         print(f"[DEBUG] 修复后验证通过: {p.name}")
                         return p
                 
-                # 所有修复都失败，返回详细错误信息
-                print(f"[ERROR] 所有shapefile都不完整，且自动修复失败:")
+                # 所有修复都失败：返回 None 让调用方处理，而不是抛出异常
+                # 这样可以避免 FileFallbackHandler 错误地将 .shp 文件当作地名处理
+                print(f"[WARN] 所有shapefile都不完整，且自动修复失败:")
                 for p, msg in invalid_files:
                     print(f"       - {p}: {msg}")
-                error_detail = "; ".join([msg for _, msg in invalid_files])
-                raise FileNotFoundError(f"Shapefile验证失败: {error_detail}")
+                return None
             
         if other_matches:
             return other_matches[0]
