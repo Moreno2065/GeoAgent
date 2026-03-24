@@ -18,9 +18,30 @@ LLM 配置（可选）：
 from __future__ import annotations
 
 import json
+import os
 import traceback
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Generator, Optional
+
+# ── 自动加载配置 ────────────────────────────────────────────
+_config_loaded = False
+def _ensure_config_loaded():
+    global _config_loaded
+    if _config_loaded:
+        return
+    _config_loaded = True
+    # 尝试从 ~/.geoagent/config.env 加载
+    config_file = Path.home() / ".geoagent" / "config.env"
+    if config_file.exists():
+        with open(config_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+
+_ensure_config_loaded()
 
 from geoagent.layers.architecture import Scenario, PipelineStatus
 from geoagent.layers.layer1_input import UserInput, parse_user_input
@@ -166,11 +187,16 @@ class PipelineResult:
 
     def _extract_output_files(self) -> list:
         """从 executor_result.data 中提取 output_files"""
-        if not self.executor_result or not self.executor_result.data:
+        # 兼容两种存储方式：result.executor_result 或 result.context.executor_result
+        executor_result = self.executor_result
+        if not executor_result and self.context:
+            executor_result = getattr(self.context, 'executor_result', None)
+
+        if not executor_result or not executor_result.data:
             return []
-        
+
         files = []
-        data = self.executor_result.data
+        data = executor_result.data
         
         # 1. 直接的 output_file/output_files 字段
         if "output_file" in data and data["output_file"]:
@@ -196,15 +222,43 @@ class PipelineResult:
         # 5. download_path 字段
         if "download_path" in data and data["download_path"]:
             files.append(data["download_path"])
-        
+
+        # 6. POI/搜索类输出文件
+        if "geojson_path" in data and data["geojson_path"]:
+            files.append(data["geojson_path"])
+        if "html_map_path" in data and data["html_map_path"]:
+            files.append(data["html_map_path"])
+
+        # 7. map_files 列表（AmapExecutor 等返回）
+        if "map_files" in data and data["map_files"]:
+            if isinstance(data["map_files"], list):
+                files.extend(data["map_files"])
+            else:
+                files.append(data["map_files"])
+
         return files
+
+    @property
+    def map_file(self) -> Optional[str]:
+        """获取地图文件路径"""
+        if not self.output_files:
+            return None
+        for f in self.output_files:
+            if isinstance(f, str) and f.endswith('.html'):
+                return f
+        return None
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         # 提取 output_files
-        if not self.output_files and self.executor_result:
-            self.output_files = self._extract_output_files()
-        
+        # 兼容两种存储方式：result.executor_result 或 result.context.executor_result
+        if not self.output_files:
+            has_executor_result = self.executor_result is not None
+            if not has_executor_result and self.context:
+                has_executor_result = getattr(self.context, 'executor_result', None) is not None
+            if has_executor_result:
+                self.output_files = self._extract_output_files()
+
         return {
             "status": _get_enum_value(self.status),
             "layer_reached": self.layer_reached,
@@ -526,16 +580,17 @@ class SixLayerPipeline:
                         "files_count": validation.existing_files,
                     })
                 else:
-                    # Executor 报告成功，但文件验证失败！这是幻觉警告
-                    result.status = PipelineStatus.EXECUTING  # 仍然标记为执行中
-                    result.warning = f"⚠️ LLM 幻觉警告：Executor 返回 success=True，但文件验证失败！\n{validation.llm_feedback}"
-                    self._record(5, "layer5_hallucination_warning", {
-                        "scenario": _get_enum_value(scenario),
-                        "validation_summary": validation.summary,
-                        "llm_feedback": validation.llm_feedback,
-                    })
-                    print(f"\n🚨 【LLM 幻觉检测】任务 {dsl.task} 报告成功但文件缺失:")
-                    print(f"   {validation.llm_feedback}\n")
+                    # 只有当有文件预期但文件不存在时才报幻觉警告
+                    if validation.total_files > 0:
+                        result.status = PipelineStatus.EXECUTING
+                        result.warning = f"⚠️ LLM 幻觉警告：Executor 返回 success=True，但文件验证失败！\n{validation.llm_feedback}"
+                        self._record(5, "layer5_hallucination_warning", {
+                            "scenario": _get_enum_value(scenario),
+                            "validation_summary": validation.summary,
+                            "llm_feedback": validation.llm_feedback,
+                        })
+                        print(f"\n🚨 【LLM 幻觉检测】任务 {dsl.task} 报告成功但文件缺失:")
+                        print(f"   {validation.llm_feedback}\n")
             else:
                 result.status = PipelineStatus.FAILED
                 result.error = executor_result.error
@@ -672,6 +727,20 @@ class SixLayerPipeline:
         Returns:
             添加了 rendered_result 的 PipelineResult
         """
+        # 提取 output_files
+        if result.executor_result and result.executor_result.data:
+            files = []
+            data = result.executor_result.data
+            for key in ["output_file", "output_files", "html_file", "map_file",
+                        "result_file", "download_path", "geojson_path", "html_map_path",
+                        "map_files"]:
+                if key in data and data[key]:
+                    if isinstance(data[key], list):
+                        files.extend(data[key])
+                    else:
+                        files.append(data[key])
+            result.output_files = files
+
         if result.rendered_result is None:
             rendered = {
                 "success": False,
@@ -682,6 +751,7 @@ class SixLayerPipeline:
                     safe_get_value(result.orchestration_result.scenario)
                     if result.orchestration_result else None
                 ),
+                "output_files": result.output_files,
             }
             # 🆕 如果有幻觉警告，加入渲染结果
             if result.warning:

@@ -1,4 +1,4 @@
-﻿"""
+"""
 第2层：意图识别层（Intent Classifier）
 ======================================
 核心职责：
@@ -455,6 +455,27 @@ class IntentClassifier:
                 confidence=1.0,
                 matched_keywords=["下载触发词"],
                 all_intents={Scenario.FETCH_OSM}
+            )
+
+        # ── POI 搜索拦截器 ────────────────────────────────
+        # 优先于 STATISTICS：查询某个地点有多少个 XX 的场景
+        poi_count_patterns = [
+            "有多少", "有几家", "有多少家", "有几个",
+            "有多少个", "有多少家", "多少家", "几家",
+            "星巴克", "瑞幸", "喜茶", "麦当劳", "肯德基",
+            "门店", "网点", "店铺", "商铺",
+        ]
+        # 必须同时包含地点词和数量词，才是 POI 搜索
+        location_words = ["区", "市", "县", "镇", "街", "路", "天河", "广州", "深圳", "北京", "上海", "杭州", "南京", "武汉", "成都"]
+        has_location = any(loc in query for loc in location_words)
+        has_count = any(pattern in query_lower for pattern in poi_count_patterns)
+
+        if has_location and has_count:
+            return IntentResult(
+                primary=Scenario.POI_SEARCH,
+                confidence=1.0,
+                matched_keywords=["POI数量查询"],
+                all_intents={Scenario.POI_SEARCH}
             )
 
         return None

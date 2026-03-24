@@ -186,6 +186,13 @@ def _render_data_table_tab():
                             geo_strs = display_df.geometry.values.astype(str)
                             display_df = display_df.drop(columns=['geometry'])
                             display_df['geometry'] = geo_strs
+                        # 🛡️ 修复 pyarrow 混合类型错误：将列表/字典列转换为字符串
+                        import pandas as pd
+                        for col in display_df.columns:
+                            if display_df[col].apply(lambda x: isinstance(x, (list, dict)) if pd.notna(x) else False).any():
+                                display_df[col] = display_df[col].apply(
+                                    lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+                                )
                         st.dataframe(display_df.head(20), width='stretch', hide_index=False)
                     except Exception as e:
                         st.warning(f"属性表预览失败: {e}")
@@ -300,6 +307,12 @@ def _render_geojson_panel(height: int = 600):
             
             with st.expander("Attribute Table Preview", expanded=True):
                 display_df = parsed_gdf.drop(columns=['geometry']).copy() if 'geometry' in parsed_gdf.columns else parsed_gdf.copy()
+                # 🛡️ 修复 pyarrow 混合类型错误：将列表/字典列转换为字符串
+                for col in display_df.columns:
+                    if display_df[col].apply(lambda x: isinstance(x, (list, dict)) if pd.notna(x) else False).any():
+                        display_df[col] = display_df[col].apply(
+                            lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+                        )
                 preview_df = display_df.head(20)
                 st.dataframe(preview_df, use_container_width=True, hide_index=False)
                 if len(parsed_gdf) > 20:
@@ -2577,6 +2590,10 @@ def _handle_user_message(prompt: str, agent):
                     event_callback=v2_event_callback,
                 )
 
+                # 保存结果到 stream_state（用于渲染时使用）
+                stream_state["result_map_file"] = result.map_file if hasattr(result, 'map_file') else None
+                stream_state["result_output_files"] = result.output_files if hasattr(result, 'output_files') else []
+
                 # ── LLM 流式生成回复 ─────────────────────────────────────────
                 extracted_params = {
                     "user_input": prompt,
@@ -2646,6 +2663,10 @@ def _handle_user_message(prompt: str, agent):
                             'feedback': validated.get('llm_feedback', ''),
                         }
                     
+                    # 查询类场景（无需生成文件）
+                    query_scenarios = {"route", "poi_search", "accessibility", "nearest", "general"}
+                    is_query_task = result.scenario and str(result.scenario).lower() in query_scenarios
+                    
                     # 明确告知文件生成状态
                     if validation_info and validation_info['is_valid']:
                         result_details.append(f"\n✅ 【文件验证通过】系统确认已成功生成 {validation_info['existing']} 个文件：")
@@ -2677,9 +2698,13 @@ def _handle_user_message(prompt: str, agent):
                             result_details.append(f"   - {fname}")
                         if len(output_files) > 10:
                             result_details.append(f"   ... 还有 {len(output_files) - 10} 个文件")
+                    elif is_query_task:
+                        # 查询类任务（路线、POI搜索等）不需要生成文件
+                        result_details.append("\n💡 【提示】本次为查询类任务，未生成文件")
+                        result_details.append("   任务执行成功，请关注上方的分析结果摘要")
                     else:
                         result_details.append("\n❌ 【重要】本次分析未生成任何文件")
-                        result_details.append("   原因可能是：分析失败、查询类任务、或输入数据无效")
+                        result_details.append("   原因可能是：分析失败、或输入数据无效")
                     
                     # 🆕 从 executor_result.data 中提取更多详情
                     if hasattr(result, 'executor_result') and result.executor_result:
@@ -2697,10 +2722,12 @@ def _handle_user_message(prompt: str, agent):
 {chr(10).join(result_details)}
 
 【强制规则】
-- 如果上述显示"❌ 未生成任何文件"，必须如实告知用户"本次分析未生成文件"
+- 如果上述显示"💡 【提示】本次为查询类任务"，请正常回复分析结果即可
+- 如果上述显示"❌ 未生成任何文件"，必须如实告知用户
 - 如果上述显示"🚨 文件验证失败"，绝对不能声称文件已生成
 - 只使用上述"实际存在的文件"列表中的文件名
-- 只使用上述"关键指标"中的数据，不要编造任何数字"""
+- 只使用上述"关键指标"中的数据，不要编造任何数字
+- 路线规划类任务请重点说明里程、时间、换乘方案等查询结果"""
 
                     # 添加文件上下文
                     if file_context:
@@ -2922,20 +2949,35 @@ def _handle_user_message(prompt: str, agent):
                 "id": asst_msg_id,
             })
 
-            outputs_dir = _get_outputs_dir()
-            if outputs_dir.exists():
-                current_maps = set(outputs_dir.glob("*.html"))
-                new_maps = current_maps - baseline
-                if new_maps:
-                    latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
-                    st.session_state["last_map_file"] = str(latest_map)
+            # 显示地图（使用 result.map_file 而非 baseline 检测）
+            map_file = stream_state.get("result_map_file")
+            if map_file:
+                map_path = Path(map_file)
+                if map_path.exists():
+                    st.session_state["last_map_file"] = str(map_path)
                     st.markdown("<hr>", unsafe_allow_html=True)
                     st.markdown(
                         '<div class="section-heading">🗺️ &nbsp;最新地图</div>',
                         unsafe_allow_html=True,
                     )
-                    _render_html_map_inline(str(latest_map), height=760)
+                    _render_html_map_inline(str(map_path), height=760)
                     _update_kpi_from_tool_results(stream_state["tools"])
+            else:
+                # 降级：使用 baseline 检测
+                outputs_dir = _get_outputs_dir()
+                if outputs_dir.exists():
+                    current_maps = set(outputs_dir.glob("*.html"))
+                    new_maps = current_maps - baseline
+                    if new_maps:
+                        latest_map = sorted(new_maps, key=lambda p: p.stat().st_mtime)[-1]
+                        st.session_state["last_map_file"] = str(latest_map)
+                        st.markdown("<hr>", unsafe_allow_html=True)
+                        st.markdown(
+                            '<div class="section-heading">🗺️ &nbsp;最新地图</div>',
+                            unsafe_allow_html=True,
+                        )
+                        _render_html_map_inline(str(latest_map), height=760)
+                        _update_kpi_from_tool_results(stream_state["tools"])
 
             # 执行完成后触发 rerun 以更新 UI 状态灯（LLM 状态已写入 session_state）
             # rerun 前强制重置 LLM 状态灯，避免假死

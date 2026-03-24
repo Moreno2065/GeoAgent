@@ -307,9 +307,10 @@ def validate_executor_result(result: Any) -> OutputValidation:
     existing_files = sum(1 for v in validated_files if v.exists and not v.is_empty)
     missing_files = total_files - existing_files
     
-    # 综合判断
-    has_output = existing_files > 0 if total_files > 0 else False
-    is_valid = success and has_output and missing_files == 0
+    # 综合判断：只有当报告了文件但文件不存在时才认为是幻觉
+    # 如果没有报告任何文件（即 no files expected），不算幻觉
+    has_output = existing_files > 0 if total_files > 0 else True  # 无文件预期时默认为True
+    is_valid = success and (has_output or total_files == 0) and missing_files == 0
     
     # 如果 Executor 本身失败，但没有报告文件，认为正常
     if not success and total_files == 0:

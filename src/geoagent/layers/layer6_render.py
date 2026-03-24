@@ -215,7 +215,7 @@ class ResultRenderer:
         if raw_output_files:
             self.output_files = [f for f in raw_output_files if self._verify_file(f)]
         
-        # 【防幻觉】检查 data 中的 output_file
+        # 【防幻觉】检查 data 中的 output_file/map_file
         data = getattr(result, "data", None)
         if data and isinstance(data, dict):
             output_file = data.get("output_file")
@@ -227,6 +227,15 @@ class ResultRenderer:
             if map_file and self._verify_file(map_file):
                 if map_file not in self.map_files:
                     self.map_files.append(map_file)
+            # 🛡️ OSM/下载类输出文件
+            geojson_path = data.get("geojson_path")
+            if geojson_path and self._verify_file(geojson_path):
+                if geojson_path not in self.output_files:
+                    self.output_files.append(geojson_path)
+            html_map_path = data.get("html_map_path")
+            if html_map_path and self._verify_file(html_map_path):
+                if html_map_path not in self.map_files:
+                    self.map_files.append(html_map_path)
 
         self._raw_result = result.to_dict() if hasattr(result, "to_dict") else {"raw": str(result)}
         
@@ -285,6 +294,26 @@ class ResultRenderer:
             self.map_files = result.map_files or []
         if hasattr(result, "output_files"):
             self.output_files = result.output_files or []
+
+        # 🛡️ 也检查嵌套的 data 字段（ExecutorResult 结构）
+        data = getattr(result, "data", None)
+        if data and isinstance(data, dict):
+            # 从 data 中提取文件
+            for key in ["map_files", "output_files", "geojson_path", "html_map_path"]:
+                if key in data and data[key]:
+                    val = data[key]
+                    if isinstance(val, list):
+                        for f in val:
+                            if f not in self.output_files and f not in self.map_files:
+                                if key == "map_files":
+                                    self.map_files.append(f)
+                                else:
+                                    self.output_files.append(f)
+                    elif isinstance(val, str):
+                        if key in ("geojson_path",):
+                            self.output_files.append(val)
+                        elif key in ("html_map_path",):
+                            self.map_files.append(val)
 
     def _get_default_summary(self) -> str:
         summaries = {

@@ -1928,22 +1928,45 @@ class ParameterExtractor:
                 result["radius"] = min(radius, 5000)
                 break
 
-        # 2. 提取城市（可能的显式提及）
-        city_patterns = [
-            r"(?:在|到|去|从)\s*([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
-            r"([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
-            r"(?:在|到)\s*([^\s,，。附近周边0-9]{2,8})\s*(?:附近|周边|周围)?",
+        # 2. 提取城市和中心点
+        # ── 首先提取 center_point（包含区的完整地点）───────────────────────
+        # 模式：在"有多少/有几个"等数量词之前的内容
+        center_patterns = [
+            r"((?:[^\s,，。])+?区(?:[^\s,，。])*)",  # XX区开头
+            r"在\s*((?:[^\s,，。])+?区)",  # 在XX区
+            r"到\s*((?:[^\s,，。])+?区)",  # 到XX区
         ]
-        for pattern in city_patterns:
+        for pattern in center_patterns:
             m = re.search(pattern, query)
             if m:
-                potential_city = m.group(1).strip()
-                # 排除明显不是城市的词
-                bad_city_words = ["周边", "附近", "周围", "范围", "以内", "以外"]
-                if potential_city and not any(b in potential_city for b in bad_city_words):
-                    if len(potential_city) >= 2:
-                        result["city"] = potential_city
-                        break
+                potential_center = m.group(1).strip()
+                # 清理数量词后缀
+                for suffix in ['有多少', '有几', '有多少家', '有几家', '有多少个']:
+                    if suffix in potential_center:
+                        potential_center = potential_center.split(suffix)[0].strip()
+                if potential_center and len(potential_center) >= 3:
+                    result["center_point"] = potential_center
+                    # 提取城市
+                    city_m = re.match(r'([^\s,，。]+?)市', potential_center)
+                    if city_m:
+                        result["city"] = city_m.group(1)
+                    break
+
+        # ── 提取城市（仅作为辅助，不覆盖 center_point）────────────────────────
+        if "center_point" not in result:
+            city_patterns = [
+                r"(?:在|到|去|从)\s*([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
+                r"([^\s,，。附近周边0-9]+?)\s*(?:市|区|县)\s*(?:附近|周边|周围|以内)?",
+            ]
+            for pattern in city_patterns:
+                m = re.search(pattern, query)
+                if m:
+                    potential_city = m.group(1).strip()
+                    bad_city_words = ["周边", "附近", "周围", "范围", "以内", "以外"]
+                    if potential_city and not any(b in potential_city for b in bad_city_words):
+                        if len(potential_city) >= 2:
+                            result["city"] = potential_city
+                            break
 
         # ── LLM 深度提取 center_point 和 keyword ───────────────────
         llm_extracted = self._llm_extract_poi_params(query)
@@ -2732,6 +2755,14 @@ class ScenarioOrchestrator:
             print(f"⚡ [最高权限] 检测到编程指令，强制路由至 code_sandbox！")
             scenario_str = "code_sandbox"
             scenario = Scenario.CODE_SANDBOX
+        
+        # ── 🆕 BUFFER 拦截器（优先级高于其他 GIS 场景）────────────────
+        # 如果 query 中包含"缓冲"或"缓冲区"，强制路由到 buffer
+        buffer_triggers = ["缓冲", "缓冲区"]
+        if any(trigger in text for trigger in buffer_triggers):
+            print(f"⚡ [BUFFER INTERCEPTOR] 检测到缓冲区触发词，强制路由至 buffer！")
+            scenario_str = "buffer"
+            scenario = Scenario.BUFFER
         # ==========================================
 
         # ==========================================

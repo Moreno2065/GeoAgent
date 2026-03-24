@@ -188,7 +188,11 @@ def _extract_output_files(result: Dict[str, Any]) -> List[str]:
     # 直接字段（常见命名）
     direct_fields = [
         "output_file", "map_file", "output_path", "download_path",
-        "html_file", "result_file", "file_path"
+        "html_file", "result_file", "file_path",
+        # OSM/下载相关
+        "geojson_path", "html_map_path", "osm_map_path",
+        # POI/搜索相关
+        "map_files", "output_files",
     ]
     for field in direct_fields:
         if result.get(field):
@@ -200,7 +204,8 @@ def _extract_output_files(result: Dict[str, Any]) -> List[str]:
 
     # 嵌套 data 字段（ExecutorResult.data 结构）
     if "data" in result and isinstance(result["data"], dict):
-        for field in direct_fields:
+        nested_fields = direct_fields + ["output_files", "map_files"]
+        for field in nested_fields:
             if result["data"].get(field):
                 val = result["data"][field]
                 if isinstance(val, list):
@@ -508,7 +513,7 @@ class ResultRenderer:
     def render(
         self,
         scenario: str,
-        result_data: Dict[str, Any],
+        result_data: Any,
         explanation: str = "",
     ) -> Dict[str, Any]:
         """
@@ -516,18 +521,26 @@ class ResultRenderer:
 
         Args:
             scenario: 场景类型
-            result_data: 执行结果数据
+            result_data: 执行结果数据（可以是 ExecutorResult 对象或字典）
             explanation: 自定义解释卡片文本
 
         Returns:
             渲染后的结果字典
         """
+        # 将 ExecutorResult 转换为字典
+        if hasattr(result_data, 'to_dict'):
+            result_dict = result_data.to_dict()
+        elif isinstance(result_data, dict):
+            result_dict = result_data
+        else:
+            result_dict = {"success": False, "error": "Invalid result data"}
+
         # 检查是否有场景特定渲染器
         if scenario in self.renderers:
             # 场景特定渲染器签名：_render_xxx(result_data)，忽略 scenario
-            return self.renderers[scenario](result_data)
+            return self.renderers[scenario](result_dict)
         # 否则使用通用渲染器
-        return render_basic_result(scenario, result_data, explanation)
+        return render_basic_result(scenario, result_dict, explanation)
 
     def render_from_json(
         self,
