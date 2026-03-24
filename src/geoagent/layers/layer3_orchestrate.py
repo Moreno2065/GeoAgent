@@ -1874,6 +1874,125 @@ class ParameterExtractor:
             else:
                 params["data_type"] = "building"
 
+        # ── geocode 场景：提取地址 ──────────────────────────────────
+        elif _scenario_str == "geocode":
+            # 从查询中提取地址
+            # 第一步：多轮清理前缀
+            cleaned = query
+            prefixes = [
+                # 带"的"的前缀
+                "查询", "获取", "查找", "看看", "请问", "请查询", "请告诉我",
+                "给我", "帮我", "想知道", "请问一下", "麻烦查一下",
+                # 关键词后缀
+                "的经纬度", "的精确经纬度", "的坐标", "经纬度", "坐标",
+                "的位置", "的位置坐标", "在哪里", "的位置在哪里",
+            ]
+            for _ in range(5):
+                original = cleaned
+                for prefix in prefixes:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                if cleaned == original:
+                    break
+
+            # 第二步：处理更细粒度的动作词
+            fine_prefixes = [
+                "请帮我", "帮我", "请", "麻烦", "一下",
+            ]
+            for _ in range(3):
+                original = cleaned
+                for prefix in fine_prefixes:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                if cleaned == original:
+                    break
+
+            # 第三步：清理"XX省XX市"这种行政区划前缀
+            # 保留完整的行政区划前缀，但不要把它当作地址的一部分
+            province_pattern = r'^[\u4e00-\u9fff]{2,6}?省'
+            city_pattern = r'[\u4e00-\u9fff]{2,6}?[市县区州旗]'
+            # 先去掉省份前缀
+            cleaned = re.sub(province_pattern, '', cleaned)
+            # 再去掉市县前缀
+            cleaned = re.sub(city_pattern, '', cleaned)
+            # 清理"XX的YY"模式，移除中间的"的"
+            if cleaned.startswith("的"):
+                cleaned = cleaned[1:].strip()
+            # 清理末尾的标点或多余字符
+            cleaned = re.sub(r'^[，。,\s。]+|[，。,\s。]+$', '', cleaned).strip()
+
+            if cleaned and len(cleaned) >= 2:
+                params["address"] = cleaned
+
+            # 从原始查询中提取城市信息
+            city_patterns = [
+                r'[\u4e00-\u9fff]{2,6}?省([\u4e00-\u9fff]{2,6}?)[市县区]',  # 省+市/县/区
+                r'([\u4e00-\u9fff]{2,6}?)[市县区]',  # 直接是市/县/区（直辖市）
+            ]
+            for pattern in city_patterns:
+                match = re.search(pattern, query)
+                if match:
+                    potential_city = match.group(1)
+                    if len(potential_city) >= 2:
+                        params["city"] = potential_city
+                        break
+
+        # ── regeocode 场景：提取坐标 ────────────────────────────────
+        elif _scenario_str == "regeocode":
+            # 从查询中提取坐标
+            if params.get("coordinates"):
+                params["location"] = params.get("coordinates")
+            else:
+                # 尝试从查询中提取 "lng,lat" 格式的坐标
+                coord_pattern = re.search(r'([+-]?\d+\.?\d*)[，,]\s*([+-]?\d+\.?\d*)', query)
+                if coord_pattern:
+                    lon, lat = float(coord_pattern.group(1)), float(coord_pattern.group(2))
+                    # 简单判断是否是有效坐标范围
+                    if 73 <= lon <= 136 and 18 <= lat <= 54:
+                        params["location"] = f"{lon},{lat}"
+
+        # ── weather 场景：提取城市 ─────────────────────────────────
+        elif _scenario_str == "weather":
+            # 从查询中提取城市
+            city_patterns = [
+                r'([\u4e00-\u9fff]{2,8}?)[市县区]$',  # XX市
+                r'^([\u4e00-\u9fff]{2,8}?)[市县区]',  # XX市...
+                r'在(.+?)[上下]?$',
+            ]
+            for pattern in city_patterns:
+                match = re.search(pattern, query)
+                if match:
+                    potential_city = match.group(1).strip()
+                    if len(potential_city) >= 2:
+                        params["city"] = potential_city
+                        break
+            # 清理前缀动作词
+            if "city" not in params:
+                for prefix in ["查询", "获取", "查找", "看看", "请问", "的天气"]:
+                    if query.startswith(prefix):
+                        cleaned = query[len(prefix):].strip()
+                        if len(cleaned) >= 2:
+                            params["city"] = cleaned
+                            break
+
+        # ── district 场景：提取行政区划名称 ───────────────────────
+        elif _scenario_str == "district":
+            # 从查询中提取行政区划名称
+            district = query
+            for prefix in ["查询", "获取", "查找", "看看", "请问", "请查询", "请告诉我", "的行政区划", "行政区划"]:
+                if district.startswith(prefix):
+                    district = district[len(prefix):].strip()
+            district = re.sub(r'^[，。,\s]+|[，。,\s]+$', '', district).strip()
+            if district and len(district) >= 2:
+                params["keywords"] = district
+
+        # ── ip_location 场景 ────────────────────────────────────────
+        elif _scenario_str == "ip_location":
+            # 尝试提取 IP 地址
+            ip_pattern = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', query)
+            if ip_pattern:
+                params["ip"] = ip_pattern.group(1)
+
         return params
 
     def _extract_poi_params(self, query: str) -> Dict[str, Any]:

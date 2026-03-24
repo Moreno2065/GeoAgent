@@ -1,4 +1,4 @@
-﻿"""
+"""
 第4层：任务编译层（Task DSL Builder）
 ======================================
 核心职责：
@@ -877,6 +877,12 @@ class DSLBuilder:
             Scenario.POI_SEARCH: ["center_point"],
             Scenario.CODE_SANDBOX: ["instruction"],  # 用户原始指令
             Scenario.FETCH_OSM: ["center_point"],  # OSM 地图下载的中心点
+            # ── 高德基础 Web 服务 ───────────────────────────────
+            Scenario.GEOCODE: ["address"],  # 地理编码的地址
+            Scenario.REGEOCODE: ["location"],  # 逆地理编码的坐标
+            Scenario.DISTRICT: ["keywords"],  # 行政区域查询关键词
+            Scenario.WEATHER: ["city"],  # 天气查询城市
+            Scenario.IP_LOCATION: ["ip"],  # IP 定位
         }
 
         keys = inputs_keys.get(scenario, [])

@@ -182,9 +182,9 @@ class AmapExecutor(BaseExecutor):
             csv_path = ws_dir / csv_name
             df_export.to_csv(csv_path, index=False, encoding='utf-8-sig')
             saved_files["csv"] = str(csv_path)
-            print(f"💾 [高德] POI 数据已保存至 CSV: {csv_path}")
+            print(f"[Amap] POI data saved to CSV: {csv_path}")
         except Exception as e:
-            print(f"⚠️ [高德] 保存 CSV 失败: {e}")
+            print(f"[Amap] CSV save failed: {e}")
             # 不中断，继续尝试保存其他文件
 
         # ── 保存 GeoJSON（仅保留有坐标的 POI）──────────────────────────
@@ -217,9 +217,9 @@ class AmapExecutor(BaseExecutor):
                 with open(geojson_path, 'w', encoding='utf-8') as f:
                     json.dump(geojson_data, f, ensure_ascii=False, indent=2)
                 saved_files["geojson"] = str(geojson_path)
-                print(f"💾 [高德] POI 数据已保存至 GeoJSON: {geojson_path}")
+                print(f"[Amap] POI data saved to GeoJSON: {geojson_path}")
         except Exception as e:
-            print(f"⚠️ [高德] 保存 GeoJSON 失败: {e}")
+            print(f"[Amap] GeoJSON save failed: {e}")
             # 如果 GeoJSON 保存失败，至少记录警告，不中断流程
 
         # ── 生成交互式地图 HTML（可选）────────────────────────────────
@@ -289,9 +289,9 @@ class AmapExecutor(BaseExecutor):
                 with open(html_path, 'w', encoding='utf-8') as f:
                     f.write(html_content)
                 saved_files["map_html"] = str(html_path)
-                print(f"💾 [高德] POI 地图已保存至: {html_path}")
+                print(f"[Amap] POI map saved to: {html_path}")
         except Exception as e:
-            print(f"⚠️ [高德] 生成地图 HTML 失败: {e}")
+            print(f"[Amap] HTML generation failed: {e}")
             # 地图生成失败不应中断流程，继续返回 CSV 和 GeoJSON
 
         return saved_files
@@ -346,11 +346,11 @@ class AmapExecutor(BaseExecutor):
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(geojson_data, f, ensure_ascii=False, indent=2)
 
-            print(f"💾 [高德] 坐标点已保存至: {output_path}")
+            print(f"[Amap] Saved coordinates to: {output_path}")
             return str(output_path)
 
         except Exception as e:
-            print(f"⚠️ [高德] 保存坐标点失败: {e}")
+            print(f"[Amap] Failed to save coordinates: {e}")
             return None
 
     # ── 基础服务 ───────────────────────────────────────────────────────
@@ -589,7 +589,7 @@ class AmapExecutor(BaseExecutor):
 
         if center_point and not location:
             # 🛰️ 用 Geocode 把 "上海静安寺" 这种文本地址转成经纬度
-            print(f"🛰️ [高德雷达] 正在定位中心点：「{center_point}」...")
+            print(f"[Amap] Locating center point: {center_point}...")
             geo_result = geocode(address=center_point, city=city)
             if geo_result is None:
                 return self._err(
@@ -602,7 +602,7 @@ class AmapExecutor(BaseExecutor):
             resolved_city = geo_result.get("city", city)
             if not city and resolved_city:
                 city = resolved_city
-            print(f"🛰️ [高德雷达] 中心点「{center_point}」定位成功：{location}")
+            print(f"[Amap] Center point located: {location}")
 
         # ── Step 2：执行 POI 搜索 ───────────────────────────────────
         if not keywords and not types and not location:
@@ -664,13 +664,13 @@ class AmapExecutor(BaseExecutor):
                 f"Top 5: {', '.join(top_names[:3])}{'...' if len(top_names) > 3 else ''}"
             )
         else:
-            print(f"🛰️ [高德雷达] 搜索「{keywords}」共找到 {count} 个结果。")
+            print(f"[Amap] POI search found {count} results.")
 
         # 打印文件保存信息
         if output_files or map_files:
-            print(f"💾 [高德] 已保存 {len(output_files)} 个数据文件和 {len(map_files)} 个地图文件")
+            print(f"[Amap] Saved {len(output_files)} data files and {len(map_files)} map files.")
         else:
-            print(f"⚠️ [高德] 警告：未能保存任何文件！POI 数据将在结果中返回供后续处理。")
+            print(f"[Amap] Warning: No files saved!")
 
         return self._ok("poi_search", enriched_result, meta={
             "keywords": keywords,
