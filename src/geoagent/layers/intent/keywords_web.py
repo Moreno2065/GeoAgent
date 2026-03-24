@@ -1,4 +1,4 @@
-﻿"""
+"""
 意图识别关键词 - Web 服务
 ===========================
 
@@ -62,10 +62,27 @@ STATIC_MAP_KEYWORDS: List[str] = [
 # =============================================================================
 
 COORD_CONVERT_KEYWORDS: List[str] = [
-    "坐标转换", "convert", "坐标转换", "gcj02", "wgs84",
-    "百度坐标", "gps坐标", "图吧坐标", "坐标系统转换",
-    "坐标系统", "坐标系转换",
+    # 基础中文关键词
+    "坐标转换", "坐标转", "转换坐标", "坐标变换",
+    "gcj02", "wgs84", "bd09", "bd-09",
+    "高德坐标", "谷歌坐标", "百度坐标", "gps坐标",
+    "图吧坐标", "坐标系统转换", "坐标系转换",
+    "投影转换", "投影变换", "地图投影",
+    "反投影", "逆投影",
+    # 投影类型
+    "web mercator", "墨卡托", "球面墨卡托",
+    "utm", "通用横轴墨卡托", "分带",
+    "epsg", "epsg:3857", "epsg:4326",
+    # 显式转换动作
+    "转换为", "转成", "转换成", "转成",
+    "投影到", "转换到",
+    # 英文关键词
     "coordinate conversion", "coordinate transform",
+    "convert coordinates", "projection conversion",
+    "mercator", "wgs84 to", "to gcj", "to wgs84",
+    "from wgs84", "from gcj", "to mercator",
+    "reproject", "reprojection", "crs transform",
+    "zone", "utm zone",
 ]
 
 

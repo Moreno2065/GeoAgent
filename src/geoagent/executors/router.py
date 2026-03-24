@@ -119,6 +119,10 @@ def _get_executor(executor_key: str) -> Optional[BaseExecutor]:
         "proximity": lambda: __import__(
                               "geoagent.executors.proximity_filter_executor",
                               fromlist=["ProximityFilterExecutor"]).ProximityFilterExecutor,
+        # ── 坐标转换执行器（本地算法）────────────────────────────
+        "coord_transform": lambda: __import__(
+                              "geoagent.executors.coord_transform_executor",
+                              fromlist=["CoordTransformExecutor"]).CoordTransformExecutor,
         # Amap 高德 Web 服务（输入提示/POI/地理编码/天气等）
         "amap":          lambda: __import__(
                               "geoagent.executors.domains.web.amap_executor",
@@ -261,7 +265,8 @@ SCENARIO_EXECUTOR_KEY: Dict[str, str] = {
     "regeocode":     "amap",      # 逆地理编码
     "district":      "amap",      # 行政区域查询
     "static_map":    "amap",      # 静态地图
-    "coord_convert":  "amap",      # 坐标转换
+    "coord_convert":  "coord_transform",  # 坐标转换（使用本地算法）
+    "coord_transform": "coord_transform",  # 坐标转换
     "grasp_road":    "amap",      # 轨迹纠偏
     "input_tips":    "amap",      # 输入提示
     "poi_search":    "amap",      # POI 搜索
@@ -357,7 +362,8 @@ _TASK_TO_SCENARIO: Dict[str, str] = {
     "regeocode":       "regeocode",
     "district":        "district",
     "static_map":      "static_map",
-    "coord_convert":   "coord_convert",
+    "coord_convert":   "coord_transform",  # 本地坐标转换
+    "coord_transform": "coord_transform",  # 坐标转换
     "grasp_road":      "grasp_road",
     "input_tips":      "input_tips",
     "poi_search":      "poi_search",

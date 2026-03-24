@@ -943,7 +943,7 @@ class ParameterExtractor:
         (r"(\d+(?:\.\d+)?)\s*(?:公里|km)\s*(?:范围|内|以外)", "kilometers"),
         # 米
         (r"(\d+(?:\.\d+)?)\s*(?:米|meters?)", "meters"),
-        (r"(\d+(?:\.\d+)?)\s*m\b(?![a-zA-Z])", "meters"),  # buffer 200m (英文)
+        (r"(\d+(?:\.\d+)?)\s*m", "meters"),  # buffer 200m / 200米 (移除\b避免中文误判，Python3中\b不匹配ASCII+中文边界)
         (r"方圆\s*(\d+(?:\.\d+)?)\s*(?:米|m)", "meters"),
         # 独立数字（语境判断：周边/缓冲/方圆 + 数字）
         (r"(?:周边|方圆|半径|范围|距离|缓冲)\s*(\d+(?:\.\d+)?)\s*(?:米|m|公里|km)?", "meters"),
@@ -1111,8 +1111,11 @@ class ParameterExtractor:
             from geoagent.gis_tools.fixed_tools import list_workspace_files
             ws_files = list_workspace_files()
             # 只保留 .shp 文件，生成去扩展名的基准名集合
+            # 【修复】list_workspace_files() 返回字典列表，需要提取 file_name
             ws_basenames = set()
-            for fname in ws_files:
+            for file_entry in ws_files:
+                # 支持字典格式 {'file_name': ..., 'relative_path': ...}
+                fname = file_entry.get('file_name', '') if isinstance(file_entry, dict) else str(file_entry)
                 if fname.lower().endswith((".shp", ".geojson", ".json", ".kml", ".gml")):
                     bn = fname.rsplit(".", 1)[0]  # 去掉扩展名
                     ws_basenames.add(bn)
@@ -1123,9 +1126,30 @@ class ParameterExtractor:
         # ── 辅助函数：判断引用是否指向真实工作区文件 ───────────────────────
         def _is_valid_ws_reference(ref: str) -> bool:
             """检查提取到的引用是否能匹配到工作区的真实文件"""
+            ref_clean = ref.strip()
+            
+            # 🛡️ 严格过滤垃圾内容：真实文件名不应该包含这些字符
+            garbage_patterns = [
+                '⚠', '！', '【', '】', '（', '）', '「', '」',  # 中文特殊符号
+                '重要', '不要', '不要将', '不要将文件',  # 提示词残留
+                '如', '如「',  # 提示词残留
+                '不在文件',  # 提示词残留
+                '文件名', '文件',  # 模糊短语
+            ]
+            ref_lower = ref_clean.lower()
+            if any(g in ref_lower for g in garbage_patterns):
+                return False
+            
+            # 🛡️ 严格验证：文件名长度不应该太长
+            if len(ref_clean) > 100:
+                return False
+            
+            # 🛡️ 严格验证：文件名不能包含路径分隔符
+            if '/' in ref_clean or '\\' in ref_clean:
+                return False
+            
             if not ws_basenames:
                 return True  # 无法验证时放行（保留原有行为）
-            ref_clean = ref.strip()
             # 直接匹配（带扩展名或不带）
             if ref_clean in ws_basenames or ref_clean.lower() in {b.lower() for b in ws_basenames}:
                 return True
@@ -1156,7 +1180,9 @@ class ParameterExtractor:
                     ref = m.strip()
                     # 🆕 验证：必须是真实工作区文件或是带扩展名的明确引用
                     if ref.lower().endswith((".shp", ".geojson", ".json", ".kml", ".gml")):
-                        references.append(ref)
+                        # 🛡️ 严格过滤：文件名不能包含 / \ 等路径分隔符
+                        if '/' not in ref and '\\' not in ref and '⚠' not in ref:
+                            references.append(ref)
                     elif _is_valid_ws_reference(ref):
                         references.append(ref)
                     # 否则丢弃（模糊短语如"面要素"会被过滤）

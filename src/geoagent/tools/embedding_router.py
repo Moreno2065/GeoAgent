@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 GeoAgent 语义路由引擎 (Embedding Router)
 =========================================
@@ -331,8 +331,8 @@ class EmbeddingRouter:
         """构建场景的检索文本"""
         descriptions = {
             Scenario.ROUTE: "路径规划 导航 最短路径 从A到B 驾车 步行 骑行 route navigation driving walking",
-            Scenario.BUFFER: "缓冲区 缓冲 周边 方圆 半径 buffer zone proximity radius",
-            Scenario.OVERLAY: "叠加分析 裁剪 相交 clip overlay intersect union",
+            Scenario.BUFFER: "缓冲区 缓冲 周边 方圆 半径 buffer zone proximity radius 200米 500米 1公里",
+            Scenario.OVERLAY: "叠加分析 裁剪 相交 clip overlay intersect union 叠置分析 空间叠置 相交分析",
             Scenario.INTERPOLATION: "空间插值 IDW 克里金 离散点 interpolation kriging IDW",
             Scenario.VIEWSHED: "视域分析 通视 可见性 viewshed visibility line of sight",
             Scenario.STATISTICS: "统计分析 聚合 热点 hotspot statistics aggregation",
@@ -343,7 +343,7 @@ class EmbeddingRouter:
             Scenario.HOTSPOT: "热点分析 Getis-Ord 冷点 hotspot cold spot",
             Scenario.VISUALIZATION: "可视化 地图渲染 热力图 分类图 visualization heatmap choropleth",
             Scenario.CODE_SANDBOX: "代码执行 Python 脚本 自定义计算 code python script custom",
-            Scenario.FETCH_OSM: "OSM下载 地图下载 数据下载 osm download map download",
+            Scenario.FETCH_OSM: "OSM下载 openstreetmap 地图下载 osm download openstreetmap download 路网下载 建筑下载",
             Scenario.MULTI_CRITERIA_SEARCH: "多条件搜索 POI筛选 综合选址 距离计算 距离星巴克小于200米 距离地铁站大于500米 摸鱼地点 ideal location perfect spot both conditions",
             Scenario.GEOCODE: "地理编码 地址转坐标 geocode address to coordinates",
             Scenario.REGEOCODE: "逆地理编码 坐标转地址 regeocode coordinates to address",

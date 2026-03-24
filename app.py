@@ -2601,13 +2601,25 @@ def _handle_user_message(prompt: str, agent):
                 if llm_client and llm_model and not stream_state.get("has_error"):
                     system_prompt = """你是一个专业的地理信息系统助手。请根据用户的请求、系统分析结果和上传的文件内容，用简洁、专业的语言回复用户。
 
-回复要求：
-1. 使用中文
-2. 简洁明了，不超过200字
-3. 包含关键数据和结论
-4. 如有必要，给出下一步建议
-5. 如果用户上传了文件，请结合文件内容进行回复
-6. ⚠️ 重要：只引用系统确认实际存在的文件，不要凭空捏造文件名"""
+【绝对禁止】- 违反以下规则将导致严重后果：
+1. ❌ 禁止捏造文件：绝对不能声称生成了任何不存在的文件
+2. ❌ 禁止捏造数据：不能凭空编造坐标、数量、面积、距离等数据
+3. ❌ 禁止捏造文件名：不能使用任何不在"实际生成的文件"列表中的文件名
+4. ❌ 禁止捏造结论：不能编造分析结果或统计数字
+
+【必须遵守】
+1. ✅ 只引用"实际生成的文件"列表中明确列出的文件
+2. ✅ 只引用系统提供的"关键指标"中的数据
+3. ✅ 如文件列表为空，必须如实告知用户"未生成任何文件"
+4. ✅ 如果分析失败，必须如实说明失败原因
+
+【回复格式】
+- 使用中文，简洁明了
+- 引用任何数据时，必须说明数据来源（如"系统显示"、"分析得出"）
+- 提到文件时，必须使用完整文件名
+- 如果系统报告了文件，但实际生成文件列表为空，必须如实告知用户
+
+当前系统已内置输出验证机制，任何虚假陈述将被检测。诚实是最佳策略！"""
 
                     params_str = "\n".join([f"- {k}: {v}" for k, v in extracted_params.items() if v])
                     
@@ -2619,56 +2631,82 @@ def _handle_user_message(prompt: str, agent):
                     if result.summary:
                         result_details.append(f"分析结果摘要：{result.summary}")
                     
-                    # 关键指标
-                    if result.metrics:
-                        result_details.append("关键指标：")
-                        for k, v in list(result.metrics.items())[:5]:
-                            result_details.append(f"  - {k}: {v}")
-                    
-                    # 🆕 输出文件（实际生成的文件）
+                    # ── 🆕 输出文件（实际生成的文件）- 最重要！ ──────────────
                     output_files = result.output_files if hasattr(result, 'output_files') else []
-                    if output_files:
-                        result_details.append(f"\n📁 实际生成的文件（共 {len(output_files)} 个）：")
-                        for f in output_files[:10]:  # 最多显示10个
-                            import os
-                            fname = os.path.basename(str(f))
-                            result_details.append(f"  - {fname}")
-                        if len(output_files) > 10:
-                            result_details.append(f"  ... 还有 {len(output_files) - 10} 个文件")
-                    else:
-                        result_details.append("\n📁 实际生成的文件：无")
+                    validation_info = None
                     
-                    # 🆕 输出验证信息
+                    # 获取验证状态
                     if hasattr(result, 'output_validated') and result.output_validated:
                         validated = result.output_validated
-                        if validated.get('is_valid'):
-                            result_details.append("\n✅ 输出验证：所有文件已确认存在")
-                        else:
-                            existing = validated.get('existing_files', 0)
-                            total = validated.get('total_files', 0)
-                            missing = validated.get('missing_files', 0)
-                            result_details.append(f"\n⚠️ 输出验证：{existing}/{total} 个文件存在，{missing} 个缺失")
-                            if missing > 0:
-                                result_details.append("   （文件缺失可能表示执行未完全成功）")
+                        validation_info = {
+                            'is_valid': validated.get('is_valid', False),
+                            'existing': validated.get('existing_files', 0),
+                            'total': validated.get('total_files', 0),
+                            'missing': validated.get('missing_files', 0),
+                            'feedback': validated.get('llm_feedback', ''),
+                        }
+                    
+                    # 明确告知文件生成状态
+                    if validation_info and validation_info['is_valid']:
+                        result_details.append(f"\n✅ 【文件验证通过】系统确认已成功生成 {validation_info['existing']} 个文件：")
+                        if output_files:
+                            for f in output_files[:10]:
+                                import os
+                                fname = os.path.basename(str(f))
+                                result_details.append(f"   ✅ {fname}")
+                            if len(output_files) > 10:
+                                result_details.append(f"   ... 还有 {len(output_files) - 10} 个文件")
+                    elif validation_info and validation_info['missing'] > 0:
+                        # 文件缺失！这是关键警告
+                        result_details.append(f"\n🚨 【严重警告】文件验证失败！")
+                        result_details.append(f"   报告应生成 {validation_info['total']} 个文件，")
+                        result_details.append(f"   但系统验证只有 {validation_info['existing']} 个文件存在。")
+                        result_details.append(f"   {validation_info['missing']} 个文件缺失！")
+                        result_details.append(f"   ❌ 绝对不能告诉用户这些文件已生成！")
+                        if output_files:
+                            result_details.append(f"\n   实际存在的文件：")
+                            for f in output_files:
+                                import os
+                                fname = os.path.basename(str(f))
+                                result_details.append(f"   ✅ {fname}")
+                    elif output_files:
+                        result_details.append(f"\n📁 实际生成的文件（共 {len(output_files)} 个）：")
+                        for f in output_files[:10]:
+                            import os
+                            fname = os.path.basename(str(f))
+                            result_details.append(f"   - {fname}")
+                        if len(output_files) > 10:
+                            result_details.append(f"   ... 还有 {len(output_files) - 10} 个文件")
+                    else:
+                        result_details.append("\n❌ 【重要】本次分析未生成任何文件")
+                        result_details.append("   原因可能是：分析失败、查询类任务、或输入数据无效")
                     
                     # 🆕 从 executor_result.data 中提取更多详情
                     if hasattr(result, 'executor_result') and result.executor_result:
                         er = result.executor_result
                         if er.data:
-                            for key in ['feature_count', 'input_feature_count', 'distance', 'crs', 
-                                       'html_file', 'map_file', 'output_path']:
-                                if key in er.data and er.data[key]:
+                            # 只提取数值型指标，不提取文件路径（避免混淆）
+                            numeric_keys = ['feature_count', 'input_feature_count', 'distance', 
+                                          'duration', 'area', 'total_area', 'result_count']
+                            for key in numeric_keys:
+                                if key in er.data and er.data[key] is not None:
                                     result_details.append(f"  - {key}: {er.data[key]}")
 
                     user_message = f"""用户请求：{prompt}
 
-{chr(10).join(result_details)}"""
+{chr(10).join(result_details)}
+
+【强制规则】
+- 如果上述显示"❌ 未生成任何文件"，必须如实告知用户"本次分析未生成文件"
+- 如果上述显示"🚨 文件验证失败"，绝对不能声称文件已生成
+- 只使用上述"实际存在的文件"列表中的文件名
+- 只使用上述"关键指标"中的数据，不要编造任何数字"""
 
                     # 添加文件上下文
                     if file_context:
                         user_message += f"\n\n{file_context}"
 
-                    user_message += "\n\n请生成简洁的回复："""
+                    user_message += "\n\n请生成简洁的回复："
 
                     try:
                         stream_state["text"] = ""

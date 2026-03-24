@@ -1,4 +1,4 @@
-﻿"""
+"""
 LLMRouter - LLM 驱动的二次路由
 ================================
 当 L2 意图分类返回 "general"（无法识别为标准 GIS 场景）时，
@@ -28,6 +28,22 @@ class RouteDecision(str):
     CHAT = "chat"              # 闲聊，直接回复
     SANDBOX = "sandbox"       # 偏门计算需求，构建 sandbox 任务
     REJECT = "reject"          # 无效输入，友好拒绝
+    # ── 🆕 GIS 标准场景（由 LLM 识别到的 GIS 分析场景）─────────────────────
+    BUFFER = "buffer"          # 缓冲区分析
+    ROUTE = "route"            # 路径规划
+    OVERLAY = "overlay"        # 叠加分析
+    INTERPOLATION = "interpolation"  # 插值分析
+    VIEWSHED = "viewshed"      # 视域分析
+    SHADOW_ANALYSIS = "shadow_analysis"  # 阴影分析
+    NDVI = "ndvi"              # 植被指数
+    HOTSPOT = "hotspot"        # 热点分析
+    VISUALIZATION = "visualization"  # 可视化
+    ACCESSIBILITY = "accessibility"  # 可达性分析
+    SUITABILITY = "suitability"  # 适宜性分析
+    GEOCODE = "geocode"        # 地理编码
+    REGEOCODE = "regeocode"    # 逆地理编码
+    POI_SEARCH = "poi_search"  # POI 搜索
+    FETCH_OSM = "fetch_osm"    # OSM 数据下载
 
 
 # =============================================================================
@@ -59,14 +75,28 @@ ROUTING_SYSTEM_PROMPT = """\
 ## 用户上传的文件内容
 {file_contents}
 
-## 三种判决（必须严格遵守）
+## 四种判决（必须严格遵守）
 
-### 判决1：CHAT（闲聊/问候/无意义输入）
-如果用户只是：
-- 问候、闲聊（"你好"、"今天天气真好"）
-- 无意义的乱码或乱打字
-- 与 GIS 地理分析完全无关的内容
-→ 直接输出纯文本回复，不要加任何 JSON。
+### 判决1：GIS 场景（标准空间分析）
+如果用户的请求属于以下 GIS 分析场景之一，请输出 JSON：
+- **route（路径规划）**：从 A 到 B、导航、最短路径、步行/驾车路线
+- **buffer（缓冲区分析）**：缓冲、buffer、周边、方圆、半径、范围内
+- **overlay（叠加分析）**：叠加、overlay、相交、裁剪、clip、union、intersect
+- **interpolation（插值分析）**：插值、IDW、克里金、空间插值
+- **viewshed（视域分析）**：视域、通视、可见性、visibility
+- **shadow_analysis（阴影分析）**：阴影、shadow、采光、日照
+- **ndvi（植被指数）**：NDVI、植被、NDWI、卫星影像指数
+- **hotspot（热点分析）**：热点、冷点、hotspot、cold spot、莫兰指数
+- **visualization（可视化）**：可视化、地图、热力图、choropleth
+- **accessibility（可达性分析）**：可达性、等时圈、service area
+- **suitability（适宜性分析）**：选址、适宜性、site selection
+- **geocode/regeocode（地理编码）**：地理编码、地址转坐标
+- **poi_search（POI搜索）**：搜索附近、周边查找、附近有什么
+- **fetch_osm（地图下载）**：下载地图、osm、openstreetmap
+→ 输出 JSON：
+```json
+{{"task": "场景名称", "params": {{"关键参数": "值"}}}}
+```
 
 ### 判决2：SANDBOX（偏门的空间/数学计算需求）
 如果用户要求的是：
@@ -81,7 +111,14 @@ ROUTING_SYSTEM_PROMPT = """\
 {{"task": "code_sandbox", "params": {{"code": "你要生成的 Python 代码"}}}}
 ```
 
-### 判决3：REJECT（垃圾输入）
+### 判决3：CHAT（闲聊/问候/无意义输入）
+如果用户只是：
+- 问候、闲聊（"你好"、"今天天气真好"）
+- 无意义的乱码或乱打字
+- 与 GIS 地理分析完全无关的内容
+→ 直接输出纯文本回复，不要加任何 JSON。
+
+### 判决4：REJECT（垃圾输入）
 如果用户明确在测试/攻击/乱输入：
 - 纯随机字符、数字乱码
 - 刻意构造的无意义内容
@@ -93,15 +130,17 @@ ROUTING_SYSTEM_PROMPT = """\
 
 ## 关键判断规则
 
-1. **宁可判定为 SANDBOX，不要轻易 REJECT**——用户的输入很可能是一个需要计算的需求
-2. **如果用户提到了文件、数据、几何、坐标、面积、距离——几乎肯定需要 SANDBOX**
-3. **只有当输入明显是闲聊、问候、乱码时，才判定为 CHAT**
-4. **只有当输入明显是攻击性/垃圾/完全无关时，才判定为 REJECT**
+1. **优先识别 GIS 标准场景**——如果请求明确属于某个 GIS 分析，优先输出该场景
+2. **GIS 场景 > SANDBOX > CHAT > REJECT**——按此优先级判断
+3. **宁可判定为 SANDBOX，不要轻易 REJECT**——用户的输入很可能是一个需要计算的需求
+4. **只有当输入明显是闲聊、问候、乱码时，才判定为 CHAT**
+5. **只有当输入明显是攻击性/垃圾/完全无关时，才判定为 REJECT**
 
 ## 输出格式要求
 
-- 如果是 CHAT：直接输出文本，不要 JSON
+- 如果是 GIS 场景：输出 JSON，包含 task 和 params
 - 如果是 SANDBOX：输出 JSON，不要解释
+- 如果是 CHAT：直接输出文本，不要 JSON
 - 如果是 REJECT：输出 JSON，不要解释
 - 绝对不要在 JSON 外添加任何解释、注释、前缀
 
@@ -180,6 +219,33 @@ def _scan_workspace_files() -> List[str]:
         return []
 
 
+# API Key 存储路径
+_API_KEY_FILE = None
+
+def _get_api_key_file_path() -> str:
+    """获取 API Key 文件路径"""
+    global _API_KEY_FILE
+    if _API_KEY_FILE is None:
+        from pathlib import Path
+        _API_KEY_FILE = Path.home() / ".geoagent" / ".api_key"
+    return str(_API_KEY_FILE)
+
+
+def _load_api_key_from_file() -> str:
+    """从 ~/.geoagent/.api_key 读取 API Key（与 core.py 保持一致）"""
+    try:
+        api_key_file = _get_api_key_file_path()
+        from pathlib import Path
+        if Path(api_key_file).exists():
+            with open(api_key_file, 'r', encoding='utf-8') as f:
+                key = f.read().strip()
+                if key:
+                    return key
+    except Exception:
+        pass
+    return ""
+
+
 # =============================================================================
 # LLM 调用封装
 # =============================================================================
@@ -201,8 +267,10 @@ def _call_llm_routing(
     """
     import os
 
-    # 检查 API Key
+    # 检查 API Key（环境变量优先，然后从文件读取）
     api_key = os.getenv("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        api_key = _load_api_key_from_file()
     if not api_key:
         raise RuntimeError("DEEPSEEK_API_KEY 未配置，无法进行 LLM 路由判断")
 
@@ -502,6 +570,11 @@ class LLMRouter:
         # 检查 LLM 是否可用
         import os
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
+
+        # 如果环境变量没有，尝试从 ~/.geoagent/.api_key 读取（与 core.py 保持一致）
+        if not api_key:
+            api_key = _load_api_key_from_file()
+
         llm_disabled = os.getenv("GEOAGENT_DISABLE_LLM", "").lower() in ("1", "true", "yes")
 
         if not api_key or llm_disabled:
@@ -625,6 +698,23 @@ class LLMRouter:
                     confidence=0.90,
                 )
 
+            # ── 🆕 处理 GIS 标准场景 ───────────────────────────────────────────
+            # 检查是否为已知的 GIS 场景
+            gis_scenarios = {
+                "buffer", "route", "overlay", "interpolation", "viewshed",
+                "shadow_analysis", "ndvi", "hotspot", "visualization",
+                "accessibility", "suitability", "geocode", "regeocode",
+                "poi_search", "fetch_osm", "coord_convert",
+            }
+            if task.lower() in gis_scenarios:
+                params = _safe_get(parsed, "params", {})
+                return LLMJudgement(
+                    decision=task.lower(),  # 使用场景名作为 decision
+                    sandbox_params=params,
+                    raw_response=raw_response,
+                    confidence=0.95,
+                )
+
         # 无法解析 JSON → 判定为 CHAT
         return LLMJudgement(
             decision=RouteDecision.CHAT,
@@ -674,13 +764,35 @@ class LLMRouter:
                 },
             )
 
-        else:  # RouteDecision.REJECT
+        # ── 🆕 处理 GIS 标准场景 ───────────────────────────────────────────
+        # 检查是否为 GIS 场景（decision 可能是场景名称字符串）
+        decision_str = judgement.decision.value if hasattr(judgement.decision, 'value') else str(judgement.decision)
+        gis_scenarios = {
+            "buffer", "route", "overlay", "interpolation", "viewshed",
+            "shadow_analysis", "ndvi", "hotspot", "visualization",
+            "accessibility", "suitability", "geocode", "regeocode",
+            "poi_search", "fetch_osm", "coord_convert",
+        }
+        if decision_str.lower() in gis_scenarios:
+            try:
+                scenario_enum = Scenario(decision_str.lower())
+            except (ValueError, AttributeError):
+                scenario_enum = Scenario.ROUTE  # 默认
+
             return OrchestrationResult(
-                status=PipelineStatus.PENDING,
-                scenario=Scenario.ROUTE,  # 占位
+                status=PipelineStatus.ORCHESTRATED,
+                scenario=scenario_enum,
                 needs_clarification=False,
-                error=judgement.reject_reason or "无法识别为有效的 GIS 地理分析请求",
+                extracted_params=judgement.sandbox_params or {},
             )
+
+        # RouteDecision.REJECT 或其他
+        return OrchestrationResult(
+            status=PipelineStatus.PENDING,
+            scenario=Scenario.ROUTE,  # 占位
+            needs_clarification=False,
+            error=judgement.reject_reason or "无法识别为有效的 GIS 地理分析请求",
+        )
 
     def route(
         self,

@@ -1,4 +1,4 @@
-﻿"""
+"""
 GIS 任务 Schema 定义
 ====================
 所有 GIS 分析任务的 Pydantic 模型定义，用于：
@@ -650,17 +650,34 @@ class StaticMapTask(BaseTask):
 
 class CoordConvertTask(BaseTask):
     """
-    坐标转换任务：将其他坐标系转换为高德 GCJ-02 坐标系。
+    坐标转换任务：支持多种坐标系之间的转换。
+
+    支持的转换：
+    - WGS84 (GPS) <-> GCJ-02 (高德/谷歌中国)
+    - WGS84 <-> BD-09 (百度)
+    - GCJ-02 <-> BD-09
+    - WGS84 <-> Web Mercator (EPSG:3857)
+    - WGS84 <-> UTM 自动分带
 
     示例：
         NL: "将 GPS 坐标 116.4,39.9 转换为高德坐标"
-        Task: CoordConvertTask(task="coord_convert", locations="116.4,39.9", coordsys="gps")
+        Task: CoordConvertTask(task="coord_convert", coordinates="116.4,39.9", from_crs="WGS84", to_crs="GCJ-02")
+
+        NL: "将经纬度投影到 Web Mercator"
+        Task: CoordConvertTask(task="coord_convert", coordinates="120,30", from_crs="WGS84", to_crs="EPSG:3857")
     """
     task: Literal["coord_convert"] = "coord_convert"
-    locations: str = Field(description="坐标串，多个用 ';' 分隔，格式 'lon,lat;lon,lat'")
-    coordsys: Literal["gps", "mapbar", "baidu"] = Field(
-        default="gps",
-        description="原坐标系：gps(WGS84) / mapbar / baidu(百度)"
+    coordinates: str = Field(
+        default="",
+        description="坐标串，多个用 ';' 或 ',' 分隔，格式 'lon,lat;lon,lat'"
+    )
+    from_crs: str = Field(
+        default="WGS84",
+        description="源坐标系：WGS84, GCJ-02, BD-09, EPSG:3857, EPSG:4326, UTM"
+    )
+    to_crs: str = Field(
+        default="GCJ-02",
+        description="目标坐标系：WGS84, GCJ-02, BD-09, EPSG:3857, EPSG:4326, UTM"
     )
 
 
@@ -980,7 +997,7 @@ def get_task_description(intent: str) -> str:
         "fetch_osm": "OSM在线下载：根据坐标在线抓取OpenStreetMap路网/建筑数据",
         "district": "行政区域查询：获取省市区县的行政区划及边界",
         "static_map": "静态地图：生成带标记的地图图片 URL",
-        "coord_convert": "坐标转换：将其他坐标系转换为高德 GCJ-02 坐标",
+        "coord_convert": "坐标转换：支持 WGS84/GCJ-02/BD-09/Web Mercator/UTM 等坐标系互相转换",
         "grasp_road": "轨迹纠偏：将 GPS 轨迹纠正到实际道路上",
         # 🔵 高德高级服务
         "poi_search": "POI 搜索：关键字/周边/多边形搜索地点信息",

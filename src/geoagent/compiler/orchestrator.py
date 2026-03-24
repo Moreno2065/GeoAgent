@@ -1,4 +1,4 @@
-﻿"""
+"""
 Scenario Orchestrator - 场景编排器
 ====================================
 第三层架构：决定请求属于哪类任务、是否需要追问、选择分析模板。
@@ -412,11 +412,26 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["input_layer"] = files[0]
+            else:
+                # 【修复】当用户未显式引用文件名时，自动从工作区选择第一个矢量文件
+                ws_files = self._get_workspace_vector_files()
+                if ws_files:
+                    # 优先选择 .shp 文件（最常见格式）
+                    shp_files = [f for f in ws_files if f.lower().endswith('.shp')]
+                    if shp_files:
+                        params["input_layer"] = shp_files[0]
+                    else:
+                        params["input_layer"] = ws_files[0]
+                    params["_auto_selected_file"] = True  # 标记为自动选择，用于调试
+                    print(f"[DEBUG] buffer 场景：自动选择文件: {params['input_layer']}, 可用文件: {ws_files}")
+                else:
+                    print("[DEBUG] buffer 场景：工作区没有找到矢量文件")
             # 距离已通过通用提取获取【安全访问】
             distance_info = params.get("distance_info")
             if distance_info:
                 params["distance"] = distance_info.get("distance")
                 params["unit"] = distance_info.get("unit")
+                print(f"[DEBUG] buffer 场景：提取到距离参数: distance={params['distance']}, unit={params.get('unit', 'meters')}")
             # 尝试从 query 中提取图层名（学校/地铁站/河流等）
             entity = self._extract_entity_name(query)
             if entity and not params.get("input_layer"):
@@ -430,6 +445,27 @@ class ParameterExtractor:
                 params["layer2"] = files[1]
             elif len(files) == 1:
                 params["layer1"] = files[0]
+                # 【新增】自动选择第二个文件
+                ws_files = self._get_workspace_vector_files()
+                if ws_files:
+                    for f in ws_files:
+                        if f != files[0]:
+                            params["layer2"] = f
+                            break
+            else:
+                # 【新增】当没有文件引用时，自动选择工作区文件
+                ws_files = self._get_workspace_vector_files()
+                if ws_files:
+                    shp_files = [f for f in ws_files if f.lower().endswith('.shp')]
+                    if len(shp_files) >= 2:
+                        params["layer1"] = shp_files[0]
+                        params["layer2"] = shp_files[1]
+                    elif len(shp_files) == 1:
+                        params["layer1"] = shp_files[0]
+                    elif ws_files:
+                        params["layer1"] = ws_files[0]
+                        if len(ws_files) > 1:
+                            params["layer2"] = ws_files[1]
             # 操作类型
             params["operation"] = self._extract_overlay_operation(query)
 
@@ -438,6 +474,12 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["input_points"] = files[0]
+            else:
+                # 【新增】自动选择工作区文件
+                ws_files = self._get_workspace_vector_files()
+                if ws_files:
+                    shp_files = [f for f in ws_files if f.lower().endswith('.shp')]
+                    params["input_points"] = shp_files[0] if shp_files else ws_files[0]
             # 字段名已通过通用提取获取
             # 方法
             params["method"] = self._extract_interpolation_method(query)
@@ -458,6 +500,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["criteria_layers"] = files
+            else:
+                # 【新增】自动选择工作区文件
+                ws_files = self._select_workspace_files(count=3)
+                if ws_files:
+                    params["criteria_layers"] = ws_files
             # 从 query 中提取区域/分析范围
             params["area"] = self._extract_area(query)
             # 权重（暂时不支持从 NL 提取）
@@ -473,6 +520,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["dem_file"] = files[0]
+            else:
+                # 【新增】自动选择 DEM 文件（.tif/.tiff）
+                ws_files = self._select_workspace_files(count=1, extensions=[".tif", ".tiff"])
+                if ws_files:
+                    params["dem_file"] = ws_files[0]
             # 目标半径【安全访问】
             distance_info = params.get("distance_info")
             if distance_info:
@@ -485,6 +537,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["buildings"] = files[0]
+            else:
+                # 【新增】自动选择建筑物文件（.shp）
+                ws_files = self._select_workspace_files(count=1, extensions=[".shp"])
+                if ws_files:
+                    params["buildings"] = ws_files[0]
             # 时间
             params["time"] = self.extract_datetime(query)
 
@@ -493,6 +550,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["input_file"] = files[0]
+            else:
+                # 【新增】自动选择遥感影像文件（.tif/.tiff）
+                ws_files = self._select_workspace_files(count=1, extensions=[".tif", ".tiff"])
+                if ws_files:
+                    params["input_file"] = ws_files[0]
             # 传感器类型（默认 auto）
 
         # ── hotspot 场景 ─────────────────────────────────────────────
@@ -500,6 +562,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["input_file"] = files[0]
+            else:
+                # 【新增】自动选择工作区文件
+                ws_files = self._select_workspace_files(count=1)
+                if ws_files:
+                    params["input_file"] = ws_files[0]
             # 字段名已通过通用提取获取
 
         # ── visualization 场景 ───────────────────────────────────────
@@ -507,6 +574,11 @@ class ParameterExtractor:
             files = params.get("files", [])
             if files:
                 params["input_files"] = files
+            else:
+                # 【新增】自动选择工作区文件（最多5个）
+                ws_files = self._select_workspace_files(count=5)
+                if ws_files:
+                    params["input_files"] = ws_files
 
         # ── multi_criteria_search 场景 ──────────────────────────────
         elif _scenario_str == "multi_criteria_search":
@@ -518,6 +590,63 @@ class ParameterExtractor:
                 params["center"] = locations.get("start") or params.get("start")
 
         return params
+
+    def _get_workspace_vector_files(self) -> List[str]:
+        """
+        获取工作区中的矢量文件列表（用于自动填充 input_layer）
+
+        Returns:
+            相对路径列表，按文件名排序
+        """
+        try:
+            from geoagent.gis_tools.fixed_tools import list_workspace_files
+            files = list_workspace_files()
+            if not files:
+                return []
+
+            # 支持的文件扩展名
+            vector_exts = {".shp", ".geojson", ".json", ".gpkg", ".gjson"}
+
+            # 提取相对路径（兼容字典和字符串格式）
+            result = []
+            for f in files:
+                if isinstance(f, dict):
+                    rel_path = f.get("relative_path", "")
+                    fname = f.get("file_name", "")
+                else:
+                    rel_path = str(f)
+                    fname = str(f)
+
+                ext = "." + fname.split(".")[-1].lower() if "." in fname else ""
+                if ext in vector_exts:
+                    result.append(rel_path)
+
+            return sorted(result)
+        except Exception:
+            return []
+
+    def _select_workspace_files(self, count: int = 1, extensions: Optional[List[str]] = None) -> List[str]:
+        """
+        从工作区中选择文件
+
+        Args:
+            count: 需要选择的文件数量
+            extensions: 期望的文件扩展名列表，如 [".shp", ".tif"]
+
+        Returns:
+            选择的文件路径列表
+        """
+        ws_files = self._get_workspace_vector_files()
+        if not ws_files:
+            return []
+
+        # 如果指定了扩展名过滤
+        if extensions:
+            filtered = [f for f in ws_files if any(f.lower().endswith(ext) for ext in extensions)]
+            if filtered:
+                ws_files = filtered
+
+        return ws_files[:count]
 
     def _extract_entity_name(self, query: str) -> Optional[str]:
         """从查询中提取实体名称（修复"半径"误判）"""

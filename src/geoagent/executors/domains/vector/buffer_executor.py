@@ -392,12 +392,23 @@ class BufferExecutor(BaseExecutor):
             )
 
         try:
-            input_layer = task["input_layer"]
-            distance = float(task["distance"])
+            input_layer = task.get("input_layer", "")
+            distance = float(task.get("distance", 0))
             dissolve = bool(task.get("dissolve", False))
             cap_style_str = task.get("cap_style", "round")
             output_path = self._resolve_output(input_layer, task.get("output_file"))
             unit = task.get("unit", "meters")
+
+            # 【修复】空值检查 - 当 input_layer 为空时给出明确错误提示
+            if not input_layer:
+                print("[ERROR] input_layer 参数为空，未找到输入文件")
+                return ExecutorResult.err(
+                    self.task_type,
+                    "未指定输入图层。请上传矢量文件或提供有效的地点名称（如「天安门周围500米」）。",
+                    engine="geopandas"
+                )
+
+            print(f"[DEBUG] BufferExecutor 接收参数: input_layer={input_layer}, distance={distance}, unit={unit}")
 
             cap_map = {
                 "round": CAP_STYLE.round,
@@ -408,19 +419,23 @@ class BufferExecutor(BaseExecutor):
 
             # ── 核心逻辑：判断输入类型 ─────────────────────────────────────
             # 1. 尝试作为文件路径查找
+            print(f"[DEBUG] 开始搜索输入文件: {input_layer}")
             found_path = self._find_local_file(input_layer)
+            print(f"[DEBUG] 文件搜索结果: {found_path}")
 
             if found_path:
                 # 找到了本地文件
                 shp_path = Path(found_path)
+                print(f"[DEBUG] 找到本地文件: {found_path}, 文件大小: {shp_path.stat().st_size if shp_path.exists() else 'N/A'} bytes")
                 
                 # 自动修复缺失的 .shx 文件（Shapefile 索引文件）
                 if shp_path.suffix.lower() == '.shp':
-                    self._repair_shapefile(shp_path)
+                    repair_ok = self._repair_shapefile(shp_path)
+                    print(f"[DEBUG] Shapefile 修复结果: {repair_ok}")
                 
                 gdf = gpd.read_file(str(found_path))
+                print(f"[DEBUG] GeoDataFrame 读取成功: {len(gdf)} 个要素, CRS: {gdf.crs}")
                 source_label = f"本地文件「{input_layer}」"
-                print(f"[DEBUG] 使用本地文件: {found_path}")
                 
                 # 尝试从同目录的 .prj 文件读取 CRS
                 if gdf.crs is None:
@@ -576,16 +591,42 @@ class BufferExecutor(BaseExecutor):
             except Exception:
                 crs_epsg = None
 
-            if crs_epsg == 4326 and unit in ("meters", "kilometers"):
-                gdf_proj = gdf.to_crs(epsg=3857)
-                print(f"[DEBUG] 从 EPSG:4326 投影到 EPSG:3857 以支持米制缓冲区")
+            # CRS 转换：EPSG:4214/4326 (经纬度) → EPSG:3857 (米制) 以支持米制缓冲区
+            # EPSG:4214 = 北京54坐标系（CGCS2000）
+            # EPSG:4326 = WGS84坐标系
+            # EPSG:3857 = Web Mercator（用于米制缓冲区计算）
+            try:
+                crs_epsg = crs.to_epsg() if hasattr(crs, 'to_epsg') else None
+            except Exception:
+                crs_epsg = None
+
+            print(f"[DEBUG] 当前 CRS: EPSG:{crs_epsg}, 单位: {unit}, 缓冲区距离: {distance}")
+
+            # EPSG:4214/4326 (经纬度坐标系) 转换到 EPSG:3857
+            if crs_epsg in (4326, 4214) and unit in ("meters", "kilometers"):
+                try:
+                    gdf_proj = gdf.to_crs(epsg=3857)
+                    print(f"[DEBUG] 从 EPSG:{crs_epsg} 投影到 EPSG:3857 以支持米制缓冲区")
+                except Exception as e:
+                    print(f"[ERROR] CRS 转换失败: {e}")
+                    return ExecutorResult.err(
+                        self.task_type,
+                        f"坐标系转换失败（EPSG:{crs_epsg} → EPSG:3857）: {str(e)}。"
+                        f"可能是坐标数据无效或 CRS 定义错误。",
+                        engine="geopandas"
+                    )
             elif crs_epsg not in (3857, None) and unit in ("meters", "kilometers"):
                 # 其他投影坐标系，转换到 Web Mercator
                 try:
                     gdf_proj = gdf.to_crs(epsg=3857)
                     print(f"[DEBUG] 从 EPSG:{crs_epsg} 投影到 EPSG:3857")
-                except Exception:
-                    gdf_proj = gdf
+                except Exception as e:
+                    print(f"[ERROR] CRS 转换失败: {e}")
+                    return ExecutorResult.err(
+                        self.task_type,
+                        f"坐标系转换失败（EPSG:{crs_epsg} → EPSG:3857）: {str(e)}",
+                        engine="geopandas"
+                    )
             else:
                 gdf_proj = gdf
 

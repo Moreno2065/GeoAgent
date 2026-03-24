@@ -1,4 +1,4 @@
-﻿"""
+"""
 意图识别关键词模块
 =====================
 
@@ -68,25 +68,18 @@ CODE_SANDBOX_KEYWORDS: List[str] = [
 # =============================================================================
 
 FETCH_OSM_KEYWORDS: List[str] = [
-    # 中文 - 显式 OSM 关键词
+    # 中文 - 显式 OSM 关键词（必须包含 osm/openstreetmap）
     "osm下载", "用osm", "osm抓取", "下载osm", "osm数据", "osm地图",
     "openstreetmap下载", "获取osm", "下载路网", "下载建筑",
     "周边地图", "周围地图",
-    # 中文 - 通用下载关键词
-    "下载", "下载地图", "地图下载", "下载数据", "下载文件",
-    "下载区域", "下载该区域", "下载这个区域", "下载范围",
-    "下载矢量", "下载矢量数据", "下载shp", "下载geojson",
-    "下载图层", "导出数据", "导出地图", "导出shp", "导出geojson",
+    # 🛡️ 移除宽泛的"下载"关键词，避免干扰 buffer/overlay 等场景
+    # 中文 - 显式导出（必须有明确的方向）
     "把地图下载", "把数据下载", "把区域下载",
     # 英文 - 显式 OSM 关键词
     "osm download", "osm fetch", "fetch osm", "download osm",
     "osm data", "openstreetmap", "download buildings", "download network",
     "download roads",
-    # 英文 - 通用下载关键词
-    "download", "download map", "download data", "download file",
-    "download area", "download region", "download this area",
-    "download the area", "download vector", "download shp", "download geojson",
-    "download layer", "export data", "export map", "export shp", "export geojson",
+    # 🛡️ 移除宽泛的"download"/"export"关键词，避免干扰其他场景
 ]
 
 
