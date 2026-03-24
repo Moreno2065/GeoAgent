@@ -84,6 +84,12 @@ def _generate_summary(scenario: str, result: Dict[str, Any]) -> str:
         "hotspot": f"热点分析完成：识别 {result.get('hotspot_count', '?')} 个热点区域，{result.get('coldspot_count', '?')} 个冷点区域",
         "visualization": f"可视化完成：生成地图 {result.get('output_file', '?')}",
         "general": f"通用任务执行完成：{result.get('description', result.get('task_description', '任务完成'))}",
+        # ── 高德 Web 服务摘要 ─────────────────────────────
+        "geocode": f"地理编码完成：{result.get('formatted_address', result.get('address', '地址'))} 位于 {result.get('lon', '?')}E, {result.get('lat', '?')}N",
+        "regeocode": f"逆地理编码完成：坐标 {result.get('lon', result.get('location', '?'))} 对应的地址是 {result.get('address', '?')}",
+        "poi_search": f"POI 搜索完成：找到 {result.get('count', '?')} 个结果",
+        "weather": f"天气查询完成：{result.get('city', '?')} 当前{result.get('weather', '?')}，气温 {result.get('temperature', '?')}℃",
+        "ip_location": f"IP 定位完成：{result.get('ip', '?')} 位于 {result.get('province', '?')} {result.get('city', '?')}",
         "unknown": f"任务执行完成",
     }
     return summaries.get(scenario, result.get("summary", "分析完成"))
@@ -169,6 +175,45 @@ def _generate_explanation(scenario: str, result: Dict[str, Any]) -> str:
             "**为什么这么做：** 可视化帮助理解空间数据的分布和模式。\n\n"
             "**结果含义：** "
             f"地图文件：{result.get('output_file', '?')}。"
+        ),
+        "geocode": (
+            "**做了什么：** 将地址转换为地理坐标（经纬度）。\n\n"
+            "**为什么这么做：** 地理编码是空间分析的基础，让我们可以对地点进行地图可视化、距离计算等操作。\n\n"
+            "**结果含义：** "
+            "地址「{addr}」的坐标为 "
+            "经度 {lon}，纬度 {lat}。"
+            "{loc}".format(
+                addr=result.get('formatted_address', result.get('address', '?')),
+                lon=result.get('lon', '?'),
+                lat=result.get('lat', '?'),
+                loc=("位于 " + result.get('province', '') + " " + result.get('city', '') + " " + result.get('district', '') + "。") if result.get('province') else ""
+            )
+        ),
+        "regeocode": (
+            "**做了什么：** 将地理坐标（经纬度）转换为结构化地址。\n\n"
+            "**为什么这么做：** 逆地理编码用于确定坐标对应的实际位置，常用于 GPS 轨迹分析、位置标注等场景。\n\n"
+            "**结果含义：** "
+            f"坐标 {result.get('lon', result.get('location', '?'))} 对应的地址为「{result.get('address', '?')}」。"
+        ),
+        "poi_search": (
+            "**做了什么：** 在指定区域内搜索兴趣点（POI）。\n\n"
+            "**为什么这么做：** POI 搜索用于查找特定类型的设施或地点，如餐厅、银行、地铁站等。\n\n"
+            "**结果含义：** "
+            f"共找到 {result.get('count', '?')} 个结果。"
+        ),
+        "weather": (
+            "**做了什么：** 查询了指定城市的实时天气或天气预报。\n\n"
+            "**为什么这么做：** 天气信息对于户外活动规划、农业、物流等行业具有重要参考价值。\n\n"
+            "**结果含义：** "
+            f"{result.get('city', '?')} 当前{result.get('weather', '?')}，"
+            f"气温 {result.get('temperature', '?')}℃，"
+            f"风力 {result.get('wind_power', '?')}。"
+        ),
+        "district": (
+            "**做了什么：** 查询了行政区划信息及其边界。\n\n"
+            "**为什么这么做：** 行政区划查询用于确定某个区域的范围和边界。\n\n"
+            "**结果含义：** "
+            f"查询到 {result.get('count', '?')} 个行政区划。"
         ),
         "general": (
             f"**做了什么：** 执行了通用 GIS 分析任务。\n\n"
